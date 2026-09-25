@@ -36,6 +36,26 @@ Behind a reverse proxy, run uvicorn with `--proxy-headers` and
 `--forwarded-allow-ips` set to the proxy address so rate limits key on the
 real client IP. The app never reads `X-Forwarded-For` itself.
 
+## Container image
+
+`server/Dockerfile` builds the image Cloud Run runs; build it from the
+repository root. Dependencies come from `requirements.lock`, the hash-locked
+`uv export` of `uv.lock` for this package (a test fails if it drifts):
+
+```bash
+uv export --package carapace-server --no-dev --frozen --no-emit-workspace \
+  --no-header --no-annotate --format requirements-txt -o server/requirements.lock
+docker buildx build -f server/Dockerfile --platform linux/amd64 -t carapace-server .
+```
+
+The entrypoint, `python3 -m carapace_server`, serves on `$PORT` (default
+8080) as uid 65532 and needs no writable path. Migrations run from the same
+image with `python3 -m alembic -c /app/server/alembic.ini upgrade head`; the
+Pulumi stack does this in a Cloud Run job (`infra/pulumi/README.md`). uvicorn
+trusts `X-Forwarded-For` only from the addresses in `FORWARDED_ALLOW_IPS`
+(default `127.0.0.1`). Never set it to `*`: uvicorn then takes the leftmost,
+client-supplied entry.
+
 ## Design notes
 
 - **Email is stored in plaintext** with a unique index. The old design

@@ -14,6 +14,7 @@ PROJECT_NUMBER = "123456789012"
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
 STATIC_IP = "203.0.113.10"
+MIGRATION_TOKEN = "0123456789abcdef"  # noqa: S105
 GET_PROJECT_TOKEN = "gcp:organizations/getProject:getProject"  # noqa: S105
 GET_IMAGE_TOKEN = "gcp:compute/getImage:getImage"  # noqa: S105
 ENCLAVE_SA_UNIQUE_ID = "104200000000000000001"
@@ -103,6 +104,7 @@ def _computed_state(typ: str, inputs: dict) -> dict:
         "random:index/randomPassword:RandomPassword": lambda: {
             "result": "mock-password"
         },
+        "random:index/randomId:RandomId": lambda: {"hex": MIGRATION_TOKEN},
     }
     factory = computed.get(typ)
     return factory() if factory else {}
