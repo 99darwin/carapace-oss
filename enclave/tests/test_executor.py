@@ -330,7 +330,7 @@ class TestResponses:
         err = exc_info.value
         assert err.code == "upstream_ConnectError"
         assert err.__cause__ is None
-        assert err.__suppress_context__
+        assert err.__context__ is None
         assert SECRET.decode() not in str(err)
 
     async def test_timeout(self) -> None:
@@ -347,3 +347,63 @@ class TestResponses:
         with pytest.raises(EgressError) as exc_info:
             await run(AgentRequest("GET", URL), handler=handler, limits=limits)
         assert exc_info.value.code == "timeout"
+
+
+class TestReviewHardening:
+    @pytest.mark.parametrize("encoding", ["x-gzip", "br", "zstd", "gzip, compress"])
+    async def test_unsupported_content_encoding_refused(self, encoding: str) -> None:
+        async def body() -> AsyncIterator[bytes]:
+            yield b"opaque"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            # Streamed, as on a real connection: nothing is decoded before the
+            # executor inspects the headers.
+            return httpx.Response(
+                200, headers={"Content-Encoding": encoding}, content=body()
+            )
+
+        with pytest.raises(EgressError) as exc_info:
+            await run(AgentRequest("GET", URL), handler=handler)
+        assert exc_info.value.code == "unsupported_content_encoding"
+
+    async def test_gzip_is_decoded_then_redacted(self) -> None:
+        import gzip
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"Content-Encoding": "gzip"},
+                content=gzip.compress(b'{"k":"' + SECRET + b'"}'),
+            )
+
+        result, _ = await run(AgentRequest("GET", URL), handler=handler)
+        assert result.body == b'{"k":"' + REDACTED + b'"}'
+
+    @pytest.mark.parametrize(
+        "secret", [b" leading-space-secret", b"trailing-space-secret ", b"tab\tsecret1"]
+    )
+    async def test_secret_not_valid_field_value(self, secret: bytes) -> None:
+        inject = {"kind": "header", "name": "X-Key", "template": "{secret}"}
+        code, _ = await deny(AgentRequest("GET", URL), secret=secret, inject=inject)
+        assert code == "secret_not_injectable"
+
+    async def test_error_has_no_exception_context(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError(f"cannot reach {request.url}")
+
+        with pytest.raises(EgressError) as exc_info:
+            await run(AgentRequest("GET", URL), handler=handler)
+        assert exc_info.value.__context__ is None
+        assert exc_info.value.__cause__ is None
+
+    async def test_overlong_url_denied(self) -> None:
+        request = AgentRequest("GET", "https://api.github.com/" + "a" * 70_000)
+        assert (await deny(request))[0] == "url_rejected"
+
+    @pytest.mark.parametrize(
+        "query", ["?key=agent", "?KEY=agent", "?a=1;key=agent", "?x=1&Key="]
+    )
+    async def test_query_param_shadowing_refused(self, query: str) -> None:
+        inject = {"kind": "query", "name": "key", "template": "{secret}"}
+        request = AgentRequest("GET", "https://api.github.com/r" + query)
+        assert (await deny(request, inject=inject))[0] == "query_param_rejected"

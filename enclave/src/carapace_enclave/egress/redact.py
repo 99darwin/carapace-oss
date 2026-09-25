@@ -8,6 +8,10 @@ The secret is matched in these forms:
   ``base64("user:" + secret)`` is caught)
 - percent-encoded (``quote`` and ``quote_plus``, upper- and lowercase hex)
 - JSON string escaped (ASCII-only and UTF-8, ``\\/`` and upper-hex ``\\u``)
+- hex, lower- and uppercase
+
+Not covered: UTF-16, HTML entities, case-changed or otherwise transformed
+reflections, and nested encodings (e.g. percent-encoded base64).
 
 Bodies are redacted after being fully buffered (the executor enforces the
 response cap), so a secret split across stream chunks is still caught.
@@ -82,6 +86,7 @@ def secret_forms(values: Iterable[bytes]) -> list[bytes]:
         forms |= _base64_forms(value)
         forms |= _percent_forms(value)
         forms |= _json_forms(value)
+        forms |= {value.hex().encode("ascii"), value.hex().upper().encode("ascii")}
     forms.discard(b"")
     return sorted(forms, key=lambda form: (-len(form), form))
 

@@ -106,3 +106,8 @@ def test_forms_are_longest_first() -> None:
 def test_empty_values_rejected() -> None:
     with pytest.raises(ValueError):
         Redactor([b""])
+
+
+@pytest.mark.parametrize("form", [SECRET.hex(), SECRET.hex().upper()])
+def test_redacts_hex(form: str) -> None:
+    assert Redactor([SECRET]).redact(form.encode()) == (REDACTED, 1)

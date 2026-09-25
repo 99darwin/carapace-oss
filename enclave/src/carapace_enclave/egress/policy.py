@@ -62,6 +62,10 @@ class HostRule(BaseModel):
 
     A suffix rule ``.github.com`` matches ``api.github.com`` but neither
     ``github.com`` (add an exact rule for the apex) nor ``evilgithub.com``.
+
+    Never use a suffix rule on a domain whose subdomains third parties can
+    claim (``.github.io``, ``.amazonaws.com``, ``.herokuapp.com``...): the agent
+    could point the request at its own subdomain and receive the secret.
     """
 
     model_config = _STRICT

@@ -22,6 +22,7 @@ import asyncio
 import base64
 import dataclasses
 import hashlib
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from urllib.parse import parse_qsl, quote_from_bytes
@@ -47,7 +48,16 @@ MIN_SECRET_BYTES = 8
 MAX_REQUEST_HEADERS = 64
 MAX_HEADER_BYTES = 16 * 1024
 _PLACEHOLDER = SECRET_PLACEHOLDER.encode("ascii")
-_UNSAFE_SECRET_BYTES = frozenset(b"\r\n\x00")
+# C0 controls and DEL can never appear in a header value or be sent safely.
+_UNSAFE_SECRET_BYTES = frozenset([*range(0x20), 0x7F])
+# RFC 9110 field-value: no leading/trailing whitespace, no controls. Checked
+# up front so the HTTP library never builds an error message containing it.
+_FIELD_VALUE = re.compile(
+    rb"^[\x21-\x7e\x80-\xff]([\t\x20-\x7e\x80-\xff]*[\x21-\x7e\x80-\xff])?$"
+)
+# Encodings httpx decodes without optional dependencies. Anything else would
+# reach the redactor still compressed, so it is refused.
+_DECODABLE_ENCODINGS = frozenset({"identity", "gzip", "deflate"})
 # Response headers dropped before returning: hop-by-hop, framing (the body is
 # decoded and rewritten), and cookies (a session cookie is a credential).
 _DROPPED_RESPONSE_HEADERS = frozenset(
@@ -171,9 +181,15 @@ class EgressExecutor:
         rendered = policy.inject.template.encode("ascii").replace(
             _PLACEHOLDER, bytes(secret)
         )
+        if policy.inject.kind == "header" and not _FIELD_VALUE.match(rendered):
+            raise EgressDenied("secret_not_injectable")
         target, headers = _inject(policy, rendered, url.target, headers)
         redactor = Redactor(_redaction_values(policy, bytes(secret), rendered))
 
+        # The error is raised outside the ``except`` blocks so it carries no
+        # ``__context__``: httpx/h11 exceptions can embed the injected URL or
+        # header value, and ``from None`` alone still keeps the context.
+        failure: str | None = None
         try:
             async with asyncio.timeout(policy.limits.timeout_s):
                 return await self._send(
@@ -187,10 +203,10 @@ class EgressExecutor:
                     metadata,
                 )
         except TimeoutError:
-            raise EgressError("timeout", metadata) from None
-        except httpx.HTTPError as exc:
-            # Never chain: httpx exceptions can carry the injected URL.
-            raise EgressError(f"upstream_{type(exc).__name__}", metadata) from None
+            failure = "timeout"
+        except (httpx.HTTPError, httpx.InvalidURL) as exc:
+            failure = f"upstream_{type(exc).__name__}"
+        raise EgressError(failure, metadata)
 
     async def _send(
         self,
@@ -228,6 +244,7 @@ class EgressExecutor:
         ) as client:
             response = await client.send(request, stream=True)
             try:
+                _check_content_encoding(response, metadata)
                 chunks: list[bytes] = []
                 received = 0
                 async for chunk in response.aiter_bytes():
@@ -261,6 +278,18 @@ class EgressExecutor:
                 redactions=body_hits + header_hits,
             ),
         )
+
+
+def _check_content_encoding(
+    response: httpx.Response, metadata: ReceiptMetadata
+) -> None:
+    for value in response.headers.get_list("content-encoding"):
+        for token in value.split(","):
+            if token.strip().lower() not in _DECODABLE_ENCODINGS:
+                raise EgressError(
+                    "unsupported_content_encoding",
+                    dataclasses.replace(metadata, status=response.status_code),
+                )
 
 
 def _validate_headers(
@@ -309,8 +338,14 @@ def _inject(
         value = b"Basic " + base64.b64encode(rendered)
         return target.encode("ascii"), [*headers, (b"Authorization", value)]
     path, _, query = target.partition("?")
-    existing = {key for key, _ in parse_qsl(query, keep_blank_values=True)}
-    if name in existing:
+    # Servers differ on ';' separators and name case; refuse any lookalike so
+    # the agent cannot shadow the injected parameter.
+    existing = {
+        key.lower()
+        for part in query.split(";")
+        for key, _ in parse_qsl(part, keep_blank_values=True)
+    }
+    if name.lower() in existing:
         raise EgressDenied("query_param_rejected", name)
     param = f"{name}=".encode() + quote_from_bytes(rendered, safe="").encode()
     joined = f"{path}?{query}&" if query else f"{path}?"

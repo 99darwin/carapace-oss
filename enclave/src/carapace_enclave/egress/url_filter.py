@@ -29,6 +29,8 @@ HTTPS_DEFAULT_PORT = 443
 
 # Checked in addition to ``not ip.is_global``; these are global per IANA but
 # can tunnel to or embed private IPv4 space.
+MAX_URL_LENGTH = 8 * 1024
+
 BLOCKED_RANGES = tuple(
     ipaddress.ip_network(net)
     for net in (
@@ -80,6 +82,8 @@ class PinnedTarget:
 
 def parse_url(url: str) -> ParsedURL:
     """Parse and validate an agent-supplied URL without touching the network."""
+    if len(url) > MAX_URL_LENGTH:
+        raise URLFilterError("URL too long")
     if any(ch.isspace() or ord(ch) < 0x20 for ch in url):
         raise URLFilterError("URL must not contain whitespace or controls")
     if "\\" in url or "\x7f" in url:
