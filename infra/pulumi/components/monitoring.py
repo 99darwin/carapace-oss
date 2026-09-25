@@ -1,0 +1,108 @@
+"""Optional alerting on changes that could widen who can decrypt.
+
+The residual risk in the threat model is a project owner changing KMS IAM or
+loosening the WIF gate. Both are Admin Activity audit log entries (always on),
+so a log-match alert makes such a change visible within minutes.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+import pulumi
+import pulumi_gcp as gcp
+
+NOTIFICATION_RATE_LIMIT = "300s"
+AUTO_CLOSE = "1800s"
+
+
+def build_alert_filter(
+    *,
+    key_ring_name: str,
+    pool_id: str,
+    enclave_sa_email: str,
+    enclave_sa_unique_id: str,
+) -> str:
+    """Log filter matching IAM or configuration changes to the decrypt path.
+
+    Matching the key ring path covers the ring itself and every key in it.
+    Service account audit entries name the account by email or unique ID
+    depending on the method, so both are matched.
+    """
+    kms_change = (
+        'protoPayload.serviceName="cloudkms.googleapis.com"'
+        ' AND protoPayload.methodName=("SetIamPolicy" OR "CreateCryptoKeyVersion"'
+        ' OR "ImportCryptoKeyVersion" OR "UpdateCryptoKeyPrimaryVersion")'
+        f' AND protoPayload.resourceName:"{key_ring_name}"'
+    )
+    wif_change = (
+        'protoPayload.serviceName="iam.googleapis.com"'
+        f' AND protoPayload.resourceName:"workloadIdentityPools/{pool_id}"'
+    )
+    enclave_sa_change = (
+        'protoPayload.serviceName="iam.googleapis.com"'
+        f' AND (protoPayload.resourceName:"serviceAccounts/{enclave_sa_email}"'
+        f' OR protoPayload.resourceName:"serviceAccounts/{enclave_sa_unique_id}")'
+    )
+    project_iam_change = (
+        'protoPayload.serviceName="cloudresourcemanager.googleapis.com"'
+        ' AND protoPayload.methodName="SetIamPolicy"'
+    )
+    clauses = (kms_change, wif_change, enclave_sa_change, project_iam_change)
+    return " OR ".join(f"({clause})" for clause in clauses)
+
+
+def create_iam_change_alert(
+    *,
+    prefix: str,
+    key_ring_name: pulumi.Input[str],
+    pool_id: pulumi.Input[str],
+    enclave_sa_email: pulumi.Input[str],
+    enclave_sa_unique_id: pulumi.Input[str],
+    emails: Sequence[str],
+) -> gcp.monitoring.AlertPolicy:
+    channels = [
+        gcp.monitoring.NotificationChannel(
+            f"{prefix}-alert-email-{index}",
+            display_name=f"Carapace security alerts ({index})",
+            type="email",
+            labels={"email_address": email},
+        )
+        for index, email in enumerate(emails)
+    ]
+    log_filter = pulumi.Output.all(
+        key_ring_name, pool_id, enclave_sa_email, enclave_sa_unique_id
+    ).apply(
+        lambda args: build_alert_filter(
+            key_ring_name=args[0],
+            pool_id=args[1],
+            enclave_sa_email=args[2],
+            enclave_sa_unique_id=args[3],
+        )
+    )
+    return gcp.monitoring.AlertPolicy(
+        f"{prefix}-decrypt-path-change",
+        display_name="Carapace: decrypt-path IAM or configuration changed",
+        combiner="OR",
+        conditions=[
+            {
+                "display_name": "Decrypt-path configuration change",
+                "condition_matched_log": {"filter": log_filter},
+            }
+        ],
+        alert_strategy={
+            "notification_rate_limit": {"period": NOTIFICATION_RATE_LIMIT},
+            "auto_close": AUTO_CLOSE,
+        },
+        notification_channels=[channel.name for channel in channels],
+        documentation={
+            "content": (
+                "Someone changed IAM or configuration on the Carapace KMS key "
+                "ring, the attestation WIF pool, the enclave service account, "
+                "or project IAM. Confirm the change "
+                "was intended; an unexpected decrypter grant defeats the "
+                "attestation gate."
+            ),
+            "mime_type": "text/markdown",
+        },
+    )

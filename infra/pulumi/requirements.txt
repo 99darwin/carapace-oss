@@ -1,0 +1,3 @@
+pulumi>=3.200,<4
+pulumi-gcp>=9.0,<10
+pulumi-random>=4.16,<5

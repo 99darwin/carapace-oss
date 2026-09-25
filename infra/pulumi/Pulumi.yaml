@@ -1,0 +1,7 @@
+name: carapace
+description: Minimal attestation-gated Carapace deployment on GCP
+runtime:
+  name: python
+  options:
+    toolchain: pip
+    virtualenv: venv
