@@ -27,6 +27,13 @@ The default mode is `prod`, which refuses to start unless these are set:
 | `CARAPACE_ATTESTATION_PROJECT_ID` | GCP project the enclave VMs run in |
 | `CARAPACE_ATTESTATION_SERVICE_ACCOUNT` | the enclave VMs' service account |
 
+Optional: `CARAPACE_WEB_DIR` points at a built web UI (`web/dist`), which is
+then served at `/` after every API route. Only those static responses carry
+the UI's security headers (a strict CSP with Trusted Types, `nosniff`,
+`DENY` framing, `no-referrer`, COOP/CORP `same-origin`, a Permissions-Policy
+and, for an https public URL, HSTS). Hashed `assets/*` are cached as
+immutable and everything else is `no-cache`. There is no CORS.
+
 Behind a reverse proxy, run uvicorn with `--proxy-headers` and
 `--forwarded-allow-ips` set to the proxy address so rate limits key on the
 real client IP. The app never reads `X-Forwarded-For` itself.
@@ -168,7 +175,9 @@ are safe.
 
 `GET /v1/receipts?secret_id=&cursor=&limit=` returns an owner's receipts
 verbatim, with the boots (attestation token, TLS cert, receipt key) needed to
-verify them offline. A receipt belongs to the signed `payload.owner_id`,
+verify them offline. `GET /v1/receipts/boots` lists the boots that signed at
+least one of the caller's receipts, newest first, for the web UI's
+attestation page. A receipt belongs to the signed `payload.owner_id`,
 which the enclave reads from the AAD-bound envelope; this stays correct
 after the secret is deleted, or its id re-created by another account. Only
 a receipt without `owner_id` falls back to the current owner of

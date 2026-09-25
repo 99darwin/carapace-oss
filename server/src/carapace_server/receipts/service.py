@@ -226,3 +226,20 @@ async def owner_receipts(
     last = page[-1] if more else None
     cursor = f"{last.boot_id}{CURSOR_SEPARATOR}{last.seq}" if last else None
     return page, boots, cursor
+
+
+async def owner_boots(
+    db: AsyncSession, owner_id: uuid.UUID, *, limit: int
+) -> list[EnclaveBoot]:
+    """Boots that signed at least one of this owner's receipts, newest first."""
+    signed_for_owner = (
+        select(Receipt.boot_id).where(Receipt.owner_id == owner_id).distinct()
+    )
+    return list(
+        await db.scalars(
+            select(EnclaveBoot)
+            .where(EnclaveBoot.boot_id.in_(signed_for_owner))
+            .order_by(EnclaveBoot.first_seen.desc(), EnclaveBoot.boot_id)
+            .limit(limit)
+        )
+    )

@@ -14,7 +14,13 @@ from functools import lru_cache
 from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import (
+    DirectoryPath,
+    Field,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 MIN_JWT_SECRET_LENGTH = 32
@@ -87,6 +93,9 @@ class Settings(BaseSettings):
     max_request_body_bytes: int = Field(
         default=DEFAULT_MAX_REQUEST_BODY_BYTES, ge=MIN_MAX_REQUEST_BODY_BYTES
     )
+    # Built web UI (``web/dist``). When set, it is served at ``/`` after
+    # every API route; unset, the server is API-only.
+    web_dir: DirectoryPath | None = None
 
     @field_validator("allowed_image_digests", "allowed_hwmodels", mode="before")
     @classmethod
