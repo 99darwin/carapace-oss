@@ -1,0 +1,7 @@
+# Extends the default gitleaks rules with narrowly scoped allowlists.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Envelope test vectors: a deliberately public RSA test key and fixed ids"
+paths = ['''^packages/crypto/tests/vectors/''']
