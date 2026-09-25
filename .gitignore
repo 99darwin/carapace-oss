@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Node
+node_modules/
+.turbo/
+*.tsbuildinfo
+
+# Env and secrets
+.env
+.env.*
+!.env.example
+secrets/
+credentials/
+*.pem
+*.key
+
+# Pulumi stack configs contain project identifiers; commit examples only
+infra/pulumi/Pulumi.*.yaml
+!infra/pulumi/Pulumi.example.yaml
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
