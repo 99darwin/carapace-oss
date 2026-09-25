@@ -1,6 +1,6 @@
 # carapace-server
 
-Control-plane API: accounts, sessions and (in later PRs) the ciphertext store.
+Control-plane API: accounts, sessions, the ciphertext store and API keys.
 
 The server is **untrusted** by design. It never sees plaintext secrets, holds
 no KMS decrypt rights, and is not on the agent-to-enclave data path.
@@ -45,6 +45,20 @@ real client IP. The app never reads `X-Forwarded-For` itself.
   Revoked rows are kept until they expire so that reuse remains detectable.
 - No Redis or Celery: rate limiting is in-process (per replica) and expired
   rows are purged by a periodic asyncio task.
+
+## Secrets and API keys
+
+- `/v1/secrets` stores envelope v1 (`carapace_crypto.envelope`) as sent by
+  the client. The server checks shape only: version, standard base64,
+  RSA-OAEP output of 384 to 512 bytes, a 12-byte nonce, ciphertext within the
+  64 KiB plaintext limit, and no floats in the policy. It records
+  `aad_hash` itself, recomputed from the envelope's id, owner and policy.
+- The client picks the secret UUID because it is bound into the AAD. The
+  envelope's `secret_id` and `owner_id` must match the URL and the caller.
+- There is no way to edit a policy on its own. `PATCH` accepts `name` and/or
+  a complete new `envelope`, because the AAD binds the policy.
+- `/v1/api-keys` issues `cpk_` keys scoped to a set of the owner's secrets.
+  Only the SHA-256 is stored. The enclave checks a key by its hash.
 
 ## Known limitations
 

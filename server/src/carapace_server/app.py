@@ -15,12 +15,14 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from carapace_server.apikeys.router import router as api_keys_router
 from carapace_server.auth.router import router as auth_router
 from carapace_server.auth.service import dummy_password_hash, purge_expired_auth_rows
 from carapace_server.auth.tokens import purge_expired_blacklist
 from carapace_server.config import Settings, get_settings
 from carapace_server.db import create_engine, create_sessionmaker
 from carapace_server.ratelimit import limiter
+from carapace_server.store.router import router as secrets_router
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +82,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     limiter.enabled = settings.rate_limit_enabled
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-    app.include_router(auth_router)
+    for router in (auth_router, secrets_router, api_keys_router):
+        app.include_router(router)
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz() -> dict[str, str]:
