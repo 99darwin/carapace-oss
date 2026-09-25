@@ -1,0 +1,138 @@
+"""Typed, validated stack configuration.
+
+All validation happens here, before any resource is declared, so a bad config
+fails the deployment immediately instead of half-creating infrastructure.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+import pulumi
+
+DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+# Short enough that every derived ID stays within GCP limits (service account
+# IDs max 30 chars, WIF pool/provider IDs max 32 chars).
+PREFIX_PATTERN = re.compile(r"^[a-z][a-z0-9-]{1,18}[a-z0-9]$")
+DEFAULT_WIF_AUDIENCE = "https://sts.googleapis.com"
+
+
+class ConfigError(ValueError):
+    """Raised when stack configuration is invalid or unsafe."""
+
+
+def validate_digest(digest: str) -> str:
+    """Return ``digest`` if it is a full sha256 image digest, else raise."""
+    if not DIGEST_PATTERN.fullmatch(digest):
+        raise ConfigError(
+            f"image digest {digest!r} must look like 'sha256:<64 hex chars>'; "
+            "tags are not accepted"
+        )
+    return digest
+
+
+def build_image_reference(repository: str, digest: str) -> str:
+    """Build ``<repository>@<digest>``, refusing tag-based references.
+
+    The attestation guarantee depends on the VM running exactly the image whose
+    digest the KMS key is bound to, so a mutable tag is never acceptable.
+    """
+    if not repository or "@" in repository:
+        raise ConfigError(f"invalid image repository {repository!r}")
+    last_segment = repository.rsplit("/", 1)[-1]
+    if ":" in last_segment:
+        raise ConfigError(
+            f"image repository {repository!r} contains a tag; "
+            "pass the repository without a tag and pin by digest"
+        )
+    return f"{repository}@{validate_digest(digest)}"
+
+
+@dataclass(frozen=True)
+class StackConfig:
+    """Everything the program needs; nothing is hardcoded to a project."""
+
+    project: str
+    prefix: str
+    region: str
+    zone: str
+    allowed_digests: list[str]
+    enclave_image_digest: str
+    server_image_digest: str
+    image_registry: str | None = None
+    wif_audience: str = DEFAULT_WIF_AUDIENCE
+    control_plane_url: str | None = None
+    enclave_machine_type: str = "n2d-standard-2"
+    db_tier: str = "db-f1-micro"
+    server_min_instances: int = 0
+    server_max_instances: int = 2
+    protect_kms_key: bool = True
+    db_deletion_protection: bool = True
+    deploy_workloads: bool = True
+    enable_iam_alerts: bool = False
+    alert_emails: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.project:
+            raise ConfigError("gcp:project must be set")
+        if not PREFIX_PATTERN.fullmatch(self.prefix):
+            raise ConfigError(
+                f"prefix {self.prefix!r} must be 3-20 chars of lowercase "
+                "letters, digits or '-', starting with a letter"
+            )
+        if self.prefix.startswith("gcp-"):
+            raise ConfigError("prefix must not start with 'gcp-' (reserved)")
+        if not self.allowed_digests:
+            raise ConfigError("allowed_digests must list at least one digest")
+        for digest in self.allowed_digests:
+            validate_digest(digest)
+        if len(set(self.allowed_digests)) != len(self.allowed_digests):
+            raise ConfigError("allowed_digests contains duplicates")
+        if self.deploy_workloads:
+            validate_digest(self.enclave_image_digest)
+            validate_digest(self.server_image_digest)
+            if self.enclave_image_digest not in self.allowed_digests:
+                raise ConfigError(
+                    "enclave_image_digest is not in allowed_digests; the VM "
+                    "would boot but could never decrypt"
+                )
+        if self.server_min_instances < 0:
+            raise ConfigError("server_min_instances must be >= 0")
+        if self.server_max_instances < max(1, self.server_min_instances):
+            raise ConfigError("server_max_instances must be >= min and >= 1")
+        if self.enable_iam_alerts and not self.alert_emails:
+            raise ConfigError("enable_iam_alerts requires alert_emails")
+
+
+def load_config() -> StackConfig:
+    """Read and validate the current stack's config."""
+    gcp = pulumi.Config("gcp")
+    cfg = pulumi.Config()
+    region = gcp.get("region") or "us-central1"
+    return StackConfig(
+        project=gcp.require("project"),
+        prefix=cfg.get("prefix") or "carapace",
+        region=region,
+        zone=gcp.get("zone") or f"{region}-a",
+        allowed_digests=cfg.require_object("allowed_digests"),
+        enclave_image_digest=cfg.get("enclave_image_digest") or "",
+        server_image_digest=cfg.get("server_image_digest") or "",
+        image_registry=cfg.get("image_registry"),
+        wif_audience=cfg.get("wif_audience") or DEFAULT_WIF_AUDIENCE,
+        control_plane_url=cfg.get("control_plane_url"),
+        enclave_machine_type=cfg.get("enclave_machine_type") or "n2d-standard-2",
+        db_tier=cfg.get("db_tier") or "db-f1-micro",
+        server_min_instances=cfg.get_int("server_min_instances") or 0,
+        server_max_instances=cfg.get_int("server_max_instances") or 2,
+        protect_kms_key=_get_bool(cfg, "protect_kms_key", default=True),
+        db_deletion_protection=_get_bool(cfg, "db_deletion_protection", default=True),
+        deploy_workloads=_get_bool(cfg, "deploy_workloads", default=True),
+        enable_iam_alerts=_get_bool(cfg, "enable_iam_alerts", default=False),
+        alert_emails=cfg.get_object("alert_emails") or [],
+    )
+
+
+def _get_bool(cfg: pulumi.Config, key: str, *, default: bool) -> bool:
+    value = cfg.get_bool(key)
+    return default if value is None else value

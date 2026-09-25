@@ -1,0 +1,33 @@
+name: Infra
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "infra/pulumi/**"
+      - ".github/workflows/infra.yml"
+  pull_request:
+    paths:
+      - "infra/pulumi/**"
+      - ".github/workflows/infra.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  pulumi-tests:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/pulumi
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+      - run: uv venv venv
+      - run: VIRTUAL_ENV=venv uv pip install -r requirements-dev.txt
+      - run: venv/bin/ruff check .
+      - run: venv/bin/ruff format --check .
+      # Pulumi mocks only: no cloud credentials, no GCP or Pulumi Cloud access.
+      - run: venv/bin/pytest

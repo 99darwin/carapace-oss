@@ -1,0 +1,28 @@
+# Copy to Pulumi.<stack>.yaml and replace every placeholder.
+# Stack files other than this example are gitignored.
+config:
+  gcp:project: your-gcp-project-id
+  gcp:region: us-central1
+  gcp:zone: us-central1-a
+  carapace:prefix: carapace
+  # Every enclave image digest allowed to decrypt. List two during a rollover.
+  carapace:allowed_digests:
+    - sha256:0000000000000000000000000000000000000000000000000000000000000000
+  # Digest the VM runs; must appear in allowed_digests. Tags are refused.
+  carapace:enclave_image_digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+  carapace:server_image_digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+  # Optional. Defaults to this stack's Artifact Registry repository. Images
+  # are pulled as <image_registry>/enclave@<digest> and <image_registry>/server@<digest>.
+  # carapace:image_registry: us-central1-docker.pkg.dev/your-gcp-project-id/carapace
+  # carapace:deploy_workloads: "true"      # "false" = bootstrap without VM/Cloud Run
+  # carapace:control_plane_url: https://api.example.com   # default: Cloud Run URL
+  # carapace:wif_audience: https://sts.googleapis.com
+  # carapace:enclave_machine_type: n2d-standard-2
+  # carapace:db_tier: db-f1-micro
+  # carapace:server_min_instances: "0"
+  # carapace:server_max_instances: "2"
+  # carapace:protect_kms_key: "true"
+  # carapace:db_deletion_protection: "true"
+  # carapace:enable_iam_alerts: "true"
+  # carapace:alert_emails:
+  #   - security@example.com

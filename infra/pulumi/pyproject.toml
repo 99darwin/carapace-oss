@@ -1,0 +1,15 @@
+# Tool configuration only. This Pulumi program is intentionally not a uv
+# workspace member; install with `pip install -r requirements-dev.txt`.
+
+[tool.ruff]
+extend = "../../pyproject.toml"
+exclude = ["venv"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["components", "harness"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
