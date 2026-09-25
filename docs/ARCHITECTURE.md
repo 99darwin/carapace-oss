@@ -157,7 +157,8 @@ For each request, the enclave executor:
 - Caps request and response sizes.
 - Redacts the secret from response headers and body, in raw, base64,
   URL-encoded, and JSON-escaped forms.
-- Rate-limits per API key.
+- Rate-limits per owner fingerprint and secret, at the policy's `rpm`, with
+  an overall cap per owner fingerprint (and on KMS unwraps per owner).
 - Throttles a peer address after repeated refused authorizations, so an
   unauthenticated flood cannot spend the control-plane budget of every owner.
 - Emits one signed receipt per request.
@@ -204,9 +205,12 @@ These will be documented in full in `THREAT_MODEL.md`:
 
 ## Local development
 
-`docker compose` runs the server (SQLite), a mock enclave (fake TEE socket,
-`iss=mock://local`, local RSA key), and httpbin. The mock cannot reach
-production, for three reasons:
+A one-command `docker compose` setup (server on SQLite, mock enclave,
+httpbin) is planned but does not exist yet. Today the server runs locally in
+`dev` mode (`server/README.md`), and a dev-only mock of Confidential Space
+and Cloud KMS (`enclave/mock`: `iss=mock://local` tokens and an in-memory RSA
+key) is used by the tests. The mock cannot reach production, for three
+reasons:
 
 - It is excluded from the production image, so any image that contains it has
   a different digest and no IAM binding.
