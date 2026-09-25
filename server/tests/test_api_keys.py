@@ -310,11 +310,14 @@ async def test_revoke_without_tombstone(
     secret = await new_secret(client, alice)
     api_key, grant, body = await _registered_key(client, alice, [secret["id"]])
     url = f"/v1/api-keys/{body['id']}/revoke"
+    assert await find_grant(db, api_key.lookup_hash.hex()) == grant.to_dict()
     assert (await client.post(url, headers=alice.headers)).status_code == 204
     assert (await client.post(url, headers=alice.headers)).status_code == 404
-    # Without a tombstone the last real grant is all there is to serve; the
-    # enclave only learns of the revocation when that grant expires.
-    assert await find_grant(db, api_key.lookup_hash.hex()) == grant.to_dict()
+    # Without a tombstone the stored grant is still the live one, which the
+    # enclave would honour until it expires, so the server withholds it.
+    assert await find_grant(db, api_key.lookup_hash.hex()) is None
+    row = await db.scalar(select(ApiKey).where(ApiKey.id == uuid.UUID(body["id"])))
+    assert row is not None and row.grant_json == grant.to_dict()
     assert (await client.get("/v1/api-keys", headers=alice.headers)).json() == []
     _, newer = mint_grant(
         alice, {secret["id"]: 1}, api_key=api_key, previous_iat=grant.iat

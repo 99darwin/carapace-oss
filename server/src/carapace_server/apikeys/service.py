@@ -235,23 +235,36 @@ async def list_api_keys(db: AsyncSession, user_id: uuid.UUID) -> Sequence[ApiKey
     return result.all()
 
 
-async def find_grant(db: AsyncSession, lookup_hash: str) -> dict[str, Any] | None:
-    """The key's current stored grant, or None if the lookup hash is unknown.
+def is_tombstone(grant_json: dict[str, Any]) -> bool:
+    """Whether a stored grant authorizes nothing (``secrets`` is empty)."""
+    return not grant_json.get("secrets")
 
-    Deliberately unfiltered: a revoked key's grant (its tombstone, if one
-    was sent), an expired grant and a grant that does not cover the secret
-    the agent asked for are all returned. The enclave checks revocation,
-    expiry and scope itself from the signed grant, and it can only record a
-    tombstone or a narrowed grant in its per-boot monotonic cache if the
-    server hands it over. Touches ``last_used_at``.
+
+async def find_grant(db: AsyncSession, lookup_hash: str) -> dict[str, Any] | None:
+    """The key's current stored grant, or None if the enclave must not have it.
+
+    Served as stored, without filtering by expiry or by the secret the
+    agent asked for: the enclave checks both from the signed grant, and it
+    can only record a tombstone or a narrowed grant in its per-boot
+    monotonic cache if the server hands it over. A revoked key is served
+    only when its stored grant is a tombstone. When the owner revoked
+    without one (the web UI cannot sign), the stored grant is still the
+    last live grant, which the enclave would accept until ``exp``; this is
+    the honest server enforcing ``revoked_at`` instead. Touches
+    ``last_used_at``.
     """
     result = await db.execute(
         update(ApiKey)
         .where(ApiKey.key_hash == lookup_hash)
         .values(last_used_at=utcnow())
-        .returning(ApiKey.grant_json)
+        .returning(ApiKey.grant_json, ApiKey.revoked_at)
         .execution_options(synchronize_session=False)
     )
-    grant_json = result.scalar_one_or_none()
+    row = result.one_or_none()
     await db.commit()
+    if row is None:
+        return None
+    grant_json, revoked_at = row.grant_json, row.revoked_at
+    if revoked_at is not None and not is_tombstone(grant_json):
+        return None
     return grant_json

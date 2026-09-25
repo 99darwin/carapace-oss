@@ -90,9 +90,12 @@ owner-signed objects, but cannot forge one.
   about retirement, so the tombstone is what stops the old grant early.
 - `api_key_secrets` is an index derived from the stored grant, used for the
   owner's listing. `find_grant(lookup_hash)`, which the enclave API uses,
-  returns the current grant of any known key, revoked, expired or out of
-  scope included: the enclave decides from the signed grant and can only
-  record a tombstone in its monotonic cache if it is served one.
+  returns the current grant of any known key, expired or out of scope
+  included: the enclave decides from the signed grant and can only record a
+  tombstone in its monotonic cache if it is served one. A revoked key is
+  served only while its stored grant is a tombstone; a key revoked without
+  one (the web UI cannot sign) is withheld, since its stored grant is still
+  the live one and the enclave would honour it until `exp`.
 
 ## Known limitations
 
