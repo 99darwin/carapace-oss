@@ -31,10 +31,20 @@ ENCLAVE     ──attestation-gated asymmetricDecrypt──▶ Cloud KMS (HSM)
 - **Verifiable.** `carapace verify` checks the enclave's attestation, the
   image digest against the digests you allow, and pins the enclave's TLS
   key.
-- **Auditable.** Every use produces a receipt signed by a key bound to the
-  attestation, verifiable offline.
+- **Auditable.** Every authorized use produces a receipt signed by a key
+  bound to the attestation. `carapace audit verify` checks them.
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design.
+## Documentation
+
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the design.
+- [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md): assets, trust boundaries,
+  guarantees, and the residual risks we accept.
+- [docs/VERIFY.md](docs/VERIFY.md): rebuild the enclave image, verify a
+  running enclave with `carapace verify`, and check receipts with
+  `carapace audit verify`.
+- [docs/SELF_HOST.md](docs/SELF_HOST.md): deploy your own on GCP with
+  Pulumi, with costs, teardown and known gaps.
+- [SECURITY.md](SECURITY.md): reporting vulnerabilities.
 
 ## Repository layout
 
@@ -44,14 +54,14 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design.
 | `enclave/` | Credential-injecting proxy that runs in the TEE |
 | `server/` | Untrusted control plane: auth, ciphertext store, API keys, receipts |
 | `cli/` | `carapace` CLI and Python SDK |
-| `web/` | Minimal web UI |
 | `infra/pulumi` | One-command self-host on GCP |
 
 ## Development
 
 ```bash
-uv sync --all-packages
+uv sync --all-packages --locked
 uv run ruff check .
+uv run ruff format --check .
 uv run pytest
 ```
 
