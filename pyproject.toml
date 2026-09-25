@@ -5,6 +5,8 @@ requires-python = ">=3.12"
 
 [dependency-groups]
 dev = [
+    # enclave/mock (dev-only, never packaged) signs fake attestation tokens.
+    "pyjwt[crypto]>=2.9",
     "pytest>=8",
     "ruff>=0.6",
 ]
@@ -19,7 +21,7 @@ members = ["packages/*", "enclave", "server"]
 line-length = 88
 target-version = "py312"
 # Lets isort classify workspace packages as first-party.
-src = [".", "server/src", "packages/*/src"]
+src = [".", "server/src", "packages/*/src", "enclave/src", "enclave/mock"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "S", "SIM"]
@@ -33,5 +35,6 @@ known-first-party = ["carapace_*"]
 
 [tool.pytest.ini_options]
 addopts = "-q --import-mode=importlib"
-# Plain helper modules next to the tests (see server/tests/server_support.py).
-pythonpath = ["server/tests"]
+# Plain helper modules next to the tests (see server/tests/server_support.py),
+# and the dev-only enclave mock, which is deliberately not a distribution.
+pythonpath = ["server/tests", "enclave/mock"]
