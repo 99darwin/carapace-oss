@@ -9,10 +9,15 @@ dev = [
     "pyjwt[crypto]>=2.9",
     "pytest>=8",
     "ruff>=0.6",
+    # Deploy tests import the real modules; every call they make is mocked.
+    "carapace-cli[deploy]",
 ]
 
 [tool.uv]
 package = false
+
+[tool.uv.sources]
+carapace-cli = { workspace = true }
 
 [tool.uv.workspace]
 members = ["packages/*", "enclave", "server", "cli"]
