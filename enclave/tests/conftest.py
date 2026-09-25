@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+import httpcore
 import httpx
 import pytest
 
@@ -63,9 +64,35 @@ class Upstream:
     def factory(self) -> httpx.AsyncBaseTransport:
         def record(request: httpx.Request) -> httpx.Response:
             self.requests.append(request)
-            return self.handler(request)
+            response = self.handler(request)
+            if response.is_stream_consumed:
+                # ``httpx.Response(content=bytes)`` is read at construction.
+                # A real transport never pre-reads, so hand the executor the
+                # raw stream, as httpcore would.
+                response = httpx.Response(
+                    response.status_code,
+                    headers=response.headers,
+                    stream=response.stream,
+                )
+            return response
 
         return httpx.MockTransport(record)
+
+
+class RawUpstream:
+    """The real httpcore/h11 transport fed scripted wire bytes, no sockets.
+
+    Use this for anything that depends on HTTP/1.1 parsing (obsolete line
+    folds, reason phrases, trailers) that ``MockTransport`` bypasses.
+    """
+
+    def __init__(self, *wire: bytes) -> None:
+        self.wire = list(wire)
+
+    def factory(self) -> httpx.AsyncBaseTransport:
+        transport = httpx.AsyncHTTPTransport(retries=0, http1=True, http2=False)
+        transport._pool._network_backend = httpcore.AsyncMockBackend(self.wire)
+        return transport
 
 
 @pytest.fixture

@@ -17,6 +17,11 @@ Bodies are redacted after being fully buffered (the executor enforces the
 response cap), so a secret split across stream chunks is still caught.
 Matching is a single left-to-right pass over a longest-first alternation, so
 replaced text is never re-scanned.
+
+Header values are matched with optional whitespace between every byte of a
+form. h11 replaces an obsolete line fold (``CRLF`` + ``SP``/``HTAB``) with a
+space, so a secret folded across two lines would otherwise arrive as
+``s3cr 3t`` and slip past an exact match.
 """
 
 from __future__ import annotations
@@ -34,6 +39,13 @@ MIN_BASE64_CORE = 8
 _B64_ALPHABETS = (base64.b64encode, base64.urlsafe_b64encode)
 _B64_SKIP_LEADING = {0: 0, 1: 2, 2: 3}
 _UPPER_U_ESCAPE = re.compile(rb"\\u([0-9a-f]{4})")
+# What an obsolete line fold may become after h11 normalizes it.
+_FOLD = rb"[ \t]*"
+
+
+def _fold_tolerant(form: bytes) -> bytes:
+    """Regex for ``form`` with optional folding whitespace between bytes."""
+    return _FOLD.join(re.escape(bytes([byte])) for byte in form)
 
 
 def _base64_forms(value: bytes) -> set[bytes]:
@@ -99,10 +111,17 @@ class Redactor:
         if not forms:
             raise ValueError("nothing to redact")
         self._pattern = re.compile(b"|".join(re.escape(form) for form in forms))
+        self._header_pattern = re.compile(
+            b"|".join(_fold_tolerant(form) for form in forms)
+        )
 
     def redact(self, data: bytes) -> tuple[bytes, int]:
         """Return ``(redacted, count)``."""
         return self._pattern.subn(REDACTED, data)
+
+    def redact_header_value(self, value: bytes) -> tuple[bytes, int]:
+        """Like :meth:`redact`, but also catches forms broken by a line fold."""
+        return self._header_pattern.subn(REDACTED, value)
 
     def redact_headers(
         self, headers: Iterable[tuple[bytes, bytes]]
@@ -111,7 +130,7 @@ class Redactor:
         result: list[tuple[bytes, bytes]] = []
         for name, value in headers:
             clean_name, name_hits = self.redact(name)
-            clean_value, value_hits = self.redact(value)
+            clean_value, value_hits = self.redact_header_value(value)
             total += name_hits + value_hits
             result.append((clean_name, clean_value))
         return result, total

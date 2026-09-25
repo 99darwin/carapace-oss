@@ -29,6 +29,13 @@ from urllib.parse import parse_qsl, quote_from_bytes
 
 import httpx
 
+from carapace_enclave.egress.decoding import (
+    BoundedDecoder,
+    DecodeError,
+    OutputTooLargeError,
+    UnsupportedEncodingError,
+    content_encoding,
+)
 from carapace_enclave.egress.policy import (
     FORBIDDEN_INJECTION_HEADERS,
     SECRET_PLACEHOLDER,
@@ -55,9 +62,6 @@ _UNSAFE_SECRET_BYTES = frozenset([*range(0x20), 0x7F])
 _FIELD_VALUE = re.compile(
     rb"^[\x21-\x7e\x80-\xff]([\t\x20-\x7e\x80-\xff]*[\x21-\x7e\x80-\xff])?$"
 )
-# Encodings httpx decodes without optional dependencies. Anything else would
-# reach the redactor still compressed, so it is refused.
-_DECODABLE_ENCODINGS = frozenset({"identity", "gzip", "deflate"})
 # Response headers dropped before returning: hop-by-hop, framing (the body is
 # decoded and rewritten), and cookies (a session cookie is a credential).
 _DROPPED_RESPONSE_HEADERS = frozenset(
@@ -80,8 +84,9 @@ TransportFactory = Callable[[], httpx.AsyncBaseTransport]
 
 def _default_transport() -> httpx.AsyncBaseTransport:
     # A fresh transport per request: pooled connections are keyed by IP, and
-    # must never be reused under a different SNI hostname.
-    return httpx.AsyncHTTPTransport(retries=0, http1=True, http2=False)
+    # must never be reused under a different SNI hostname. ``trust_env=False``
+    # keeps SSL_CERT_FILE / SSL_CERT_DIR from swapping the CA bundle.
+    return httpx.AsyncHTTPTransport(retries=0, http1=True, http2=False, trust_env=False)
 
 
 class EgressDenied(Exception):
@@ -173,10 +178,15 @@ class EgressExecutor:
             path_hash=hashlib.sha256(url.target.encode("ascii")).hexdigest(),
             bytes_out=len(request.body),
         )
+        # DNS is under the policy timeout too: a stalled resolver must not
+        # hold the request open indefinitely.
         try:
-            pinned = await self._url_filter.pin(url)
+            async with asyncio.timeout(policy.limits.timeout_s):
+                pinned = await self._url_filter.pin(url)
         except URLFilterError as exc:
             raise EgressDenied("url_rejected", exc.reason) from None
+        except TimeoutError:
+            raise EgressError("dns_timeout", metadata) from None
 
         rendered = policy.inject.template.encode("ascii").replace(
             _PLACEHOLDER, bytes(secret)
@@ -235,7 +245,6 @@ class EgressExecutor:
             content=body,
             extensions={"sni_hostname": url.host},
         )
-        cap = policy.limits.resp_bytes
         async with httpx.AsyncClient(
             transport=self._transport_factory(),
             follow_redirects=False,
@@ -244,21 +253,15 @@ class EgressExecutor:
         ) as client:
             response = await client.send(request, stream=True)
             try:
-                _check_content_encoding(response, metadata)
-                chunks: list[bytes] = []
-                received = 0
-                async for chunk in response.aiter_bytes():
-                    received += len(chunk)
-                    if received > cap:
-                        raise EgressError(
-                            "response_too_large",
-                            dataclasses.replace(metadata, status=response.status_code),
-                        )
-                    chunks.append(chunk)
+                body, failure = await _read_body(response, policy.limits.resp_bytes)
             finally:
                 await response.aclose()
+        if failure is not None:
+            raise EgressError(
+                failure, dataclasses.replace(metadata, status=response.status_code)
+            )
 
-        body_out, body_hits = redactor.redact(b"".join(chunks))
+        body_out, body_hits = redactor.redact(body)
         kept = [
             (name, value)
             for name, value in response.headers.raw
@@ -274,22 +277,36 @@ class EgressExecutor:
             metadata=dataclasses.replace(
                 metadata,
                 status=response.status_code,
-                bytes_in=received,
+                bytes_in=len(body),
                 redactions=body_hits + header_hits,
             ),
         )
 
 
-def _check_content_encoding(
-    response: httpx.Response, metadata: ReceiptMetadata
-) -> None:
-    for value in response.headers.get_list("content-encoding"):
-        for token in value.split(","):
-            if token.strip().lower() not in _DECODABLE_ENCODINGS:
-                raise EgressError(
-                    "unsupported_content_encoding",
-                    dataclasses.replace(metadata, status=response.status_code),
-                )
+async def _read_body(response: httpx.Response, cap: int) -> tuple[bytes, str | None]:
+    """Stream and decode the body, or return ``(b"", failure_code)``.
+
+    Decoding is bounded by ``cap`` at every step (see :mod:`decoding`), so a
+    compression bomb never occupies more than ``cap`` bytes of memory. Failure
+    codes are returned rather than raised so the caller's ``EgressError``
+    carries no exception context.
+    """
+    try:
+        decoder = BoundedDecoder(
+            content_encoding(response.headers.get_list("content-encoding")), cap
+        )
+    except UnsupportedEncodingError:
+        return b"", "unsupported_content_encoding"
+    chunks: list[bytes] = []
+    try:
+        async for raw in response.aiter_raw():
+            chunks.append(decoder.decode(raw))
+        chunks.append(decoder.flush())
+    except OutputTooLargeError:
+        return b"", "response_too_large"
+    except DecodeError:
+        return b"", "response_not_decodable"
+    return b"".join(chunks), None
 
 
 def _validate_headers(

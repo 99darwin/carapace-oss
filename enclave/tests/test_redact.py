@@ -97,6 +97,20 @@ def test_unrelated_data_untouched() -> None:
     assert Redactor([SECRET]).redact(body) == (body, 0)
 
 
+@pytest.mark.parametrize("gap", [b" ", b"  ", b"\t", b" \t "])
+def test_header_value_redacted_across_line_fold(gap: bytes) -> None:
+    # h11 turns an obsolete line fold into whitespace inside the value.
+    folded = b"Bearer " + SECRET[:7] + gap + SECRET[7:20] + gap + SECRET[20:]
+    out, count = Redactor([SECRET]).redact_headers([(b"X-Echo", folded)])
+    assert out == [(b"X-Echo", b"Bearer " + REDACTED)]
+    assert count == 1
+
+
+def test_header_value_fold_tolerance_does_not_touch_body() -> None:
+    folded = SECRET[:7] + b" " + SECRET[7:]
+    assert Redactor([SECRET]).redact(folded) == (folded, 0)
+
+
 def test_forms_are_longest_first() -> None:
     forms = secret_forms([SECRET])
     assert forms == sorted(forms, key=lambda f: (-len(f), f))

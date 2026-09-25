@@ -93,6 +93,9 @@ def parse_url(url: str) -> ParsedURL:
         port = parts.port
     except ValueError as exc:
         raise URLFilterError("invalid URL") from exc
+    if port == 0:
+        # ``urlsplit`` accepts ``:0``; it must not silently become 443.
+        raise URLFilterError("invalid port")
     # Only the hostname may be non-ASCII (IDN); it is IDNA-encoded below.
     if not (parts.scheme + parts.path + parts.query + parts.fragment).isascii():
         raise URLFilterError("URL must be ASCII outside the hostname")

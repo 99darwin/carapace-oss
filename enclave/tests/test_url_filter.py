@@ -66,6 +66,7 @@ class TestParseURL:
             "https://0177.0.0.1/",
             "https://api.github.com:99999/",
             "https://api.github.com:abc/",
+            "https://api.github.com:0/",
             "https:///path",
             "https://api.github.com\uff0f@evil.test/",  # NFKC -> '/'
             "https://evil.test\uff03@api.github.com/",  # NFKC -> '#'

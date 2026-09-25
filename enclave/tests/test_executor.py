@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import base64
+import gzip
 import hashlib
+import tracemalloc
+import zlib
 from collections.abc import AsyncIterator
 from typing import Any
 
+import anyio
 import httpx
 import pytest
 
@@ -17,9 +21,17 @@ from carapace_enclave.egress import (
     EgressExecutor,
     URLFilter,
 )
+from carapace_enclave.egress.executor import _default_transport
 from carapace_enclave.egress.redact import REDACTED
 
-from .conftest import PUBLIC_IP, SECRET, FakeResolver, Upstream, make_policy
+from .conftest import (
+    PUBLIC_IP,
+    SECRET,
+    FakeResolver,
+    RawUpstream,
+    Upstream,
+    make_policy,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -350,7 +362,9 @@ class TestResponses:
 
 
 class TestReviewHardening:
-    @pytest.mark.parametrize("encoding", ["x-gzip", "br", "zstd", "gzip, compress"])
+    @pytest.mark.parametrize(
+        "encoding", ["x-gzip", "br", "zstd", "gzip, compress", "gzip, gzip"]
+    )
     async def test_unsupported_content_encoding_refused(self, encoding: str) -> None:
         async def body() -> AsyncIterator[bytes]:
             yield b"opaque"
@@ -407,3 +421,127 @@ class TestReviewHardening:
         inject = {"kind": "query", "name": "key", "template": "{secret}"}
         request = AgentRequest("GET", "https://api.github.com/r" + query)
         assert (await deny(request, inject=inject))[0] == "query_param_rejected"
+
+
+async def run_wire(*wire: bytes, **policy: Any) -> Any:
+    """Execute one GET against scripted HTTP/1.1 wire bytes (real h11)."""
+    executor = EgressExecutor(
+        url_filter=URLFilter(FakeResolver()),
+        transport_factory=RawUpstream(*wire).factory,
+    )
+    return await executor.execute(
+        make_policy(**policy), SECRET, AgentRequest("GET", URL)
+    )
+
+
+class TestSecondReview:
+    async def test_gzip_bomb_is_refused_without_inflating(self) -> None:
+        # 32 MiB of zeros gzip to ~32 KiB. Before bounded decoding, httpx
+        # inflated the whole chunk (80 MiB peak) before the 4 KiB cap was
+        # checked. Now the cap bounds every zlib call.
+        bomb = gzip.compress(b"\0" * (32 * 1024 * 1024), compresslevel=9)
+        assert len(bomb) < 64 * 1024
+
+        async def body() -> AsyncIterator[bytes]:
+            yield bomb
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            # Streamed: ``content=bytes`` would make httpx inflate it here.
+            return httpx.Response(
+                200, headers={"Content-Encoding": "gzip"}, content=body()
+            )
+
+        tracemalloc.start()
+        try:
+            with pytest.raises(EgressError) as exc_info:
+                await run(AgentRequest("GET", URL), handler=handler)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert exc_info.value.code == "response_too_large"
+        assert exc_info.value.metadata.status == 200
+        assert peak < 2 * 1024 * 1024
+
+    @pytest.mark.parametrize("wbits", [zlib.MAX_WBITS, -zlib.MAX_WBITS])
+    async def test_deflate_zlib_and_raw_are_decoded(self, wbits: int) -> None:
+        compressor = zlib.compressobj(wbits=wbits)
+        payload = compressor.compress(b'{"k":"' + SECRET + b'"}') + compressor.flush()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, headers={"Content-Encoding": "deflate"}, content=payload
+            )
+
+        result, _ = await run(AgentRequest("GET", URL), handler=handler)
+        assert result.body == b'{"k":"' + REDACTED + b'"}'
+        assert result.metadata.bytes_in == len(b'{"k":"' + SECRET + b'"}')
+
+    async def test_corrupt_gzip_refused(self) -> None:
+        async def body() -> AsyncIterator[bytes]:
+            yield b"not gzip"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, headers={"Content-Encoding": "gzip"}, content=body()
+            )
+
+        with pytest.raises(EgressError) as exc_info:
+            await run(AgentRequest("GET", URL), handler=handler)
+        assert exc_info.value.code == "response_not_decodable"
+
+    async def test_identity_content_encoding_passes_through(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, headers={"Content-Encoding": "identity"}, content=b"plain"
+            )
+
+        result, _ = await run(AgentRequest("GET", URL), handler=handler)
+        assert result.body == b"plain"
+
+    async def test_obs_fold_header_is_redacted(self) -> None:
+        # h11 joins an obsolete line fold with a space, which used to split
+        # the secret ("s3cr3t -T0KEN...") past the exact-match redactor.
+        wire = (
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n"
+            b"X-Echo: Bearer " + SECRET[:6] + b"\r\n  " + SECRET[6:] + b"\r\n\r\nok"
+        )
+        result = await run_wire(wire)
+        headers = {k.lower(): v for k, v in result.headers}
+        # "Bearer <secret>" is the rendered injection value, so the longest
+        # form wins and the whole value is replaced.
+        assert headers["x-echo"] == REDACTED.decode()
+        assert result.metadata.redactions == 1
+        assert SECRET[:6] not in result.body
+
+    async def test_reason_phrase_is_not_returned(self) -> None:
+        wire = b"HTTP/1.1 200 " + SECRET + b"\r\nContent-Length: 2\r\n\r\nok"
+        result = await run_wire(wire)
+        assert result.status == 200
+        assert result.headers == []
+        assert result.body == b"ok"
+
+    async def test_dns_resolution_is_under_the_timeout(self) -> None:
+        async def stalled(host: str, port: int) -> list[str]:
+            await anyio.sleep(5)
+            return [PUBLIC_IP]
+
+        upstream = Upstream(ok)
+        executor = EgressExecutor(
+            url_filter=URLFilter(stalled), transport_factory=upstream.factory
+        )
+        limits = {"req_bytes": 1024, "resp_bytes": 4096, "rpm": 60, "timeout_s": 1}
+        with pytest.raises(EgressError) as exc_info:
+            await executor.execute(
+                make_policy(limits=limits), SECRET, AgentRequest("GET", URL)
+            )
+        assert exc_info.value.code == "dns_timeout"
+        assert upstream.requests == []
+
+    def test_default_transport_ignores_ssl_env(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # With trust_env=True httpx would load this path as the CA bundle
+        # (and fail here); the enclave must only ever trust certifi.
+        monkeypatch.setenv("SSL_CERT_FILE", "/nonexistent/ca.pem")
+        monkeypatch.setenv("SSL_CERT_DIR", "/nonexistent")
+        _default_transport()
