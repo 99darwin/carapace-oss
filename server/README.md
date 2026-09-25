@@ -123,13 +123,15 @@ config and the verifier refuse it outside `dev`.
 | --- | --- |
 | `POST /internal/boots` | register `{receipt_pubkey, tls_cert_pem}`; `eat_nonce` must equal `sha256(tls_spki_der ‖ receipt_pubkey)` |
 | `GET /internal/secrets/{id}` | the full owner-signed envelope (`owner_pk`, `version`, `sig` included) |
-| `POST /internal/keys/verify` | `{key_hash, secret_id}` → `{grant}`, or 404 for an unknown key |
+| `POST /internal/keys/verify` | `{key_hash, secret_id}` → `{grant}`, or 404 for an unknown key or one revoked without a tombstone |
 | `POST /internal/receipts` | append a batch of signed receipts |
 
 `key_hash` is hex of the API key's `lookup_hash`. `keys/verify` returns the
 key's current owner-signed grant for every known key, including revoked
-keys (whose grant is then the tombstone, if the owner sent one), expired
-grants and grants that do not cover `secret_id`, which is only logged.
+keys whose grant is a tombstone, expired grants and grants that do not
+cover `secret_id`, which is only logged. A key revoked without a tombstone
+(the web UI cannot sign one) gets 404: its stored grant is still the live
+one, which the enclave would honour until `exp`.
 There is no `{allowed}` boolean: an answer from the server is not evidence.
 The enclave verifies the grant against the raw key
 (`carapace_crypto.verify_grant`), records it in its per-boot monotonic

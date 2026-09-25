@@ -385,6 +385,40 @@ async def test_key_verify_serves_tombstone_after_revoke(
     assert response.json()["grant"]["secrets"] == {}
 
 
+async def test_key_verify_withholds_key_revoked_without_tombstone(
+    client, enclave, alice, new_secret
+) -> None:
+    """The web UI cannot sign a tombstone; the honest server enforces
+    revoked_at itself by answering as for an unknown key."""
+    await _register(client, enclave)
+    secret = await new_secret(client, alice)
+    api_key, grant = mint_grant(alice, {secret["id"]: 1})
+    created = await post_api_key(client, alice, api_key, grant)
+    lookup = api_key.lookup_hash.hex()
+    before = await _verify(client, enclave, lookup, secret["id"])
+    assert before.status_code == 200
+    assert before.json() == {"grant": grant.to_dict()}
+
+    revoked = await client.post(
+        f"/v1/api-keys/{created.json()['id']}/revoke", headers=alice.headers
+    )
+    assert revoked.status_code == 204
+    response = await _verify(client, enclave, lookup, secret["id"])
+    assert response.status_code == 404
+    assert "grant" not in response.json()
+
+
+async def test_internal_body_cap_precedes_auth(client, enclave, settings) -> None:
+    """An oversized body is refused before the request signature is read."""
+    await _register(client, enclave)
+    padding = b"a" * settings.max_request_body_bytes
+    body = b'{"key_hash": "' + padding + b'"}'
+    headers = enclave.signed_headers("POST", "/internal/keys/verify", body)
+    headers["Content-Type"] = "application/json"
+    response = await client.post("/internal/keys/verify", content=body, headers=headers)
+    assert response.status_code == 413
+
+
 async def test_key_verify_serves_narrowed_grant(
     client, enclave, alice, new_secret
 ) -> None:

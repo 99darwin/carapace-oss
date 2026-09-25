@@ -65,13 +65,14 @@ async def get_envelope(
 async def verify_key(
     request: Request, body: KeyCheck, _boot: RegisteredBoot, db: DbSession
 ) -> dict[str, Any]:
-    """Return the key's current owner-signed grant, or 404 for an unknown key.
+    """Return the key's current owner-signed grant, or 404.
 
     Deliberately not a yes/no answer: a boolean from the server is not
-    evidence. Revoked keys (whose grant may be a tombstone), expired grants
-    and grants that do not cover ``secret_id`` are all returned, so the
-    enclave decides from the signature and can record tombstones and
-    narrowed grants in its monotonic cache. ``secret_id`` is only logged.
+    evidence. Tombstones, expired grants and grants that do not cover
+    ``secret_id`` are all returned, so the enclave decides from the
+    signature and can record tombstones and narrowed grants in its
+    monotonic cache. 404 means an unknown key or one revoked without a
+    tombstone (see ``find_grant``). ``secret_id`` is only logged.
     """
     grant = await find_grant(db, body.key_hash)
     logger.debug(
