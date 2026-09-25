@@ -85,6 +85,10 @@ def _computed_state(typ: str, inputs: dict) -> dict:
             }
         ),
         "gcp:compute/address:Address": lambda: {"address": STATIC_IP},
+        "gcp:artifactregistry/repository:Repository": lambda: {
+            "name": inputs["repositoryId"],
+            "project": PROJECT_ID,
+        },
         "gcp:sql/databaseInstance:DatabaseInstance": lambda: {
             "name": "db-instance",
             "connectionName": f"{PROJECT_ID}:region:db-instance",

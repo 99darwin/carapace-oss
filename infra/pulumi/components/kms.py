@@ -19,6 +19,9 @@ PUBLIC_KEY_VIEWER_ROLE = "roles/cloudkms.publicKeyViewer"
 # rotates the key by hand.
 INITIAL_KEY_VERSION = 1
 EMPTY_POLICY = json.dumps({"bindings": []})
+KMS_SERVICE = "cloudkms.googleapis.com"
+# Cryptographic operations such as AsymmetricDecrypt are DATA_READ entries.
+KMS_DATA_ACCESS_LOG_TYPE = "DATA_READ"
 
 
 @dataclass(frozen=True)
@@ -110,4 +113,22 @@ def bind_key_policy(
         f"{prefix}-secrets-key-policy",
         crypto_key_id=kms_key.crypto_key.id,
         policy_data=policy_data,
+    )
+
+
+def enable_kms_data_access_logs(
+    *, prefix: str, project: str, depends_on: Sequence[pulumi.Resource] = ()
+) -> gcp.projects.IAMAuditConfig:
+    """Log every KMS data-plane call, including each ``AsymmetricDecrypt``.
+
+    Data Access logs are off by default, so without this a decrypt leaves no
+    trace. The resource is authoritative for Cloud KMS's audit config in the
+    project: an exemption added by hand is removed on the next ``pulumi up``.
+    """
+    return gcp.projects.IAMAuditConfig(
+        f"{prefix}-kms-data-access-logs",
+        project=project,
+        service=KMS_SERVICE,
+        audit_log_configs=[{"log_type": KMS_DATA_ACCESS_LOG_TYPE}],
+        opts=pulumi.ResourceOptions(depends_on=list(depends_on)),
     )

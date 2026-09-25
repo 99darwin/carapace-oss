@@ -1,0 +1,10 @@
+# Deny everything, then allow exactly what enclave/Dockerfile copies. The
+# Dockerfile's COPY lines are the real include list; this keeps the build
+# context small and keeps anything else (mock code, local files) out of it.
+*
+!enclave/requirements.lock
+!enclave/src/carapace_enclave/__init__.py
+!enclave/src/carapace_enclave/py.typed
+!enclave/src/carapace_enclave/egress/
+**/__pycache__
+**/*.pyc
