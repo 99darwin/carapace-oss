@@ -45,6 +45,7 @@ from carapace_crypto.grant import (
     GrantScopeError,
     GrantSignatureError,
     create_grant,
+    reissue_grant,
     verify_grant,
     verify_grant_signature,
 )
@@ -87,6 +88,7 @@ __all__ = [
     "canonical_json",
     "compute_aad",
     "create_grant",
+    "reissue_grant",
     "decrypt_aes_gcm",
     "encrypt_aes_gcm",
     "fingerprint",
