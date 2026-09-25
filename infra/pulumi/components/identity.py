@@ -1,8 +1,10 @@
 """Service accounts for the enclave VM and the server, with minimal roles.
 
-Neither account gets any KMS decrypt permission. The enclave decrypts only
-through the WIF principalSet (see ``wif.py``); the server can read the public
-key (granted in the key policy, ``kms.py``) and nothing more.
+Neither account gets any KMS decrypt permission. The enclave reaches KMS only
+through the WIF principalSet (see ``wif.py``), which holds both decrypt and
+public key read on the key; the VM service account has no KMS role at all.
+The server can read the public key (granted in the key policy, ``kms.py``)
+and nothing more.
 
 No ``roles/iam.serviceAccountUser`` binding is created. The identity running
 ``pulumi up`` needs ``iam.serviceAccounts.actAs`` on both accounts to attach

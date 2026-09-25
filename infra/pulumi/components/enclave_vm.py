@@ -1,9 +1,17 @@
-"""The enclave: one Confidential Space VM with a static IP, reachable on 443.
+"""The enclave: one Confidential Space VM with a static IP, reachable on 8443.
 
 The VM has a public IP by design: agents connect to it directly over TLS that
 is pinned through attestation, keeping the server out of the data path. The
-VPC is dedicated and has exactly one ingress rule (tcp:443). There is no SSH
+VPC is dedicated and has exactly one ingress rule (tcp:8443). There is no SSH
 rule, and the Confidential Space production image has no SSH access anyway.
+
+Why 8443 and not 443: the image runs as a non-root user, and the launcher
+runs it in the VM's network namespace with no ambient capabilities, so it
+cannot bind a port below 1024. The launcher opens (and, for a namespaced
+container, forwards) only the ports the image ``EXPOSE``s, each to the same
+port number, and a VPC firewall rule cannot translate ports either. So one
+number is used end to end: the enclave listens on it, the image exposes it,
+the firewall allows it, and clients connect to ``https://<ip>:8443``.
 """
 
 from __future__ import annotations
@@ -21,7 +29,9 @@ from components.config import build_image_reference
 CONFIDENTIAL_SPACE_IMAGE_PROJECT = "confidential-space-images"
 CONFIDENTIAL_SPACE_IMAGE_FAMILY = "confidential-space"
 CONFIDENTIAL_INSTANCE_TYPE = "SEV"
-INGRESS_PORT = "443"
+# Must equal ENCLAVE_PORT in enclave/src/carapace_enclave/runtime.py and the
+# EXPOSE in enclave/Dockerfile (tests on both sides check this).
+INGRESS_PORT = 8443
 ANY_IPV4 = "0.0.0.0/0"
 SUBNET_CIDR = "10.10.0.0/24"
 BOOT_DISK_GB = 20
@@ -49,6 +59,11 @@ class EnclaveVm:
 
 def enclave_network_tag(prefix: str) -> str:
     return f"{prefix}-enclave"
+
+
+def build_enclave_url(ip: str) -> str:
+    """The URL clients use to reach the enclave; the port is always explicit."""
+    return f"https://{ip}:{INGRESS_PORT}"
 
 
 def build_enclave_metadata(
@@ -93,7 +108,7 @@ def create_enclave_network(
         name=f"{prefix}-allow-enclave-https",
         network=network.id,
         direction="INGRESS",
-        allows=[{"protocol": "tcp", "ports": [INGRESS_PORT]}],
+        allows=[{"protocol": "tcp", "ports": [str(INGRESS_PORT)]}],
         source_ranges=[ANY_IPV4],
         target_tags=[enclave_network_tag(prefix)],
     )

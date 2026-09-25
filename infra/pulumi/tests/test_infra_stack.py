@@ -1,6 +1,8 @@
 """Security properties of the full stack, asserted against Pulumi mocks."""
 
+import ast
 import json
+from pathlib import Path
 
 import pytest
 
@@ -8,6 +10,7 @@ pytest.importorskip("pulumi_gcp")
 
 import pulumi  # noqa: E402
 
+from components.enclave_vm import INGRESS_PORT  # noqa: E402
 from components.wif import build_principal_set  # noqa: E402
 from harness import (  # noqa: E402
     CONFIDENTIAL_SPACE_IMAGE,
@@ -16,6 +19,7 @@ from harness import (  # noqa: E402
     ENCLAVE_SA_UNIQUE_ID,
     PROJECT_ID,
     PROJECT_NUMBER,
+    STATIC_IP,
     Recorded,
     RecordingMocks,
     make_config,
@@ -39,6 +43,16 @@ REPOSITORY_IAM = "gcp:artifactregistry/repositoryIamMember:RepositoryIamMember"
 # Pulumi's wire encoding of a secret value: {SECRET_SIG: SECRET_SIG_VALUE, ...}.
 SECRET_SIG = pulumi.runtime.rpc._special_sig_key
 SECRET_SIG_VALUE = pulumi.runtime.rpc._special_secret_sig
+DECRYPT_ROLES = frozenset(
+    {"roles/cloudkms.cryptoKeyDecrypter", "roles/cloudkms.cryptoKeyEncrypterDecrypter"}
+)
+ENCLAVE_RUNTIME = (
+    Path(__file__).resolve().parents[3]
+    / "enclave"
+    / "src"
+    / "carapace_enclave"
+    / "runtime.py"
+)
 
 
 @pytest.fixture(scope="module")
@@ -110,7 +124,41 @@ def test_key_policy_has_no_other_bindings(stack) -> None:
         "roles/cloudkms.cryptoKeyDecrypter",
         "roles/cloudkms.publicKeyViewer",
     }
-    assert bindings["roles/cloudkms.publicKeyViewer"] == [SERVER_MEMBER]
+    decrypters = bindings["roles/cloudkms.cryptoKeyDecrypter"]
+    assert bindings["roles/cloudkms.publicKeyViewer"] == sorted(
+        [*decrypters, SERVER_MEMBER]
+    )
+
+
+def test_attested_enclave_can_read_the_public_key(stack) -> None:
+    """The boot self-test calls GetPublicKey with the enclave's federated
+    credentials, so every attested principalSet must hold publicKeyViewer."""
+    mocks, outputs = stack
+    viewers = _key_bindings(mocks)["roles/cloudkms.publicKeyViewer"]
+    principal_sets = sorted(outputs["wif_principal_sets"])
+    assert len(principal_sets) == 2
+    for principal_set in principal_sets:
+        assert principal_set in viewers
+    # No other federated principal and no VM service account is a viewer.
+    assert sorted(set(viewers) - {SERVER_MEMBER}) == principal_sets
+    assert ENCLAVE_MEMBER not in viewers
+
+
+def test_public_key_viewers_follow_digest_rollover() -> None:
+    mocks, _ = run_stack(make_config(allowed_digests=[DIGEST_A]))
+    bindings = _key_bindings(mocks)
+    (principal_set,) = bindings["roles/cloudkms.cryptoKeyDecrypter"]
+    assert principal_set.endswith(f"/attribute.image_digest/{DIGEST_A}")
+    assert bindings["roles/cloudkms.publicKeyViewer"] == sorted(
+        [principal_set, SERVER_MEMBER]
+    )
+
+
+def test_no_service_account_can_decrypt(stack) -> None:
+    mocks, _ = stack
+    for member in (SERVER_MEMBER, ENCLAVE_MEMBER):
+        roles = {role for role, m in _iam_grants(mocks) if m == member}
+        assert not roles & DECRYPT_ROLES, member
 
 
 def test_server_sa_has_no_decrypt_role(stack) -> None:
@@ -202,14 +250,38 @@ def test_wif_audience_override_is_used_verbatim() -> None:
     assert outputs["wif_audience"] == "carapace-sts-selfhost"
 
 
-def test_firewall_allows_only_443(stack) -> None:
+def _enclave_listen_port() -> int:
+    """ENCLAVE_PORT from the enclave runtime, read without importing it (the
+    infra venv does not install the enclave package)."""
+    assert ENCLAVE_RUNTIME.is_file(), f"enclave runtime not found: {ENCLAVE_RUNTIME}"
+    tree = ast.parse(ENCLAVE_RUNTIME.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "ENCLAVE_PORT" for t in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError("ENCLAVE_PORT not found in the enclave runtime")
+
+
+def test_infra_port_matches_enclave_listen_port() -> None:
+    assert INGRESS_PORT == _enclave_listen_port() == 8443
+
+
+def test_firewall_allows_only_the_enclave_port(stack) -> None:
     mocks, _ = stack
     firewall = mocks.one(FIREWALL).inputs
     assert firewall["direction"] == "INGRESS"
-    assert firewall["allows"] == [{"protocol": "tcp", "ports": ["443"]}]
+    assert firewall["allows"] == [{"protocol": "tcp", "ports": ["8443"]}]
     assert "denies" not in firewall
+    # Reachable from anywhere by design: authorization is the API key and
+    # the attested TLS pin, not the network. Pinned so a change is a diff.
+    assert firewall["sourceRanges"] == ["0.0.0.0/0"]
+    assert "sourceTags" not in firewall
+    assert "sourceServiceAccounts" not in firewall
     instance = mocks.one(INSTANCE).inputs
     assert firewall["targetTags"] == instance["tags"]
+    # No second path in: one VPC rule and no hierarchical or network policies.
+    assert not [r for r in mocks.resources if "FirewallPolicy" in r.typ]
 
 
 def test_vm_is_confidential_space_with_digest_pinned_image(stack) -> None:
@@ -483,3 +555,8 @@ def test_workloads_wait_for_their_iam(monkeypatch) -> None:
     dep_types = {type(dep).__name__ for dep in vm_deps[0]}
     assert {"RepositoryIamMember", "IAMAuditConfig"} <= dep_types
     assert by_role["roles/cloudsql.client"] in run_deps[0]
+
+
+def test_enclave_url_names_the_enclave_port(stack) -> None:
+    _, outputs = stack
+    assert outputs["enclave_url"] == f"https://{STATIC_IP}:8443"
