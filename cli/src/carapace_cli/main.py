@@ -27,6 +27,7 @@ from carapace_cli.audit import (
     load_receipt_file,
     verify_receipts,
 )
+from carapace_cli.deploy.command import add_deploy_commands
 from carapace_cli.errors import CarapaceError, StorageError
 from carapace_cli.files import default_config_dir, read_private, write_private
 from carapace_cli.keys import (
@@ -482,6 +483,8 @@ def build_parser() -> argparse.ArgumentParser:
     audit_fetch.add_argument("--secret")
     audit_fetch.add_argument("--output", required=True)
     audit_fetch.set_defaults(handler=cmd_audit_fetch)
+
+    add_deploy_commands(sub)
     return parser
 
 
