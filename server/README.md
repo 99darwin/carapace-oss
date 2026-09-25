@@ -46,6 +46,9 @@ real client IP. The app never reads `X-Forwarded-For` itself.
   Revoked rows are kept until they expire so that reuse remains detectable.
 - No Redis or Celery: rate limiting is in-process (per replica) and expired
   rows are purged by a periodic asyncio task.
+- Request bodies are capped (`CARAPACE_MAX_REQUEST_BODY_BYTES`, default
+  2 MiB, 413 above it) before anything buffers or parses them, and
+  validation errors (422) never echo the rejected input.
 
 ## Owner keys, secrets and API keys
 

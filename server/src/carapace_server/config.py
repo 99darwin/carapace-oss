@@ -20,6 +20,13 @@ MIN_JWT_SECRET_LENGTH = 32
 MIN_PROD_BCRYPT_ROUNDS = 12
 DEV_DATABASE_URL = "sqlite+aiosqlite:///./carapace-local.db"
 DEV_PUBLIC_URL = "http://localhost:8000"
+# Largest request body accepted. The default is well above the largest
+# legitimate body (a sealed envelope is about 110 KiB; a batch of 100
+# receipts with 16 KiB payloads about 1.7 MiB) and small enough that
+# parsing one request cannot exhaust memory. The floor keeps an
+# operator's override from rejecting every envelope.
+DEFAULT_MAX_REQUEST_BODY_BYTES = 2 * 1024 * 1024
+MIN_MAX_REQUEST_BODY_BYTES = 256 * 1024
 
 
 class ConfigError(ValueError):
@@ -49,6 +56,9 @@ class Settings(BaseSettings):
 
     rate_limit_enabled: bool = True
     cleanup_interval_seconds: int = Field(default=3600, ge=10)
+    max_request_body_bytes: int = Field(
+        default=DEFAULT_MAX_REQUEST_BODY_BYTES, ge=MIN_MAX_REQUEST_BODY_BYTES
+    )
 
     @model_validator(mode="after")
     def _apply_mode(self) -> Settings:

@@ -10,7 +10,10 @@ import contextlib
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -19,6 +22,7 @@ from carapace_server.apikeys.router import router as api_keys_router
 from carapace_server.auth.router import router as auth_router
 from carapace_server.auth.service import dummy_password_hash, purge_expired_auth_rows
 from carapace_server.auth.tokens import purge_expired_blacklist
+from carapace_server.bodylimit import BodySizeLimitMiddleware
 from carapace_server.config import Settings, get_settings
 from carapace_server.db import create_engine, create_sessionmaker
 from carapace_server.ownerkeys.router import router as owner_keys_router
@@ -69,6 +73,24 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         await engine.dispose()
 
 
+async def _validation_error(
+    _request: Request, exc: RequestValidationError
+) -> JSONResponse:
+    """422 without echoing the rejected input.
+
+    FastAPI's default handler returns each offending value, which would
+    reflect passwords back and can hold text that is not valid UTF-8.
+    """
+    errors = [
+        {"type": e.get("type"), "loc": e.get("loc"), "msg": e.get("msg")}
+        for e in exc.errors()
+    ]
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        content={"detail": jsonable_encoder(errors)},
+    )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     docs_url = "/docs" if settings.mode == "dev" else None
@@ -83,6 +105,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     limiter.enabled = settings.rate_limit_enabled
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_exception_handler(RequestValidationError, _validation_error)
+    app.add_middleware(
+        BodySizeLimitMiddleware, max_bytes=settings.max_request_body_bytes
+    )
     for router in (auth_router, owner_keys_router, secrets_router, api_keys_router):
         app.include_router(router)
 
