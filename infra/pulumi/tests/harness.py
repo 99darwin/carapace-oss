@@ -14,7 +14,8 @@ PROJECT_NUMBER = "123456789012"
 DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
 STATIC_IP = "203.0.113.10"
-MIGRATION_TOKEN = "0123456789abcdef"  # noqa: S105
+# Fake RandomId hex, matching DIGEST_A style (no literal for secret scanners).
+MIGRATION_TOKEN = "0" * 16
 GET_PROJECT_TOKEN = "gcp:organizations/getProject:getProject"  # noqa: S105
 GET_IMAGE_TOKEN = "gcp:compute/getImage:getImage"  # noqa: S105
 GET_KEY_VERSION_TOKEN = "gcp:kms/getKMSCryptoKeyVersion:getKMSCryptoKeyVersion"  # noqa: S105
