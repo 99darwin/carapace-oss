@@ -10,8 +10,9 @@ Sealing, minting keys and signing grants happen in the CLI.
 - **Read-only plus revoke.** The browser cannot sign, so a revoke here only
   sets `revoked_at` on the server. An honest server enforces that right away.
   A malicious server can keep serving the last grant until it expires. The
-  page says so and recommends `carapace key revoke` (an owner-signed
-  tombstone) plus rotating the credential at its provider.
+  page says so, and repeats `docs/THREAT_MODEL.md` R2: `carapace key revoke`
+  (an owner-signed tombstone) helps only partially, and the only hard cutoff
+  is rotating the credential at its provider.
 - **Tokens live in memory.** No cookies and no storage, so a reload logs you
   out. Refresh tokens are single use, so concurrent 401s share one refresh.
 - **Nothing is verified in the browser.** Receipts and attestation claims

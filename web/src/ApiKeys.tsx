@@ -72,10 +72,11 @@ function RevokeButton({
 function RevokedNotice({ apiKey }: { apiKey: ApiKey }) {
   return (
     <p role="status" className="warning">
-      Revoked {apiKey.name} on the server. Unless the server is dishonest, the
-      enclave refuses it within 60 seconds; otherwise its grant stays usable
-      until {formatTime(apiKey.grant_exp)}. Run <code>carapace key revoke</code>{" "}
-      and rotate the credential at its provider to be sure.
+      Revoked {apiKey.name} on the server. An honest server enforces this within
+      60 seconds; a malicious one can keep serving the last grant until{" "}
+      {formatTime(apiKey.grant_exp)}. Run <code>carapace key revoke</code> for
+      the owner-signed tombstone, and rotate the credential at its provider:
+      that is the only hard cutoff.
     </p>
   );
 }
@@ -106,10 +107,11 @@ export function ApiKeys({ client }: { client: ApiClient }) {
           grant until it expires, shown below.
         </p>
         <p>
-          The browser cannot sign, so it cannot revoke in a way the enclave
-          checks itself. For that, run <code>carapace key revoke</code>, which
-          stores an owner-signed tombstone, and rotate the credential at its
-          provider: that is the only cutoff that does not depend on the server.
+          The browser cannot sign. <code>carapace key revoke</code> also uploads
+          an owner-signed tombstone, which helps only partially against a
+          malicious server: once an enclave has seen it, that boot refuses the
+          older grant, but a server that never serves it goes undetected. The
+          only hard cutoff is rotating the credential at its provider.
         </p>
       </div>
       {revoked && <RevokedNotice apiKey={revoked} />}

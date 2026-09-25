@@ -102,8 +102,12 @@ describe("App", () => {
         return new Response(null, { status: 204 });
       },
     });
-    expect(screen.getByRole("note").textContent).toContain(
-      "carapace key revoke",
+    // The wording tracks docs/THREAT_MODEL.md R2.
+    const note = screen.getByRole("note").textContent;
+    expect(note).toContain("carapace key revoke");
+    expect(note).toContain("helps only partially against a malicious server");
+    expect(note).toContain(
+      "The only hard cutoff is rotating the credential at its provider",
     );
     fireEvent.click(await screen.findByRole("button", { name: "Revoke" }));
     fireEvent.click(
