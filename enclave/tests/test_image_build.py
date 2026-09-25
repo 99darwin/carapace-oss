@@ -45,6 +45,9 @@ LABEL_PREFIX = "tee.launch_policy."
 LOG_REDIRECT_VALUES = frozenset({"always", "debugonly", "never"})
 # Linux default for net.ipv4.ip_unprivileged_port_start.
 UNPRIVILEGED_PORT_START = 1024
+# A numeric, non-zero uid[:gid]. Names are refused on purpose: "root" would
+# pass a "not 0" check, and a name needs /etc/passwd resolution at runtime.
+UNPRIVILEGED_USER = re.compile(r"^[1-9][0-9]*(:[1-9][0-9]*)?$")
 
 
 def _dockerfile_instructions() -> list[tuple[str, str]]:
@@ -138,10 +141,18 @@ def test_listen_port_matches_image_and_infra() -> None:
     assert _infra_int_constant("INGRESS_PORT") == ENCLAVE_PORT
 
 
+def _final_stage_instructions() -> list[tuple[str, str]]:
+    """Instructions after the last FROM: only these shape the runtime image."""
+    instructions = _dockerfile_instructions()
+    froms = [i for i, (keyword, _) in enumerate(instructions) if keyword == "FROM"]
+    return instructions[max(froms) + 1 :]
+
+
 def test_listen_port_is_bindable_without_capabilities() -> None:
     """The image runs as a non-root user with no ambient capabilities."""
-    users = [rest for keyword, rest in _dockerfile_instructions() if keyword == "USER"]
-    assert users and users[-1].split(":")[0] != "0"
+    users = [rest for keyword, rest in _final_stage_instructions() if keyword == "USER"]
+    assert users, "the runtime stage must set USER"
+    assert UNPRIVILEGED_USER.fullmatch(users[-1]), users[-1]
     assert ENCLAVE_PORT >= UNPRIVILEGED_PORT_START
 
 

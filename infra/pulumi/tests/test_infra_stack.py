@@ -273,8 +273,15 @@ def test_firewall_allows_only_the_enclave_port(stack) -> None:
     assert firewall["direction"] == "INGRESS"
     assert firewall["allows"] == [{"protocol": "tcp", "ports": ["8443"]}]
     assert "denies" not in firewall
+    # Reachable from anywhere by design: authorization is the API key and
+    # the attested TLS pin, not the network. Pinned so a change is a diff.
+    assert firewall["sourceRanges"] == ["0.0.0.0/0"]
+    assert "sourceTags" not in firewall
+    assert "sourceServiceAccounts" not in firewall
     instance = mocks.one(INSTANCE).inputs
     assert firewall["targetTags"] == instance["tags"]
+    # No second path in: one VPC rule and no hierarchical or network policies.
+    assert not [r for r in mocks.resources if "FirewallPolicy" in r.typ]
 
 
 def test_vm_is_confidential_space_with_digest_pinned_image(stack) -> None:
