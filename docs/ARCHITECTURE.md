@@ -6,7 +6,7 @@ with the guarantee enforced by hardware rather than by trusting the operator.
 ## Components
 
 ```
-agent / SDK ──attested TLS (cert pinned via eat_nonce)──▶ ENCLAVE (CVM :443)
+agent / SDK ──attested TLS (cert pinned via eat_nonce)──▶ ENCLAVE (CVM :8443)
 CLI / web   ──encrypt locally to KMS public key──────────▶ SERVER (untrusted)
 ENCLAVE     ──pulls ciphertext, auth = attestation JWT───▶ SERVER
 ENCLAVE     ──WIF principalSet(image_digest)─────────────▶ Cloud KMS (HSM)
@@ -35,6 +35,9 @@ ENCLAVE     ──WIF principalSet(image_digest)──────────�
   Google's vTPM and Shielded VM firmware, and the Confidential Space image are
   therefore in the TCB. SEV-SNP is an open question until Google documents its
   `hwmodel` claim.
+- The same `principalSet` also holds `roles/cloudkms.publicKeyViewer`: the
+  enclave's boot self-test reads the public key with the same federated
+  credentials it decrypts with.
 - The key ring's IAM policy is authoritative and empty.
 - The server's service account holds only `roles/cloudkms.publicKeyViewer`.
 - No service account attached to the VM has KMS permissions, and the enclave
@@ -78,6 +81,19 @@ extend one, the owner revokes the key and creates a new one (v0.1 has no
 `key renew`, see the CLI README). Full formats, the enclave verification order and the
 freshness semantics are in
 [`docs/design/owner-signing.md`](design/owner-signing.md).
+
+## Network
+
+The enclave serves HTTPS on **port 8443**, and clients use
+`https://<enclave ip>:8443`. The image runs as a non-root user (UID 65532)
+with no ambient capabilities, so it cannot bind a port below 1024. Granting
+`CAP_NET_BIND_SERVICE` is not an option either: the distroless image has no
+shell to set file capabilities, and letting the operator add capabilities
+(`tee.launch_policy.allow_capabilities`) would let them add any capability.
+The Confidential Space launcher opens only the ports the image `EXPOSE`s, to
+the same port number, and a VPC firewall rule cannot translate ports, so the
+listen port, the `EXPOSE`, the firewall rule and the `enclave_url` output all
+use the same number. Tests on both sides check that they agree.
 
 ## Attestation and client verification
 

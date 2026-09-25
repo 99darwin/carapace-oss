@@ -85,15 +85,22 @@ def build_key_policy(
 
     The policy is authoritative: any binding not listed here (for example a
     decrypter grant added by hand) is removed on the next ``pulumi up``.
+
+    Every decrypter is also a public key viewer. The enclave's boot self-test
+    calls ``GetPublicKey`` with the same federated credentials it decrypts
+    with, so the attested ``principalSet`` needs both roles; granting them
+    together keeps the two bindings from drifting apart. ``public_key_viewers``
+    names any further read-only viewers (the server).
     """
     if not decrypter_members:
         raise ValueError("at least one decrypter member is required")
     for member in decrypter_members:
         if not member.startswith("principalSet://"):
             raise ValueError(f"decrypter must be a WIF principalSet: {member!r}")
+    viewers = set(decrypter_members) | set(public_key_viewers)
     bindings = [
         {"role": DECRYPTER_ROLE, "members": sorted(decrypter_members)},
-        {"role": PUBLIC_KEY_VIEWER_ROLE, "members": sorted(public_key_viewers)},
+        {"role": PUBLIC_KEY_VIEWER_ROLE, "members": sorted(viewers)},
     ]
     return json.dumps({"bindings": bindings}, sort_keys=True)
 

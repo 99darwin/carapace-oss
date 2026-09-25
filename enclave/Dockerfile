@@ -93,6 +93,12 @@ ENV PYTHONPATH=/app/site-packages \
     PYTHONSAFEPATH=1 \
     PYTHONUNBUFFERED=1
 
+# The launcher opens only EXPOSEd ports in the VM's host firewall; nothing
+# else is reachable. 8443 because the non-root user cannot bind below 1024.
+# Keep equal to ENCLAVE_PORT (runtime.py) and INGRESS_PORT (infra; a test
+# checks all three).
+EXPOSE 8443/tcp
+
 USER 65532:65532
 WORKDIR /app
 
