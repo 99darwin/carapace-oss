@@ -15,7 +15,7 @@ from typing import Any
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from carapace_server.canonical import canonical_json
+from carapace_crypto import canonical_json
 
 GENESIS_PREV_HASH = "0" * 64
 

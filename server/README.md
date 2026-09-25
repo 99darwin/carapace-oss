@@ -116,9 +116,19 @@ config and the verifier refuse it outside `dev`.
 | Endpoint | Purpose |
 | --- | --- |
 | `POST /internal/boots` | register `{receipt_pubkey, tls_cert_pem}`; `eat_nonce` must equal `sha256(tls_spki_der ‖ receipt_pubkey)` |
-| `GET /internal/secrets/{id}` | ciphertext envelope |
-| `POST /internal/keys/verify` | `{key_hash, secret_id}` → `{allowed}` |
+| `GET /internal/secrets/{id}` | the full owner-signed envelope (`owner_pk`, `version`, `sig` included) |
+| `POST /internal/keys/verify` | `{key_hash, secret_id}` → `{grant}`, or 404 for an unknown key |
 | `POST /internal/receipts` | append a batch of signed receipts |
+
+`key_hash` is hex of the API key's `lookup_hash`. `keys/verify` returns the
+key's current owner-signed grant for every known key, including revoked
+keys (whose grant is then the tombstone, if the owner sent one), expired
+grants and grants that do not cover `secret_id`, which is only logged.
+There is no `{allowed}` boolean: an answer from the server is not evidence.
+The enclave verifies the grant against the raw key
+(`carapace_crypto.verify_grant`), records it in its per-boot monotonic
+cache, and only then checks scope and version floor
+(`docs/design/owner-signing.md`).
 
 All but the first require a registered boot (403 otherwise) and a request
 signature from its receipt key (401 otherwise). Owners can read boots'
@@ -154,7 +164,21 @@ verify them offline. A receipt belongs to the signed `payload.owner_id`,
 which the enclave reads from the AAD-bound envelope; this stays correct
 after the secret is deleted, or its id re-created by another account. Only
 a receipt without `owner_id` falls back to the current owner of
-`payload.secret_id`. Payloads are capped at 16 KiB of canonical JSON.
+`payload.secret_id`. Payloads are capped at 16 KiB of canonical JSON
+(`carapace_crypto.canonical_json`: no floats, no lone surrogates, integers
+within ±2^53).
+
+Payloads are produced by the enclave and stored verbatim; the server indexes
+only `secret_id` and `owner_id`. Alongside them the enclave records which
+owner-signed objects authorized the request, so `carapace audit verify` can
+show which grant and which version of a secret each request used:
+
+| Field | Meaning |
+| --- | --- |
+| `owner_id`, `secret_id` | from the verified envelope |
+| `owner_fp` | hex `fingerprint(grant.owner_pk)`, the owner key that signed both |
+| `envelope_version` | `version` of the envelope that was decrypted |
+| `grant_iat` | `iat` of the grant that authorized the key |
 
 ## Known limitations
 

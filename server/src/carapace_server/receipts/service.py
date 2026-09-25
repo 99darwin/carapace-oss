@@ -12,6 +12,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from carapace_crypto import b64_decode_strict
 from carapace_server.attestation import Attestation
 from carapace_server.receipts.chain import (
     GENESIS_PREV_HASH,
@@ -22,7 +23,6 @@ from carapace_server.receipts.chain import (
 )
 from carapace_server.receipts.models import EnclaveBoot, Receipt
 from carapace_server.receipts.schemas import BootRegistration, ReceiptIn
-from carapace_server.store.envelope import b64decode_strict
 from carapace_server.store.models import Secret
 
 CURSOR_SEPARATOR = ":"
@@ -57,7 +57,7 @@ async def register_boot(
 
     Returns the boot and whether it was newly created.
     """
-    pubkey = b64decode_strict(registration.receipt_pubkey)
+    pubkey = b64_decode_strict(registration.receipt_pubkey, name="receipt_pubkey")
     boot_id = boot_id_for(_spki_der(registration.tls_cert_pem), pubkey)
     if boot_id not in attestation.nonces:
         raise BootRejectedError("eat_nonce does not bind these keys")
@@ -138,7 +138,7 @@ async def _stage(
         message = signed_bytes(
             receipt.boot_id, receipt.seq, receipt.prev_hash, receipt.payload
         )
-        signature = b64decode_strict(receipt.signature)
+        signature = b64_decode_strict(receipt.signature, name="signature")
         if not is_valid_signature(boot.receipt_pubkey, message, signature):
             raise ReceiptRejectedError(f"bad signature at seq {receipt.seq}")
         digest = receipt_hash(message)

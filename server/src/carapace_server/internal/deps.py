@@ -22,6 +22,7 @@ from typing import Annotated
 from fastapi import Depends, Header, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from carapace_crypto import b64_decode_strict
 from carapace_server.attestation import (
     Attestation,
     AttestationError,
@@ -31,7 +32,6 @@ from carapace_server.db import DbSession
 from carapace_server.receipts.chain import is_valid_signature
 from carapace_server.receipts.models import EnclaveBoot
 from carapace_server.receipts.service import find_boot
-from carapace_server.store.envelope import b64decode_strict
 
 logger = logging.getLogger(__name__)
 _bearer = HTTPBearer(auto_error=False)
@@ -87,7 +87,7 @@ async def _has_valid_request_signature(
     if len(signature) > MAX_SIGNATURE_HEADER_LENGTH:
         return False
     try:
-        raw_signature = b64decode_strict(signature)
+        raw_signature = b64_decode_strict(signature, name="signature")
     except ValueError:
         return False
     message = request_signing_bytes(

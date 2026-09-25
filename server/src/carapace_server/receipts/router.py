@@ -7,12 +7,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, status
 
+from carapace_crypto import b64_encode_std
 from carapace_server.auth.deps import CurrentUser
 from carapace_server.db import DbSession
 from carapace_server.receipts import service
 from carapace_server.receipts.models import EnclaveBoot, Receipt
 from carapace_server.receipts.schemas import BootOut, ReceiptOut, ReceiptPage
-from carapace_server.store.envelope import b64encode
 
 router = APIRouter(prefix="/v1/receipts", tags=["receipts"])
 
@@ -25,7 +25,7 @@ def boot_out(boot: EnclaveBoot) -> BootOut:
     return BootOut(
         boot_id=boot.boot_id,
         attestation_token=boot.attestation_token,
-        receipt_pubkey=b64encode(boot.receipt_pubkey),
+        receipt_pubkey=b64_encode_std(boot.receipt_pubkey),
         tls_cert_pem=boot.tls_cert_pem,
         image_digest=boot.image_digest,
         first_seen=boot.first_seen,
@@ -39,7 +39,7 @@ def receipt_out(receipt: Receipt) -> ReceiptOut:
         prev_hash=receipt.prev_hash,
         hash=receipt.hash,
         payload=receipt.payload,
-        signature=b64encode(receipt.signature),
+        signature=b64_encode_std(receipt.signature),
     )
 
 

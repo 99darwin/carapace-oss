@@ -18,8 +18,9 @@ from cryptography.hazmat.primitives.serialization import (
     PublicFormat,
 )
 from cryptography.x509.oid import NameOID
+from server_support import mint_grant, post_api_key
 
-from carapace_server.apikeys.service import hash_api_key
+from carapace_crypto import Envelope, verify_envelope_signature
 from carapace_server.internal.deps import request_signing_bytes
 from carapace_server.receipts.chain import (
     GENESIS_PREV_HASH,
@@ -307,35 +308,117 @@ async def test_fetch_envelope(client, enclave, alice, new_secret) -> None:
     assert response.status_code == 200
     detail = await client.get(f"/v1/secrets/{secret['id']}", headers=alice.headers)
     assert response.json() == detail.json()["envelope"]
+    # The full owner-signed form, which the enclave verifies itself.
+    envelope = Envelope.from_dict(response.json())
+    verify_envelope_signature(envelope)
+    assert envelope.owner_pk == alice.owner_key.public_key
+    assert envelope.version == 1
 
     missing = await enclave.call(client, "GET", f"/internal/secrets/{uuid.uuid4()}")
     assert missing.status_code == 404
 
 
-async def test_key_verify_enforces_scope(client, enclave, alice, new_secret) -> None:
+async def _verify(client, enclave, key_hash: str, secret_id: str):
+    check = {"key_hash": key_hash, "secret_id": secret_id}
+    return await enclave.call(client, "POST", "/internal/keys/verify", check)
+
+
+async def test_key_verify_returns_grant_regardless_of_scope(
+    client, enclave, alice, new_secret
+) -> None:
+    """The server hands over the signed grant; scope is the enclave's call."""
     await _register(client, enclave)
     in_scope = await new_secret(client, alice, "github")
     out_of_scope = await new_secret(client, alice, "slack")
-    created = await client.post(
-        "/v1/api-keys",
-        json={"name": "agent", "secret_ids": [in_scope["id"]]},
+    api_key, grant = mint_grant(alice, {in_scope["id"]: 1})
+    created = await post_api_key(client, alice, api_key, grant)
+    assert created.status_code == 201
+    lookup = api_key.lookup_hash.hex()
+
+    for secret_id in (in_scope["id"], out_of_scope["id"], str(uuid.uuid4())):
+        response = await _verify(client, enclave, lookup, secret_id)
+        assert response.status_code == 200
+        assert response.json() == {"grant": grant.to_dict()}
+
+
+async def test_key_verify_unknown_key_is_404(client, enclave, alice) -> None:
+    await _register(client, enclave)
+    api_key, _ = mint_grant(alice, {str(uuid.uuid4()): 1})  # never registered
+    for key_hash in ("00" * 32, api_key.lookup_hash.hex()):
+        response = await _verify(client, enclave, key_hash, str(uuid.uuid4()))
+        assert response.status_code == 404
+        assert "grant" not in response.json()
+
+
+async def test_key_verify_never_takes_the_raw_key(
+    client, enclave, alice, new_secret
+) -> None:
+    await _register(client, enclave)
+    secret = await new_secret(client, alice)
+    api_key, grant = mint_grant(alice, {secret["id"]: 1})
+    await post_api_key(client, alice, api_key, grant)
+    raw = await _verify(client, enclave, api_key.raw, secret["id"])
+    assert raw.status_code == 422
+    bind = await _verify(client, enclave, api_key.bind_hash.hex(), secret["id"])
+    assert bind.status_code == 404
+
+
+async def test_key_verify_serves_tombstone_after_revoke(
+    client, enclave, alice, new_secret
+) -> None:
+    """A revoked key's tombstone reaches the enclave's monotonic cache."""
+    await _register(client, enclave)
+    secret = await new_secret(client, alice)
+    api_key, grant = mint_grant(alice, {secret["id"]: 1})
+    created = await post_api_key(client, alice, api_key, grant)
+    _, tombstone = mint_grant(alice, {}, api_key=api_key, previous_iat=grant.iat)
+    revoked = await client.post(
+        f"/v1/api-keys/{created.json()['id']}/revoke",
+        json={"grant": tombstone.to_dict()},
         headers=alice.headers,
     )
-    key_hash = hash_api_key(created.json()["api_key"])
+    assert revoked.status_code == 204
 
-    async def allowed(secret_id: str, digest: str = key_hash) -> bool:
-        check = {"key_hash": digest, "secret_id": secret_id}
-        response = await enclave.call(client, "POST", "/internal/keys/verify", check)
-        assert response.status_code == 200
-        return response.json()["allowed"]
+    response = await _verify(client, enclave, api_key.lookup_hash.hex(), secret["id"])
+    assert response.status_code == 200
+    assert response.json() == {"grant": tombstone.to_dict()}
+    assert response.json()["grant"]["secrets"] == {}
 
-    assert await allowed(in_scope["id"]) is True
-    assert await allowed(out_of_scope["id"]) is False
-    assert await allowed(in_scope["id"], digest="00" * 32) is False
 
-    key_id = created.json()["id"]
-    await client.delete(f"/v1/api-keys/{key_id}", headers=alice.headers)
-    assert await allowed(in_scope["id"]) is False
+async def test_key_verify_serves_narrowed_grant(
+    client, enclave, alice, new_secret
+) -> None:
+    await _register(client, enclave)
+    first = await new_secret(client, alice, "first")
+    second = await new_secret(client, alice, "second")
+    api_key, grant = mint_grant(alice, {first["id"]: 1, second["id"]: 1})
+    created = await post_api_key(client, alice, api_key, grant)
+    _, narrowed = mint_grant(
+        alice, {second["id"]: 1}, api_key=api_key, previous_iat=grant.iat
+    )
+    updated = await client.put(
+        f"/v1/api-keys/{created.json()['id']}/grant",
+        json={"grant": narrowed.to_dict()},
+        headers=alice.headers,
+    )
+    assert updated.status_code == 200
+    response = await _verify(client, enclave, api_key.lookup_hash.hex(), first["id"])
+    assert response.json() == {"grant": narrowed.to_dict()}
+
+
+async def test_key_verify_returns_only_that_keys_grant(
+    client, enclave, alice, bob, new_secret
+) -> None:
+    await _register(client, enclave)
+    alices = await new_secret(client, alice)
+    bobs = await new_secret(client, bob)
+    alice_key, alice_grant = mint_grant(alice, {alices["id"]: 1})
+    bob_key, bob_grant = mint_grant(bob, {bobs["id"]: 1})
+    await post_api_key(client, alice, alice_key, alice_grant)
+    await post_api_key(client, bob, bob_key, bob_grant)
+    response = await _verify(client, enclave, alice_key.lookup_hash.hex(), bobs["id"])
+    assert response.json() == {"grant": alice_grant.to_dict()}
+    assert bob_grant.to_dict()["sig"] not in response.text
 
 
 # -- receipt ingest --------------------------------------------------------------
@@ -505,14 +588,14 @@ async def test_recreated_secret_id_does_not_capture_receipts(
     secret_id = str(uuid.uuid4())
     created = await client.post(
         "/v1/secrets",
-        json={"name": "x", "envelope": envelope_factory(alice.user_id, secret_id)},
+        json={"name": "x", "envelope": envelope_factory(alice, secret_id)},
         headers=alice.headers,
     )
     assert created.status_code == 201
     await client.delete(f"/v1/secrets/{secret_id}", headers=alice.headers)
     squatted = await client.post(
         "/v1/secrets",
-        json={"name": "x", "envelope": envelope_factory(bob.user_id, secret_id)},
+        json={"name": "x", "envelope": envelope_factory(bob, secret_id)},
         headers=bob.headers,
     )
     assert squatted.status_code == 201

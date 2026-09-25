@@ -8,12 +8,11 @@ from typing import Annotated, Any
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-from carapace_server.canonical import canonical_json, reject_floats
+from carapace_crypto import b64_decode_strict, canonical_json
 from carapace_server.receipts.models import (
     ED25519_PUBLIC_KEY_BYTES,
     ED25519_SIGNATURE_BYTES,
 )
-from carapace_server.store.envelope import b64decode_strict
 
 HexHash = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 MAX_RECEIPTS_PER_BATCH = 100
@@ -22,7 +21,7 @@ MAX_PAYLOAD_BYTES = 16 * 1024
 
 
 def _decode_exact(value: str, size: int, what: str) -> bytes:
-    raw = b64decode_strict(value)
+    raw = b64_decode_strict(value, name=what)
     if len(raw) != size:
         raise ValueError(f"{what} must be {size} bytes")
     return raw
@@ -53,11 +52,9 @@ class ReceiptIn(BaseModel):
     @field_validator("payload")
     @classmethod
     def _payload(cls, value: dict[str, Any]) -> dict[str, Any]:
-        reject_floats(value)
-        try:
-            encoded = canonical_json(value)
-        except UnicodeEncodeError:
-            raise ValueError("payload is not valid UTF-8") from None
+        # CanonicalJSONError is a ValueError: floats, lone surrogates,
+        # integers beyond 2**53 and excessive nesting all become a 422.
+        encoded = canonical_json(value)
         if len(encoded) > MAX_PAYLOAD_BYTES:
             raise ValueError(f"payload exceeds {MAX_PAYLOAD_BYTES} bytes")
         return value
@@ -76,6 +73,8 @@ class ReceiptBatch(BaseModel):
 
 
 class KeyCheck(BaseModel):
+    """``key_hash`` is hex of ``ApiKey.lookup_hash``, never of the raw key."""
+
     model_config = ConfigDict(extra="forbid")
 
     key_hash: HexHash
