@@ -17,6 +17,8 @@ from harness import (  # noqa: E402
     DIGEST_A,
     DIGEST_B,
     ENCLAVE_SA_UNIQUE_ID,
+    GET_KEY_VERSION_TOKEN,
+    KMS_PUBLIC_KEY_PEM,
     PROJECT_ID,
     PROJECT_NUMBER,
     STATIC_IP,
@@ -27,6 +29,9 @@ from harness import (  # noqa: E402
 )
 
 KEY_POLICY = "gcp:kms/cryptoKeyIAMPolicy:CryptoKeyIAMPolicy"
+KEY_RING_POLICY = "gcp:kms/keyRingIAMPolicy:KeyRingIAMPolicy"
+# The only authoritative policies the stack may declare; both are parsed.
+AUTHORITATIVE_POLICIES = frozenset({KEY_POLICY, KEY_RING_POLICY})
 PROJECT_IAM = "gcp:projects/iAMMember:IAMMember"
 INSTANCE = "gcp:compute/instance:Instance"
 FIREWALL = "gcp:compute/firewall:Firewall"
@@ -65,16 +70,92 @@ def _key_bindings(mocks: RecordingMocks) -> dict[str, list[str]]:
     return {b["role"]: b["members"] for b in policy["bindings"]}
 
 
-def _iam_grants(mocks: RecordingMocks) -> list[tuple[str, str]]:
-    """Every (role, member) pair declared anywhere in the stack."""
-    grants = [
-        (r.inputs["role"], r.inputs["member"])
-        for r in mocks.resources
-        if "role" in r.inputs and "member" in r.inputs
+def _policy_grants(resource: Recorded) -> list[tuple[str, str]]:
+    policy = json.loads(resource.inputs["policyData"])
+    return [
+        (binding["role"], member)
+        for binding in policy["bindings"]
+        for member in binding["members"]
     ]
-    for role, members in _key_bindings(mocks).items():
-        grants.extend((role, member) for member in members)
+
+
+def _iam_grants(mocks: RecordingMocks) -> list[tuple[str, str]]:
+    """Every (role, member) pair declared anywhere in the stack.
+
+    Fails closed: a grant shape this function cannot enumerate (a plural
+    ``members`` binding, or any authoritative policy other than the two KMS
+    policies) is an error, never silently skipped, so the tests built on it
+    cannot miss a grant.
+    """
+    grants: list[tuple[str, str]] = []
+    for resource in mocks.resources:
+        label = f"{resource.typ} ({resource.name})"
+        lowered = resource.typ.lower()
+        is_policy = "policyData" in resource.inputs or "iampolicy" in lowered
+        if "members" in resource.inputs or "iambinding" in lowered:
+            raise AssertionError(f"plural-members IAM binding: {label}")
+        if is_policy:
+            if resource.typ not in AUTHORITATIVE_POLICIES:
+                raise AssertionError(f"unexpected authoritative IAM policy: {label}")
+            grants.extend(_policy_grants(resource))
+            continue
+        has_role, has_member = "role" in resource.inputs, "member" in resource.inputs
+        if has_role != has_member:
+            raise AssertionError(f"IAM grant without a single member: {label}")
+        if has_role:
+            grants.append((resource.inputs["role"], resource.inputs["member"]))
     return grants
+
+
+def _mocks_with(*resources: Recorded) -> RecordingMocks:
+    mocks = RecordingMocks()
+    mocks.resources.extend(resources)
+    return mocks
+
+
+def test_iam_grants_include_both_authoritative_kms_policies() -> None:
+    policy = json.dumps({"bindings": [{"role": "r", "members": ["a", "b"]}]})
+    mocks = _mocks_with(
+        Recorded(KEY_POLICY, "key", {"policyData": policy}),
+        Recorded(KEY_RING_POLICY, "ring", {"policyData": policy}),
+        Recorded(PROJECT_IAM, "member", {"role": "s", "member": "c"}),
+    )
+    assert sorted(_iam_grants(mocks)) == [
+        ("r", "a"),
+        ("r", "a"),
+        ("r", "b"),
+        ("r", "b"),
+        ("s", "c"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "resource",
+    [
+        Recorded("gcp:kms/cryptoKeyIAMBinding:CryptoKeyIAMBinding", "b", {}),
+        Recorded("gcp:projects/iAMBinding:IAMBinding", "b", {"role": "r"}),
+        Recorded(
+            "gcp:storage/bucketIAMBinding:BucketIAMBinding",
+            "b",
+            {"role": "r", "members": ["x"]},
+        ),
+        Recorded("gcp:example/thing:Thing", "b", {"role": "r", "members": ["x"]}),
+        Recorded(
+            "gcp:projects/iAMPolicy:IAMPolicy", "p", {"policyData": '{"bindings":[]}'}
+        ),
+        Recorded(
+            "gcp:secretmanager/secretIamPolicy:SecretIamPolicy",
+            "p",
+            {"policyData": '{"bindings":[]}'},
+        ),
+        Recorded("gcp:serviceaccount/iAMPolicy:IAMPolicy", "p", {}),
+        Recorded(PROJECT_IAM, "m", {"role": "r"}),
+    ],
+    ids=lambda r: f"{r.typ}:{sorted(r.inputs)}",
+)
+def test_iam_grants_fail_closed_on_unknown_grant_shapes(resource: Recorded) -> None:
+    with pytest.raises(AssertionError, match="IAM"):
+        _iam_grants(_mocks_with(resource))
 
 
 def test_kms_key_is_hsm_asymmetric_decrypt(stack) -> None:
@@ -369,6 +450,35 @@ def test_server_runs_by_digest_and_scales_to_zero(stack) -> None:
     assert envs["CARAPACE_ATTESTATION_SERVICE_ACCOUNT"] == (
         ENCLAVE_MEMBER.removeprefix("serviceAccount:")
     )
+
+
+def test_server_advertises_the_enclaves_kms_key(stack) -> None:
+    """``carapace verify`` compares /v1/kms/public-key with the key the
+    attested enclave reports, so the server must name the same version."""
+    mocks, outputs = stack
+    envs = _server_env(mocks)
+    metadata = mocks.one(INSTANCE).inputs["metadata"]
+    key_version = metadata["tee-env-KMS_KEY_NAME"]
+    assert envs["CARAPACE_KMS_KEY_VERSION"] == key_version
+    assert key_version == outputs["kms_key_version_name"]
+    assert key_version == (
+        f"{KEY_RING_ID}/cryptoKeys/cptest-secrets/cryptoKeyVersions/1"
+    )
+    assert envs["CARAPACE_KMS_PUBLIC_KEY_PEM"] == KMS_PUBLIC_KEY_PEM
+    (lookup,) = [c for c in mocks.calls if c.token == GET_KEY_VERSION_TOKEN]
+    assert lookup.args == {
+        "cryptoKey": outputs["kms_key_name"],
+        "version": 1,
+    }
+
+
+def test_bootstrap_does_not_read_the_kms_public_key() -> None:
+    mocks, _ = run_stack(
+        make_config(
+            deploy_workloads=False, enclave_image_digest="", server_image_digest=""
+        )
+    )
+    assert not [c for c in mocks.calls if c.token == GET_KEY_VERSION_TOKEN]
 
 
 def _pins_control_plane(condition: str, url: str) -> bool:

@@ -105,10 +105,15 @@ The server reads `CARAPACE_*` variables and silently ignores anything else, so
 | `CARAPACE_ALLOWED_IMAGE_DIGESTS` | `allowed_digests`, comma-separated |
 | `CARAPACE_ATTESTATION_PROJECT_ID` | `gcp:project` |
 | `CARAPACE_ATTESTATION_SERVICE_ACCOUNT` | the enclave service account |
+| `CARAPACE_KMS_PUBLIC_KEY_PEM` | public key of the KMS key version, read at deploy time (`gcp.kms.get_kms_crypto_key_version`) |
+| `CARAPACE_KMS_KEY_VERSION` | `kms_key_version_name`, the same `.../cryptoKeyVersions/1` name the enclave gets as `KMS_KEY_NAME` |
 | `CARAPACE_DATABASE_URL` | Secret Manager `<prefix>-database-url` (`postgresql+asyncpg` over the `/cloudsql` socket, generated password) |
 | `CARAPACE_JWT_SECRET` | Secret Manager `<prefix>-jwt-secret` (64 random characters) |
 
-Secret values are referenced by Cloud Run and never appear in plain env or
+The two KMS values are public and set as plain env; without them
+`carapace verify` fails against the deployment. Reading the public key
+needs `cloudkms.cryptoKeyVersions.viewPublicKey` for whoever runs
+`pulumi up` (a project owner has it). Secret values are referenced by Cloud Run and never appear in plain env or
 stack outputs. They are in Pulumi state, encrypted as Pulumi secrets.
 
 No `serviceAccountUser`, `workloadIdentityUser` or `serviceAccountTokenCreator`

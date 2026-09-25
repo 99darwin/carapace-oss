@@ -28,7 +28,9 @@ The default mode is `prod`, which refuses to start unless these are set:
 | `CARAPACE_ATTESTATION_SERVICE_ACCOUNT` | the enclave VMs' service account |
 
 Optional, set together: `CARAPACE_KMS_PUBLIC_KEY_PEM` (RSA 3072-8192 SPKI
-PEM) and `CARAPACE_KMS_KEY_VERSION`. They are served at
+PEM) and `CARAPACE_KMS_KEY_VERSION` (the full
+`projects/*/locations/*/keyRings/*/cryptoKeys/*/cryptoKeyVersions/N` name the
+enclave reports; anything else is refused at startup). They are served at
 `GET /v1/kms/public-key` for the CLI, which seals only if they equal the
 KMS key the attested enclave reports. Without them `carapace verify` fails.
 
