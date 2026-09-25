@@ -221,9 +221,10 @@ and exits non-zero on failure.
   authorization (bad or revoked key, rate limited, malformed, store errors)
   are not recorded. See
   [THREAT_MODEL.md, R6](THREAT_MODEL.md#r6-refused-requests-leave-no-receipt).
-- **Not fully offline.** `audit verify` needs a logged-in session and a pin
-  (`enclave.json`) even with `--file`, and it fetches Google's JWKS to check
-  boot tokens. Tokens signed with a key Google has since rotated out are
+- **Not fully offline.** `audit verify` needs a logged-in session, a pin
+  (`enclave.json`) and the owner key (it prompts for the passphrase, to
+  derive the fingerprint it checks receipts against) even with `--file`,
+  and it fetches Google's JWKS to check boot tokens. Tokens signed with a key Google has since rotated out are
   expected to fail verification; this has not been observed yet.
 - **Allowlist.** Boots are checked against the digests in your current pin.
   After an image rollout, run `carapace verify` with both the old and new

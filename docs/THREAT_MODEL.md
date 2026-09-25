@@ -118,7 +118,7 @@ Each guarantee below assumes the TCB is intact.
 | G8 | Every authorized use leaves a signed, hash-chained receipt that the server cannot forge or reorder undetected. | Per-boot Ed25519 receipt key bound into the attestation nonce; receipts chain by `prev_hash`; `carapace audit verify` checks each boot's token, signatures, chain links and `owner_fp`. The enclave stops serving if it cannot hand receipts to the server (fails closed at a 1 000-receipt backlog or on a 409/422). |
 | G9 | A malicious server's replay of old owner-signed objects is bounded in time. | Grant expiry (default 30 days, max 90), per-secret version floors in grants, and a best-effort per-boot monotonic cache. See [design/owner-signing.md](design/owner-signing.md#freshness-rollback-and-revocation). |
 | G10 | The VM host cannot roll the enclave's clock back to revive an expired grant. | `now = max(VM clock, iat of the latest attestation token)`, monotonic within a boot; tokens refresh every 15 minutes and gate KMS access, so an enclave cut off from refresh loses KMS within about an hour. |
-| G11 | No shell or ambient authority inside the enclave. | Distroless image, no shell, UID 65532, read-only root; launch policy refuses command overrides and allows only the `CONTROL_PLANE_URL`, `KMS_KEY_NAME` and `WIF_AUDIENCE` env overrides. |
+| G11 | No shell or ambient authority inside the enclave. | Distroless image, no shell, UID 65532; launch policy refuses command overrides and allows only the `CONTROL_PLANE_URL`, `KMS_KEY_NAME` and `WIF_AUDIENCE` env overrides. The image is built so nothing needs to write to its filesystem (no bytecode, no temp files), but the Confidential Space launcher does **not** mount the root filesystem read-only and nothing in the stack enforces it; not writing to disk is a property of the enclave code, not a mount option. |
 | G12 | Tampering with who can decrypt is visible. | Cloud Audit Logs plus a log-based alert (`infra/pulumi/components/monitoring.py`). See R1. |
 
 ## Residual risks
@@ -130,10 +130,14 @@ reports unless you show they are worse than stated.
 
 The KMS key's IAM policy is authoritative, so `pulumi up` removes any extra
 binding on the key. It does **not** remove roles inherited from the project,
-folder or organization. A project Owner can also add a decrypt binding,
-loosen the WIF condition, add an image digest, or create a new key version.
-Each of those is an Admin Activity audit log entry, which cannot be turned
-off.
+folder or organization: the basic Owner and Editor roles carry Cloud KMS
+decrypt permission, so a principal holding either can call
+`AsymmetricDecrypt` directly, without touching any IAM policy and without an
+attested enclave. That call is a Data Access log entry and matches the
+alert's foreign-decrypt clause (below). A project Owner can also add a
+decrypt binding, loosen the WIF condition, add an image digest, or create a
+new key version. Each of those is an Admin Activity audit log entry, which
+cannot be turned off.
 
 Detection, not prevention: when `enable_iam_alerts` is on (the default), a
 log-based alert emails `alert_emails` on KMS `SetIamPolicy`,
@@ -205,10 +209,12 @@ See [VERIFY.md](VERIFY.md).
 
 Receipts are written only once a request has been authorized and its
 envelope verified, for the outcomes `ok`, `denied` (blocked by the egress
-policy) and `error`. The enclave writes **no** receipt for authentication or
-authorization refusals (401/403), malformed requests (400), rate limiting
-(429), control-plane store errors (502), or when it cannot record receipts
-(503). Failed attempts with a stolen or revoked key, and probing, therefore
+policy) and `error` (upstream failure). The enclave writes **no** receipt
+for an unknown or revoked key (401 `invalid_api_key`), a key whose grant
+does not cover the secret (403 `forbidden`, as opposed to 403
+`egress_denied`, which is receipted as `denied`), malformed requests (400),
+oversized bodies (413), rate limiting (429), control-plane store errors
+(502), or when receipts or attestation are unavailable (503). Failed attempts with a stolen or revoked key, and probing, therefore
 do not appear in `carapace audit verify`. They appear only in the enclave's
 container logs (Cloud Logging in the deploying project), which are not
 signed.
@@ -233,9 +239,10 @@ connections). It is a denial-of-service surface.
 
 The enclave is written in Python. DEKs and plaintext pass through immutable
 `bytes` objects and library buffers (the TLS stack, `httpx`, JSON parsing),
-and the enclave cannot zero them. It keeps secrets in memory only (no disk
-writes, read-only root filesystem), caches DEKs for at most 60 s, and zeroes
-the mutable buffers it controls (`secure_memory.py`), but copies may remain in freed heap memory until
+and the enclave cannot zero them. It keeps secrets in memory only (the code
+never writes to disk; the root filesystem is writable, see G11), caches DEKs
+for at most 60 s, and zeroes the mutable buffers it controls
+(`secure_memory.py`), but copies may remain in freed heap memory until
 reused. SEV encrypts guest memory against the host; this matters only if
 enclave code is compromised.
 
@@ -270,9 +277,10 @@ the owner seed. The passphrase on `owner-key.json` is optional
 
 ### R13. Offline audit is not fully offline
 
-`carapace audit verify` needs a logged-in session, even with `--file`, and
-fetches Google's JWKS over the network to check each boot's attestation
-token. Checking a token after Google has rotated the signing key out of
+`carapace audit verify` needs a logged-in session and the owner key (it
+prompts for the passphrase, to derive the fingerprint receipts are checked
+against), even with `--file`, and fetches Google's JWKS over the network to
+check each boot's attestation token. Checking a token after Google has rotated the signing key out of
 its JWKS is expected to fail (not yet observed).
 
 ### R14. Shared enclave between tenants

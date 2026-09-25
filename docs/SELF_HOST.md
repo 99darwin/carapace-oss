@@ -25,7 +25,14 @@ anyone you give access to the project).
   Space image with the enclave container, a static external IP, and a
   firewall rule for `tcp:8443` only.
 - A Cloud Run service for the server, a Cloud SQL Postgres instance, and
-  two Secret Manager secrets (database URL, JWT secret).
+  two Secret Manager secrets (database URL, JWT secret). **The database
+  instance has a public IPv4 address.** It has no authorized networks and
+  requires TLS (`ssl_mode = ENCRYPTED_ONLY`), so only Cloud SQL connector
+  clients holding `roles/cloudsql.client` (the Cloud Run service, and you
+  through the Cloud SQL Auth Proxy) can open a connection, but the
+  instance is reachable from the internet and is not in a private VPC. The
+  server is outside the trusted computing base; the database holds only
+  ciphertext, hashes, signed objects and receipts.
 - An Artifact Registry repository for your images.
 - Data Access audit logs for KMS, and a log-based alert on changes to who
   can decrypt (see [THREAT_MODEL.md, R1](THREAT_MODEL.md#r1-a-gcp-project-owner-or-editor-can-decrypt)).
@@ -249,9 +256,18 @@ pulumi destroy
 Things to know:
 
 - **KMS key rings and keys cannot be deleted.** `pulumi destroy` schedules
-  the key version for destruction (Google applies a waiting period before
-  it is destroyed) and leaves the key ring name taken. Every secret sealed
-  to that key becomes unrecoverable once the version is destroyed.
+  the key version for destruction (Google applies a waiting period, 30 days
+  by default, before it is destroyed) and leaves the key ring name taken.
+  Every secret sealed to that key becomes unrecoverable only once the
+  version is actually destroyed. **During the waiting period anyone with
+  `cloudkms.cryptoKeyVersions.restore` on the project (an Owner, or a KMS
+  admin) can restore the version and grant themselves decrypt**, and by
+  then `pulumi destroy` has already removed the audit-log configuration
+  and the alert that would have flagged it. Treat every envelope stored in
+  the database or its backups as decryptable by a project Owner until the
+  version is destroyed. If the secrets matter, rotate the credentials they
+  hold at their providers before tearing down, or delete the whole project
+  (which also destroys its key versions after the same waiting period).
 - The KMS key and database have deletion protection on by default
   (`protect_kms_key`, `db_deletion_protection`). Turn them off first if you
   really want them removed.
