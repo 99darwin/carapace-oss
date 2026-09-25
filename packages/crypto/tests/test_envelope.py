@@ -290,6 +290,26 @@ class TestSubstitution:
         with pytest.raises(EnvelopeError):
             _open(_sealed(), min_version=bad)
 
+    def test_seedless_envelope_under_small_order_owner_pk_is_rejected(
+        self,
+    ) -> None:
+        # For the identity point, R = identity and S = 0 verifies over any
+        # message, so without key validation anyone could "sign" this.
+        identity = (1).to_bytes(32, "little")
+        universal_sig = identity + bytes(32)
+        forged = dataclasses.replace(_sealed(), owner_pk=identity, sig=universal_sig)
+        assert KeyPair.verify(
+            identity,
+            universal_sig,
+            signing_input(ENVELOPE_CONTEXT, forged.signed_body()),
+        )
+        with pytest.raises(EnvelopeError, match="small-order"):
+            Envelope.from_dict(forged.to_dict())
+        unwrap = _CountingUnwrapper()
+        with pytest.raises(EnvelopeError, match="small-order"):
+            _open(forged, unwrap, expected_owner_pk=identity)
+        assert unwrap.calls == 0
+
 
 class TestTampering:
     """Every stored field is signed and every header field is AAD."""

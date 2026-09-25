@@ -70,7 +70,7 @@ class ApiKey:
         """
         if not isinstance(raw, str) or len(raw) != KEY_LENGTH:
             raise ApiKeyError("malformed API key")
-        match = _KEY_RE.match(raw)
+        match = _KEY_RE.fullmatch(raw)
         if match is None:
             raise ApiKeyError("malformed API key")
         return cls(raw=raw, fingerprint=bytes.fromhex(match["fp"]))

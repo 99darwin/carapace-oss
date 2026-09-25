@@ -20,7 +20,14 @@ newline.
 
 The fingerprint is the first 16 bytes of a tagged SHA-256 of the raw public
 key. 128 bits is enough because an attacker needs a *second preimage* (a key
-of their own with the victim's fingerprint), not a collision.
+of their own with the victim's fingerprint), not a collision. Against many
+targets at once the work is ``2**128 / targets``, still out of reach for any
+plausible user count, and a matching fingerprint alone authorizes nothing:
+the grant must also bind the raw key's ``bind_hash``.
+
+Public keys must pass :func:`validate_public_key`, which rejects the
+small-order points that OpenSSL would otherwise accept with a signature
+valid for every message.
 
 Storage of the seed is a CLI concern. The interface is :attr:`OwnerKey.seed`
 and :meth:`OwnerKey.from_seed`; the CLI should keep the seed in a file with
@@ -52,14 +59,18 @@ def fingerprint(public_key: bytes) -> bytes:
     """Return the 16-byte fingerprint of a raw Ed25519 public key.
 
     Raises:
-        SignatureError: If ``public_key`` is not 32 bytes.
+        SignatureError: If ``public_key`` fails :func:`validate_public_key`.
     """
     _require_public_key(public_key)
     return tagged_sha256(FINGERPRINT_TAG, public_key)[:FINGERPRINT_SIZE]
 
 
 def fingerprints_match(public_key: bytes, expected: bytes) -> bool:
-    """Constant-time check that ``public_key`` has fingerprint ``expected``."""
+    """Constant-time check that ``public_key`` has fingerprint ``expected``.
+
+    Raises:
+        SignatureError: If ``public_key`` fails :func:`validate_public_key`.
+    """
     return hmac.compare_digest(fingerprint(public_key), expected)
 
 
@@ -137,6 +148,52 @@ class OwnerKey:
         return f"OwnerKey(fingerprint={self.fingerprint.hex()})"
 
 
-def _require_public_key(public_key: bytes) -> None:
+def validate_public_key(public_key: bytes) -> None:
+    """Reject anything that is not a usable owner public key.
+
+    Beyond the length, this rejects the encodings of the eight small-order
+    points of edwards25519 (in either sign and, for ``y`` in ``{0, 1}``, the
+    non-canonical aliases ``p`` and ``p + 1``) and every other non-canonical
+    ``y >= p``. OpenSSL's Ed25519 verification accepts a small-order public
+    key, and for such a key the signature ``R = identity, S = 0`` verifies
+    over *any* message. No seed exists for these keys, so a grant or envelope
+    naming one would be forgeable by anyone. Honestly generated keys never
+    hit this check.
+
+    Raises:
+        SignatureError: If the key has the wrong type or length, is not
+            canonically encoded, or is a small-order point.
+    """
     if not isinstance(public_key, bytes) or len(public_key) != PUBLIC_KEY_SIZE:
         raise SignatureError("public key must be 32 bytes")
+    y = int.from_bytes(public_key, "little") & _Y_MASK
+    if y in _SMALL_ORDER_Y:
+        raise SignatureError("public key is a small-order point")
+    if y >= _FIELD_PRIME:
+        raise SignatureError("public key is not canonically encoded")
+
+
+# The y-coordinates (sign bit cleared) of every encoding of a small-order
+# point on edwards25519: order 1 (y = 1, alias p + 1), order 2 (y = p - 1),
+# order 4 (y = 0, alias p) and order 8 (y = +/- _Y_ORDER_8). Same set as
+# libsodium's ``ge25519_has_small_order`` blocklist.
+_FIELD_PRIME = 2**255 - 19
+_Y_MASK = (1 << 255) - 1
+_Y_ORDER_8 = (
+    2707385501144840649318225287225658788936804267575313519463743609750303402022
+)
+_SMALL_ORDER_Y = frozenset(
+    {
+        0,
+        1,
+        _Y_ORDER_8,
+        _FIELD_PRIME - _Y_ORDER_8,
+        _FIELD_PRIME - 1,
+        _FIELD_PRIME,
+        _FIELD_PRIME + 1,
+    }
+)
+
+
+def _require_public_key(public_key: bytes) -> None:
+    validate_public_key(public_key)

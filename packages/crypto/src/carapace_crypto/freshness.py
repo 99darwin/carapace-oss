@@ -26,6 +26,7 @@ the real objects.
 
 from __future__ import annotations
 
+import threading
 from collections import OrderedDict
 from collections.abc import Hashable
 
@@ -42,7 +43,7 @@ class StaleError(ValueError):
 class MonotonicCache:
     """Highest value seen per ``(owner, namespace, key)``, bounded per owner."""
 
-    __slots__ = ("_max_entries_per_owner", "_max_owners", "_owners")
+    __slots__ = ("_lock", "_max_entries_per_owner", "_max_owners", "_owners")
 
     def __init__(
         self,
@@ -55,6 +56,7 @@ class MonotonicCache:
         self._owners: OrderedDict[bytes, _Bucket] = OrderedDict()
         self._max_owners = max_owners
         self._max_entries_per_owner = max_entries_per_owner
+        self._lock = threading.Lock()
 
     def observe(self, owner: bytes, namespace: str, key: Hashable, value: int) -> None:
         """Record ``value`` for ``key`` under ``owner``, refusing anything lower.
@@ -63,21 +65,27 @@ class MonotonicCache:
 
         Raises:
             StaleError: If a higher value was already recorded this boot.
+            TypeError: If ``value`` is not an ``int`` (``bool`` included); a
+                NaN would compare false both ways and disable the slot.
         """
-        bucket = self._owners.get(owner)
-        if bucket is None:
-            bucket = self._owners[owner] = OrderedDict()
-        self._owners.move_to_end(owner)
-        slot = (namespace, key)
-        seen = bucket.get(slot)
-        if seen is not None and value < seen:
-            raise StaleError(f"{namespace} rolled back from {seen} to {value}")
-        bucket[slot] = value if seen is None else max(seen, value)
-        bucket.move_to_end(slot)
-        while len(bucket) > self._max_entries_per_owner:
-            bucket.popitem(last=False)
-        while len(self._owners) > self._max_owners:
-            self._owners.popitem(last=False)
+        if type(value) is not int:
+            raise TypeError("value must be an int")
+        with self._lock:
+            bucket = self._owners.get(owner)
+            if bucket is None:
+                bucket = self._owners[owner] = OrderedDict()
+            self._owners.move_to_end(owner)
+            slot = (namespace, key)
+            seen = bucket.get(slot)
+            if seen is not None and value < seen:
+                raise StaleError(f"{namespace} rolled back from {seen} to {value}")
+            bucket[slot] = value if seen is None else max(seen, value)
+            bucket.move_to_end(slot)
+            while len(bucket) > self._max_entries_per_owner:
+                bucket.popitem(last=False)
+            while len(self._owners) > self._max_owners:
+                self._owners.popitem(last=False)
 
     def __len__(self) -> int:
-        return sum(len(bucket) for bucket in self._owners.values())
+        with self._lock:
+            return sum(len(bucket) for bucket in self._owners.values())

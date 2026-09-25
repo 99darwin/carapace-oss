@@ -48,7 +48,12 @@ from carapace_crypto.grant import (
     verify_grant,
 )
 from carapace_crypto.hashing import hmac_sha256, sha256, sha256_hex, tagged_sha256
-from carapace_crypto.ownerkey import OwnerKey, SignatureError, fingerprint
+from carapace_crypto.ownerkey import (
+    OwnerKey,
+    SignatureError,
+    fingerprint,
+    validate_public_key,
+)
 from carapace_crypto.signing import KeyPair, PublicKey, Signature
 from carapace_crypto.symmetric import decrypt_aes_gcm, encrypt_aes_gcm
 
@@ -94,6 +99,7 @@ __all__ = [
     "sha256",
     "sha256_hex",
     "tagged_sha256",
+    "validate_public_key",
     "verify_envelope_signature",
     "verify_grant",
 ]

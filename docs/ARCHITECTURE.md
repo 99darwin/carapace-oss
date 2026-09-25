@@ -165,8 +165,9 @@ These will be documented in full in `THREAT_MODEL.md`:
   before expiry means rotating the credential at its provider. They cannot
   substitute secrets, edit policies, or authorize keys.
 - The enclave's clock comes from `max(VM clock, attestation token iat)` and
-  never decreases within a boot; the VM operator can delay the enclave's
-  view of time by at most the token refresh interval.
+  never decreases within a boot. The VM operator cannot turn it back, and
+  can hold it still only until the attestation token that gates KMS access
+  expires (about an hour), after which the enclave can unwrap nothing.
 - The owner's device holds the owner signing key and is in the TCB, as it
   already is for plaintext at sealing time.
 - Google's hardware, the Confidential Space launcher, and the KMS HSMs are in

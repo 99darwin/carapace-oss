@@ -48,6 +48,7 @@ from carapace_crypto.ownerkey import (
     OwnerKey,
     SignatureError,
     fingerprints_match,
+    validate_public_key,
     verify_object,
 )
 
@@ -133,7 +134,7 @@ class Grant:
         if data.get("v") != GRANT_VERSION or type(data.get("v")) is not int:
             raise GrantError(f"unsupported grant version: {data.get('v')!r}")
         grant = cls(
-            owner_pk=_b64d(data.get("owner_pk"), "owner_pk", PUBLIC_KEY_SIZE),
+            owner_pk=_owner_pk(data.get("owner_pk")),
             key_bind=_b64d(data.get("key_bind"), "key_bind", HASH_SIZE),
             secrets=_require_secrets(data.get("secrets")),
             iat=_require_time(data.get("iat"), "iat"),
@@ -199,7 +200,12 @@ def verify_grant(grant: Grant, api_key: ApiKey, *, now: int) -> Grant:
         GrantExpiredError: Outside ``[iat - skew, exp)``.
     """
     now = _require_time(now, "now")
-    if not fingerprints_match(grant.owner_pk, api_key.fingerprint):
+    try:
+        owner_matches = fingerprints_match(grant.owner_pk, api_key.fingerprint)
+    except SignatureError as exc:
+        # A small-order or malformed key on a directly constructed Grant.
+        raise GrantKeyMismatchError(f"grant owner key is invalid: {exc}") from exc
+    if not owner_matches:
         raise GrantKeyMismatchError("grant owner key does not match the API key")
     try:
         verify_object(grant.owner_pk, GRANT_CONTEXT, grant.signed_body(), grant.sig)
@@ -249,6 +255,15 @@ def _b64d(value: Any, name: str, size: int) -> bytes:
     if len(data) != size:
         raise GrantError(f"{name} must be {size} bytes")
     return data
+
+
+def _owner_pk(value: Any) -> bytes:
+    owner_pk = _b64d(value, "owner_pk", PUBLIC_KEY_SIZE)
+    try:
+        validate_public_key(owner_pk)
+    except SignatureError as exc:
+        raise GrantError(f"owner_pk: {exc}") from exc
+    return owner_pk
 
 
 def _fields(grant: Grant) -> dict[str, Any]:

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import threading
+from collections import OrderedDict
 from typing import Any
 
 import pytest
 
+from carapace_crypto import freshness
 from carapace_crypto.freshness import MonotonicCache, StaleError
 
 OWNER = b"\x01" * 16
@@ -77,3 +80,50 @@ class TestEviction:
     def test_rejects_non_positive_bounds(self, bounds: dict[str, Any]) -> None:
         with pytest.raises(ValueError):
             MonotonicCache(**bounds)
+
+
+class TestConcurrency:
+    def test_interleaved_observers_cannot_lower_a_recorded_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Force the classic lost update: the "low" observer reads the slot,
+        # pauses, and the "high" observer writes 10 in the meantime. Without
+        # the lock "low" then overwrites 10 with 5 and a rollback to 9 passes.
+        low_has_read = threading.Event()
+        high_done = threading.Event()
+
+        class PausingDict(OrderedDict):  # type: ignore[type-arg]
+            def get(self, key: Any, default: Any = None) -> Any:
+                result = super().get(key, default)
+                if isinstance(key, tuple) and threading.current_thread().name == "low":
+                    low_has_read.set()
+                    high_done.wait(timeout=0.5)
+                return result
+
+        monkeypatch.setattr(freshness, "OrderedDict", PausingDict)
+        cache = MonotonicCache()
+
+        def observe_high() -> None:
+            cache.observe(OWNER, "envelope", "s", 10)
+            high_done.set()
+
+        low = threading.Thread(
+            target=cache.observe, args=(OWNER, "envelope", "s", 5), name="low"
+        )
+        high = threading.Thread(target=observe_high, name="high")
+        low.start()
+        assert low_has_read.wait(timeout=5)
+        high.start()
+        low.join(timeout=5)
+        high.join(timeout=5)
+        with pytest.raises(StaleError):
+            cache.observe(OWNER, "envelope", "s", 9)
+
+
+class TestValueType:
+    @pytest.mark.parametrize("value", [float("nan"), 1.5, True, "5", None])
+    def test_non_int_values_are_refused(self, value: Any) -> None:
+        cache = MonotonicCache()
+        with pytest.raises(TypeError):
+            cache.observe(OWNER, "grant", "k", value)
+        assert len(cache) == 0

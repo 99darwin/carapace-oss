@@ -14,8 +14,10 @@ from carapace_crypto.ownerkey import (
     fingerprint,
     fingerprints_match,
     signing_input,
+    validate_public_key,
     verify_object,
 )
+from carapace_crypto.signing import KeyPair
 
 OWNER = OwnerKey.from_seed(bytes(range(32)))
 OTHER = OwnerKey.from_seed(bytes(range(32, 64)))
@@ -110,3 +112,47 @@ class TestSignatures:
     def test_rejects_uncanonicalizable_body(self) -> None:
         with pytest.raises(SignatureError):
             OWNER.sign_object(CONTEXT, {"f": 1.5})
+
+
+_P = 2**255 - 19
+_Y8 = 2707385501144840649318225287225658788936804267575313519463743609750303402022
+# Every encoding of a small-order point, both signs of x.
+_SMALL_ORDER_Y = [0, 1, _Y8, _P - _Y8, _P - 1, _P, _P + 1]
+SMALL_ORDER_KEYS = [
+    (y | sign).to_bytes(32, "little") for y in _SMALL_ORDER_Y for sign in (0, 1 << 255)
+]
+IDENTITY_PK = (1).to_bytes(32, "little")
+# R = identity, S = 0: satisfies [S]B == R + [k]A for any message when A is
+# the identity, because [k]A is the identity too.
+UNIVERSAL_SIG = IDENTITY_PK + bytes(32)
+
+
+class TestWeakPublicKeys:
+    def test_openssl_alone_accepts_a_universal_signature(self) -> None:
+        # Why validate_public_key exists: without it, anyone could "sign"
+        # any object for this key. Guards against a library change too.
+        message = signing_input(CONTEXT, BODY)
+        assert KeyPair.verify(IDENTITY_PK, UNIVERSAL_SIG, message)
+
+    @pytest.mark.parametrize("public_key", SMALL_ORDER_KEYS)
+    def test_small_order_keys_are_rejected(self, public_key: bytes) -> None:
+        with pytest.raises(SignatureError, match="small-order"):
+            validate_public_key(public_key)
+        with pytest.raises(SignatureError):
+            fingerprint(public_key)
+        with pytest.raises(SignatureError):
+            verify_object(public_key, CONTEXT, BODY, UNIVERSAL_SIG)
+
+    @pytest.mark.parametrize("y", [_P + 2, _P + 18, 2**255 - 1])
+    def test_non_canonical_encodings_are_rejected(self, y: int) -> None:
+        with pytest.raises(SignatureError, match="canonical"):
+            validate_public_key(y.to_bytes(32, "little"))
+
+    def test_generated_keys_are_accepted(self) -> None:
+        for _ in range(200):
+            validate_public_key(OwnerKey.generate().public_key)
+
+    @pytest.mark.parametrize("value", [b"", b"\x00" * 31, "a" * 32, None])
+    def test_wrong_type_or_length_is_rejected(self, value: object) -> None:
+        with pytest.raises(SignatureError, match="32 bytes"):
+            validate_public_key(value)  # type: ignore[arg-type]

@@ -29,7 +29,8 @@ from carapace_crypto.grant import (
     create_grant,
     verify_grant,
 )
-from carapace_crypto.ownerkey import OwnerKey, signing_input
+from carapace_crypto.hashing import tagged_sha256
+from carapace_crypto.ownerkey import FINGERPRINT_TAG, OwnerKey, signing_input
 from carapace_crypto.signing import KeyPair
 
 VECTORS = json.loads((Path(__file__).parent / "vectors" / "grant_v1.json").read_text())
@@ -384,3 +385,47 @@ class TestVectors:
             "duplicate-json-key",
         }
         assert required <= names
+
+
+class TestSeedlessForgery:
+    """A small-order owner_pk would let anyone sign a grant without a seed."""
+
+    IDENTITY_PK = (1).to_bytes(32, "little")
+    UNIVERSAL_SIG = IDENTITY_PK + bytes(32)
+
+    def _weak_key_and_body(self) -> tuple[ApiKey, dict[str, Any]]:
+        fp = tagged_sha256(FINGERPRINT_TAG, self.IDENTITY_PK)[:16]
+        key = ApiKey.parse(f"cpk_{fp.hex()}_{'ab' * 32}")
+        body = {
+            "v": 1,
+            "owner_pk": base64.b64encode(self.IDENTITY_PK).decode(),
+            "key_bind": base64.b64encode(key.bind_hash).decode(),
+            "secrets": {"victim-secret": 1},
+            "iat": NOW,
+            "exp": NOW + DEFAULT_GRANT_TTL_SECONDS,
+        }
+        return key, body
+
+    def test_universal_signature_really_verifies_at_the_primitive(self) -> None:
+        _, body = self._weak_key_and_body()
+        message = signing_input(GRANT_CONTEXT, body)
+        assert KeyPair.verify(self.IDENTITY_PK, self.UNIVERSAL_SIG, message)
+
+    def test_parser_rejects_small_order_owner_pk(self) -> None:
+        _, body = self._weak_key_and_body()
+        wire = {**body, "sig": base64.b64encode(self.UNIVERSAL_SIG).decode()}
+        with pytest.raises(GrantError, match="small-order"):
+            Grant.from_dict(wire)
+
+    def test_verify_rejects_directly_constructed_weak_grant(self) -> None:
+        key, _ = self._weak_key_and_body()
+        grant = Grant(
+            owner_pk=self.IDENTITY_PK,
+            key_bind=key.bind_hash,
+            secrets={"victim-secret": 1},
+            iat=NOW,
+            exp=NOW + DEFAULT_GRANT_TTL_SECONDS,
+            sig=self.UNIVERSAL_SIG,
+        )
+        with pytest.raises(GrantKeyMismatchError, match="invalid"):
+            verify_grant(grant, key, now=NOW)

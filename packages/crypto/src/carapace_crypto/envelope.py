@@ -67,6 +67,7 @@ from carapace_crypto.ownerkey import (
     SIGNATURE_SIZE,
     OwnerKey,
     SignatureError,
+    validate_public_key,
     verify_object,
 )
 
@@ -466,6 +467,10 @@ def rsa_oaep_unwrapper(private_key: rsa.RSAPrivateKey) -> DekUnwrapper:
 def _check_sizes(envelope: Envelope) -> None:
     if len(envelope.owner_pk) != PUBLIC_KEY_SIZE:
         raise EnvelopeError("owner_pk must be 32 bytes")
+    try:
+        validate_public_key(envelope.owner_pk)
+    except SignatureError as exc:
+        raise EnvelopeError(f"owner_pk: {exc}") from exc
     if len(envelope.sig) != SIGNATURE_SIZE:
         raise EnvelopeError("sig must be 64 bytes")
     if len(envelope.nonce) != NONCE_SIZE:

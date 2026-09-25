@@ -84,6 +84,13 @@ parsers reject non-canonical encodings and duplicate JSON keys.
 ### Owner key
 
 - Ed25519. 32-byte seed, 32-byte public key `owner_pk`.
+- Every `owner_pk` is checked with `validate_public_key` wherever it is
+  parsed, fingerprinted or verified against: small-order points and
+  non-canonical encodings (`y >= p`) are rejected. OpenSSL accepts a
+  small-order public key, and for one of those `R = identity, S = 0`
+  verifies over any message, so a grant or envelope naming such a key could
+  be "signed" by anyone. Generated keys never hit the check. The server must
+  run it when registering an owner key (calling `fingerprint` does).
 - `fingerprint = tagged_sha256("carapace-owner-fp-v1", owner_pk)[:16]`.
 - Signing input for every object: `context || 0x0A || canonical_json(body)`.
   `context` never contains a newline; canonical JSON escapes newlines, so the
@@ -97,9 +104,12 @@ lookup_hash = tagged_sha256("carapace-key-lookup-v1", key_ascii)   # server stor
 bind_hash   = tagged_sha256("carapace-key-bind-v1",   key_ascii)   # grant binds
 ```
 
-The server stores only `lookup_hash`. The grant binds `bind_hash`. Neither
-is derivable from the other, so a database dump contains nothing a grant
-binds to, and the server cannot forge a key that any grant names.
+The server indexes keys by `lookup_hash`; the grant it stores carries
+`bind_hash`. So a database dump holds both hashes, but neither yields the
+other or the raw key: the random part is 256 bits from a CSPRNG, and the
+enclave recomputes both hashes from the raw key the agent presents. The
+server therefore cannot produce a key string that any grant names. The two
+tags keep the index value from doubling as the value a signature binds.
 
 ### Envelope v1 (amended)
 
@@ -161,7 +171,9 @@ the server client, the KMS unwrapper, a per-boot `MonotonicCache`, and
 1.  key   = ApiKey.parse(raw)                       # ApiKeyError → 401
 2.  resp  = server.post("/internal/keys/verify",
                         {"key_hash": hex(key.lookup_hash), "secret_id": secret_id})
-          # 404 → 403 (unknown, revoked, or out of scope per honest server)
+          # 404 → 403 (unknown key). An honest server returns the key's
+          # *current* grant even when it is revoked (tombstone), narrowed
+          # or does not cover secret_id; scope is decided in step 6.
 3.  wire  = load_json_object(resp.body)             # duplicate keys → 502
     grant = Grant.from_dict(wire["grant"])          # GrantError → 403
 4.  verify_grant(grant, key, now=now)               # key mismatch, signature,
@@ -171,15 +183,17 @@ the server client, the KMS unwrapper, a per-boot `MonotonicCache`, and
 6.  floor = grant.min_version_for(secret_id)        # GrantScopeError → 403
 7.  env   = Envelope.from_json(server.get(f"/internal/secrets/{secret_id}"))
                                                     # EnvelopeError → 502
-8.  plaintext, policy = open_with_dek_unwrapper(
+8.  require env.owner_pk == grant.owner_pk          # → 502
+    verify_envelope_signature(env)                  # → 502
+    cache.observe(key.fingerprint, "envelope", secret_id, env.version)
+                                                    # StaleError → 502
+9.  plaintext, policy = open_with_dek_unwrapper(
         env, kms_unwrap,
         expected_secret_id = secret_id,
         expected_owner_pk  = grant.owner_pk,
         min_version        = floor)
           # signature / stale / decryption errors → 502; KMS is reached only
           # after the signature and version checks pass
-9.  cache.observe(key.fingerprint, "envelope", secret_id, env.version)
-                                                    # StaleError → 502
 10. enforce policy, execute, receipt includes
     fingerprint(grant.owner_pk), env.version and grant.iat
 ```
@@ -187,7 +201,17 @@ the server client, the KMS unwrapper, a per-boot `MonotonicCache`, and
 Step 5 runs after step 4 so an unverified grant can never poison the cache,
 and before step 6 so a tombstone (which has no secrets and fails step 6)
 still advances the cache: once a running enclave has seen the tombstone,
-the server cannot revive the older grant for the rest of that boot.
+the server cannot revive the older grant for the rest of that boot. This
+only works if the server *serves* the tombstone: `/internal/keys/verify`
+must return the current grant for every known key, revoked or not, and
+must not pre-filter by `secret_id`. A server that answered 404 for revoked
+or out-of-scope keys would keep every tombstone and narrowed grant away
+from the cache.
+
+Step 8 records the envelope version once the owner signature has verified
+and before KMS is called, so a rolled-back envelope costs no unwrap. The
+signature is checked again inside step 9; that costs one Ed25519
+verification.
 
 `open_with_dek_unwrapper` checks, in order: `v == 1`, `secret_id`,
 `owner_pk` (constant-time), signature, `version >= min_version`, then
@@ -223,12 +247,15 @@ Three mechanisms:
    seen a newer grant or envelope, the server cannot roll it back for the
    life of that boot. Entries are partitioned by owner fingerprint (the one
    the object verified against), with an LRU bound per owner (1 000) and on
-   the number of owners (10 000), so one tenant's traffic can neither evict
-   another tenant's entries nor plant a value under another tenant's
-   `secret_id`. A server that drives traffic under 10 000 *distinct* owner
-   keys between two of a victim's requests can still flush the victim's
-   partition, so this mechanism is best-effort within a boot; the guarantee
-   comes from 1 and 2.
+   the number of owners (10 000). Traffic under one owner key can neither
+   evict another owner's entries nor plant a value under another owner's
+   `secret_id`. Traffic under 10 000 *distinct* owner keys between two of a
+   victim's requests can still flush the victim's partition, and owner keys
+   are free to generate: the server can do it, and so can any tenant unless
+   the server caps owner keys per account and the enclave rate-limits
+   requests per fingerprint. This mechanism is therefore best-effort within
+   a boot; the guarantee comes from 1 and 2. `observe` holds a lock, so the
+   cache can be shared by handlers running on a thread pool.
 
 Grant issuance keeps `iat` strictly increasing per key even within one
 second: `create_grant(..., previous_iat=...)` bumps the new `iat` above the
@@ -240,9 +267,16 @@ trusted it alone could be held at a time when an expired grant was valid.
 The enclave takes `now = max(vm_clock, iat of its latest attestation
 token)`, refreshes the token at boot and at least every hour, and never lets
 `now` decrease within a boot. The attestation token is issued by Google's
-attestation service against a trusted clock, so the operator can delay the
-enclave's view of time by at most the refresh interval and cannot turn it
-back. This is listed in the threat model as the residual clock dependency.
+attestation service against a trusted clock, so the operator cannot turn
+the enclave's view of time back. The operator *can* hold it still by
+blocking token refresh and slowing the guest's timers, but not for long:
+the token also gates KMS (workload identity federation checks its expiry
+against Google's clock), so an enclave that cannot refresh loses KMS access
+once its token and federated credentials expire, about an hour later, and
+serves nothing new. The bound on the delay therefore comes from KMS, not
+from the refresh schedule, and holds only as long as the enclave never
+caches DEKs or plaintext beyond the 60 s below. This is listed in the threat
+model as the residual clock dependency.
 
 Revocation semantics, from the owner's point of view:
 
@@ -349,8 +383,11 @@ both cross-context cases.
 The signed body of each object is exactly its stored JSON minus `sig`, run
 through `canonical_json`. There is no separate "signing form": what the
 store holds is what was signed, byte for byte after canonicalization, and
-the enclave's parser rejects anything with two encodings (non-canonical
-base64, duplicate keys, floats, unsafe integers).
+the enclave's parser rejects every *value* with two encodings (non-canonical
+base64, duplicate keys, floats, unsafe integers). The JSON text around the
+values is still malleable: whitespace, key order, string escapes and `-0`
+all parse to the same object and so verify. Nothing may hash or compare
+the stored JSON text; derive identities from parsed fields or from `sig`.
 
 ## Format versioning
 
@@ -410,20 +447,29 @@ defense in depth, not as the security boundary.
   stores the grant verbatim. It cannot check `key_bind` (it has no raw key);
   the enclave does. Add `update_grant` (same checks, plus `grant.iat >
   stored.grant_iat` and same `owner_pk`). `is_key_allowed_for_secret` becomes
-  `find_grant(db, lookup_hash, secret_id) -> dict | None`: returns
-  `grant_json` when the key is not revoked, the grant is unexpired and its
-  `secrets` contains `secret_id`; touches `last_used_at`.
+  `find_grant(db, lookup_hash) -> dict | None`: returns the key's current
+  `grant_json` whenever the key exists, including when it is revoked (the
+  stored grant is then the tombstone), expired, or does not cover the
+  requested secret; touches `last_used_at`. It must not filter by
+  `revoked_at`, expiry or `secret_id`: the enclave checks all three from
+  the signed grant, and it can only record a tombstone or narrowed grant in
+  its per-boot cache if the server hands it over.
 - `router.py`: `POST /v1/api-keys` (10/min) with the new body. Add
   `PUT /v1/api-keys/{id}/grant`. `DELETE /v1/api-keys/{id}` becomes
   `POST /v1/api-keys/{id}/revoke` with an optional `{grant}` tombstone body
-  (stored as the current grant so an honest server serves it).
+  (stored as the current grant so an honest server serves it; same checks as
+  `update_grant`, including `grant.iat > stored.grant_iat`, so an equal-`iat`
+  replacement can never be accepted).
 
 New `server/src/carapace_server/ownerkeys/` (models, schemas, router,
 service): table `owner_keys(id, user_id, public_key LargeBinary(32) unique,
 fingerprint String(32) unique, created_at, retired_at)`; `POST/GET
 /v1/owner-keys`, `POST /v1/owner-keys/{id}/retire`. No proof of possession
 in v0.1: registering a key one does not hold gives nothing, since nothing
-can be signed under it.
+can be signed under it. That holds only for keys that pass
+`validate_public_key`; registration must reject the rest, because a
+small-order key can "sign" anything. Cap owner keys per account (for
+example at 10) so that no tenant can churn the enclave's per-owner cache.
 
 `server/migrations/versions/0001_initial_schema.py`: amend in place (the
 migration is unmerged): the `secrets` and `api_keys` column changes above
@@ -440,7 +486,9 @@ signed by a different owner key, and tombstone revoke.
 - `internal/router.py`: `GET /internal/secrets/{id}` returns the full signed
   envelope (falls out of the `envelope_dict` change). `POST
   /internal/keys/verify` takes `{key_hash: hex(lookup_hash), secret_id}` and
-  returns `{"grant": <grant wire>}` or 404; the `{"allowed": bool}` response
+  returns `{"grant": <current grant wire>}` for every known key (revoked,
+  expired and out-of-scope included; `secret_id` is only logged) or 404 for
+  an unknown one; the `{"allowed": bool}` response
   goes away because a boolean from the server is not evidence.
 - `receipts/schemas.py` `KeyCheck`: unchanged shape, `key_hash` is now the
   lookup hash.
