@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 [manifest]
 members = [
     "carapace-crypto",
+    "carapace-enclave",
     "carapace-server",
     "carapace-workspace",
 ]
@@ -179,6 +180,23 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "cryptography", specifier = ">=43" }]
+
+[[package]]
+name = "carapace-enclave"
+version = "0.1.0"
+source = { editable = "enclave" }
+dependencies = [
+    { name = "httpx" },
+    { name = "idna" },
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "httpx", specifier = ">=0.28,<0.29" },
+    { name = "idna", specifier = ">=3.7" },
+    { name = "pydantic", specifier = ">=2.7,<3" },
+]
 
 [[package]]
 name = "carapace-server"
