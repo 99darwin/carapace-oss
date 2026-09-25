@@ -1,8 +1,10 @@
 """Service accounts for the enclave VM and the server, with minimal roles.
 
-Neither account gets any KMS decrypt permission. The enclave decrypts only
-through the WIF principalSet (see ``wif.py``); the server can read the public
-key (granted in the key policy, ``kms.py``) and nothing more.
+Neither account gets any KMS decrypt permission. The enclave reaches KMS only
+through the WIF principalSet (see ``wif.py``), which holds both decrypt and
+public key read on the key; the VM service account has no KMS role at all.
+The server can read the public key (granted in the key policy, ``kms.py``)
+and nothing more.
 
 No ``roles/iam.serviceAccountUser`` binding is created. The identity running
 ``pulumi up`` needs ``iam.serviceAccounts.actAs`` on both accounts to attach
@@ -19,9 +21,15 @@ import pulumi_gcp as gcp
 
 ENCLAVE_PROJECT_ROLES: tuple[str, ...] = (
     "roles/logging.logWriter",
-    "roles/artifactregistry.reader",
     "roles/confidentialcomputing.workloadUser",
 )
+# Granted on the stack's repository only (``grant_image_pull``), not the
+# project, so the enclave SA cannot read other repositories.
+IMAGE_PULL_ROLE = "roles/artifactregistry.reader"
+# Stays project-level: Cloud SQL has no instance-level IAM, so an IAM
+# condition on the instance name is the only way to narrow it. The server
+# reaches one instance through the Cloud Run volume, and the grant allows
+# connecting only; database auth still needs the password.
 SERVER_PROJECT_ROLES: tuple[str, ...] = ("roles/cloudsql.client",)
 
 
@@ -92,4 +100,21 @@ def create_service_identities(
         server=server,
         enclave_grants=enclave_grants,
         server_grants=server_grants,
+    )
+
+
+def grant_image_pull(
+    *,
+    prefix: str,
+    repository: gcp.artifactregistry.Repository,
+    member: pulumi.Input[str],
+) -> gcp.artifactregistry.RepositoryIamMember:
+    """Let ``member`` pull images from the stack's repository and no other."""
+    return gcp.artifactregistry.RepositoryIamMember(
+        f"{prefix}-enclave-image-pull",
+        project=repository.project,
+        location=repository.location,
+        repository=repository.name,
+        role=IMAGE_PULL_ROLE,
+        member=member,
     )

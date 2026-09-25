@@ -25,8 +25,8 @@ Freshness: ``exp - iat`` is capped at ``MAX_GRANT_TTL_SECONDS``. Whatever a
 malicious server withholds (a narrower grant, a tombstone, a re-sealed
 secret's new version floor) takes effect at the latest when the grant it
 keeps serving expires. That bound is the whole freshness guarantee across
-enclave boots; the CLI can renew grants automatically while the owner key
-is available.
+enclave boots. Grants are not renewed automatically: when one expires, the
+owner revokes the key and creates a new one (see ``carapace_cli.keys``).
 """
 
 from __future__ import annotations
@@ -169,12 +169,65 @@ def create_grant(
     """
     if not fingerprints_match(owner_key.public_key, api_key.fingerprint):
         raise GrantKeyMismatchError("API key names a different owner key")
+    return _sign_grant(
+        owner_key,
+        api_key.bind_hash,
+        secrets,
+        now=now,
+        ttl_seconds=ttl_seconds,
+        previous_iat=previous_iat,
+    )
+
+
+def reissue_grant(
+    owner_key: OwnerKey,
+    previous: Grant,
+    secrets: dict[str, int],
+    *,
+    now: int,
+    ttl_seconds: int = DEFAULT_GRANT_TTL_SECONDS,
+) -> Grant:
+    """Replace ``previous`` without the raw API key: renew, narrow or revoke.
+
+    The owner keeps only the grant, never the API key it handed out, so the
+    replacement reuses ``previous.key_bind``. ``previous`` must verify under
+    ``owner_key``, which also proves the bind hash came from this owner and
+    not from whoever served the old grant. The new ``iat`` is forced above
+    ``previous.iat``. Pass ``secrets={}`` for a tombstone.
+
+    Raises:
+        GrantKeyMismatchError: ``previous`` was issued by another owner key.
+        GrantSignatureError: ``previous`` does not verify.
+        GrantError: On bad inputs.
+    """
+    if not hmac.compare_digest(previous.owner_pk, owner_key.public_key):
+        raise GrantKeyMismatchError("grant was issued by a different owner key")
+    verify_grant_signature(previous)
+    return _sign_grant(
+        owner_key,
+        previous.key_bind,
+        secrets,
+        now=now,
+        ttl_seconds=ttl_seconds,
+        previous_iat=previous.iat,
+    )
+
+
+def _sign_grant(
+    owner_key: OwnerKey,
+    key_bind: bytes,
+    secrets: dict[str, int],
+    *,
+    now: int,
+    ttl_seconds: int,
+    previous_iat: int | None,
+) -> Grant:
     iat = _require_time(now, "now")
     if previous_iat is not None:
         iat = max(iat, _require_time(previous_iat, "previous_iat") + 1)
     unsigned = Grant(
         owner_pk=owner_key.public_key,
-        key_bind=api_key.bind_hash,
+        key_bind=key_bind,
         secrets=_require_secrets(secrets),
         iat=iat,
         exp=_require_time(iat + ttl_seconds, "exp"),

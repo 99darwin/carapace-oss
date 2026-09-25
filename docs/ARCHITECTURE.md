@@ -6,7 +6,7 @@ with the guarantee enforced by hardware rather than by trusting the operator.
 ## Components
 
 ```
-agent / SDK ──attested TLS (cert pinned via eat_nonce)──▶ ENCLAVE (CVM :443)
+agent / SDK ──attested TLS (cert pinned via eat_nonce)──▶ ENCLAVE (CVM :8443)
 CLI / web   ──encrypt locally to KMS public key──────────▶ SERVER (untrusted)
 ENCLAVE     ──pulls ciphertext, auth = attestation JWT───▶ SERVER
 ENCLAVE     ──WIF principalSet(image_digest)─────────────▶ Cloud KMS (HSM)
@@ -35,6 +35,9 @@ ENCLAVE     ──WIF principalSet(image_digest)──────────�
   Google's vTPM and Shielded VM firmware, and the Confidential Space image are
   therefore in the TCB. SEV-SNP is an open question until Google documents its
   `hwmodel` claim.
+- The same `principalSet` also holds `roles/cloudkms.publicKeyViewer`: the
+  enclave's boot self-test reads the public key with the same federated
+  credentials it decrypts with.
 - The key ring's IAM policy is authoritative and empty.
 - The server's service account holds only `roles/cloudkms.publicKeyViewer`.
 - No service account attached to the VM has KMS permissions, and the enclave
@@ -73,10 +76,24 @@ lookup hash of each key. What a key may use is an owner-signed *grant*
 the enclave fetches by lookup hash and verifies against the key the agent
 presented: the grant's owner key must match the fingerprint in the key, the
 signature must verify, and the grant's `key_bind` (a hash the server cannot
-derive from the lookup hash) must match. Grants expire within 90 days and
-the CLI renews them. Full formats, the enclave verification order and the
+derive from the lookup hash) must match. Grants expire within 90 days; to
+extend one, the owner revokes the key and creates a new one (v0.1 has no
+`key renew`, see the CLI README). Full formats, the enclave verification order and the
 freshness semantics are in
 [`docs/design/owner-signing.md`](design/owner-signing.md).
+
+## Network
+
+The enclave serves HTTPS on **port 8443**, and clients use
+`https://<enclave ip>:8443`. The image runs as a non-root user (UID 65532)
+with no ambient capabilities, so it cannot bind a port below 1024. Granting
+`CAP_NET_BIND_SERVICE` is not an option either: the distroless image has no
+shell to set file capabilities, and letting the operator add capabilities
+(`tee.launch_policy.allow_capabilities`) would let them add any capability.
+The Confidential Space launcher opens only the ports the image `EXPOSE`s, to
+the same port number, and a VPC firewall rule cannot translate ports, so the
+listen port, the `EXPOSE`, the firewall rule and the `enclave_url` output all
+use the same number. Tests on both sides check that they agree.
 
 ## Attestation and client verification
 
@@ -104,8 +121,9 @@ so it is never an allowed audience.
 1. Verifies the token signature against Google's published JWKS, plus the
    issuer, audience, and expiry.
 2. Checks the hardware, software, debug, and secure-boot claims.
-3. Checks that the container image digest appears in a signed release
-   manifest.
+3. Checks that the container image digest is one the user allowed
+   (`--allow-digest`, compared by hand against the CI build output; release
+   signature verification is not implemented yet).
 4. Checks that the nonce binds the served TLS certificate and receipt key.
 5. Pins the TLS certificate for all further enclave connections.
 6. Refuses to encrypt if the KMS public key from the server differs from the
@@ -139,8 +157,13 @@ For each request, the enclave executor:
 - Caps request and response sizes.
 - Redacts the secret from response headers and body, in raw, base64,
   URL-encoded, and JSON-escaped forms.
-- Rate-limits per API key.
-- Emits one signed receipt per request.
+- Rate-limits per owner fingerprint and secret, at the policy's `rpm`, with
+  an overall cap per owner fingerprint (and on KMS unwraps per owner).
+- Throttles a peer address after repeated refused authorizations, so an
+  unauthenticated flood cannot spend the control-plane budget of every owner.
+- Emits one signed receipt per authorized request (outcome `ok`, `denied`
+  by policy, or `error`). Requests refused before authorization leave no
+  receipt; see [THREAT_MODEL.md](THREAT_MODEL.md#r6-refused-requests-leave-no-receipt).
 
 ## Receipts
 
@@ -151,10 +174,20 @@ offline. Unsigned receipts never verify.
 
 ## Residual risks
 
-These will be documented in full in `THREAT_MODEL.md`:
+Summarized here; [THREAT_MODEL.md](THREAT_MODEL.md#residual-risks) has the
+full list:
 
 - A GCP project owner can change KMS IAM. That change is visible in Cloud
   Audit Logs. Self-hosters are their own project owner.
+- The key's IAM policy is not the only path to the key. A principal with the
+  basic Editor or Owner role on the project can call `AsymmetricDecrypt`
+  directly, without changing KMS IAM and without an attested enclave, and
+  so unwrap any envelope's data key. The stack enables KMS Data Access logs,
+  so every such call is logged, and the `foreign_decrypt` clause of the
+  decrypt-path alert (on unless `enable_iam_alerts` is `false`) fires on any
+  `AsymmetricDecrypt` against the key ring from a caller outside the stack's
+  attestation pool. It detects the decrypt; it does not prevent it. Keep
+  Editor and Owner to as few principals as possible.
 - Anyone with database write access can deny service, and can serve an
   *older* owner-signed grant or envelope in place of the current one. A
   withheld revocation, narrowing or rotation takes effect no later than the
@@ -175,9 +208,12 @@ These will be documented in full in `THREAT_MODEL.md`:
 
 ## Local development
 
-`docker compose` runs the server (SQLite), a mock enclave (fake TEE socket,
-`iss=mock://local`, local RSA key), and httpbin. The mock cannot reach
-production, for three reasons:
+A one-command `docker compose` setup (server on SQLite, mock enclave,
+httpbin) is planned but does not exist yet. Today the server runs locally in
+`dev` mode (`server/README.md`), and a dev-only mock of Confidential Space
+and Cloud KMS (`enclave/mock`: `iss=mock://local` tokens and an in-memory RSA
+key) is used by the tests. The mock cannot reach production, for three
+reasons:
 
 - It is excluded from the production image, so any image that contains it has
   a different digest and no IAM binding.

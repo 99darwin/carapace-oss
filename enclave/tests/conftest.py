@@ -8,8 +8,12 @@ from typing import Any
 import httpcore
 import httpx
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
 
+from carapace_enclave.attestation import LauncherClient, TokenSource
+from carapace_enclave.clock import TrustedClock
 from carapace_enclave.egress import EgressExecutor, InjectionPolicy, URLFilter
+from carapace_enclave_mock import LocalRsaDecrypter, MockLauncher
 
 SECRET = b"s3cr3t-T0KEN/with+base64?chars=="
 PUBLIC_IP = "93.184.216.34"
@@ -112,3 +116,39 @@ def make_executor(
         url_filter=URLFilter(resolver or FakeResolver()),
         transport_factory=upstream.factory,
     )
+
+
+# -- attestation and KMS --------------------------------------------------------
+
+BOOT_NONCE = "b0" * 32
+SERVER_URL = "http://localhost:8000"
+WIF_AUDIENCE = (
+    "//iam.googleapis.com/projects/123456789/locations/global"
+    "/workloadIdentityPools/carapace-attest/providers/confidential-space"
+)
+
+
+@pytest.fixture(scope="session")
+def launcher_signing_key() -> rsa.RSAPrivateKey:
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+@pytest.fixture
+def mock_launcher(launcher_signing_key: rsa.RSAPrivateKey) -> MockLauncher:
+    return MockLauncher(signing_key=launcher_signing_key)
+
+
+@pytest.fixture
+def clock() -> TrustedClock:
+    return TrustedClock()
+
+
+@pytest.fixture
+def tokens(mock_launcher: MockLauncher, clock: TrustedClock) -> TokenSource:
+    launcher = LauncherClient(transport=mock_launcher.transport())
+    return TokenSource(launcher, clock, nonce=BOOT_NONCE)
+
+
+@pytest.fixture(scope="session")
+def kms_decrypter() -> LocalRsaDecrypter:
+    return LocalRsaDecrypter.generate()

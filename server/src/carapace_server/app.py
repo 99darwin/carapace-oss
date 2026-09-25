@@ -28,7 +28,9 @@ from carapace_server.bodylimit import BodySizeLimitMiddleware
 from carapace_server.config import Settings, get_settings
 from carapace_server.db import create_engine, create_sessionmaker
 from carapace_server.internal.router import router as internal_router
+from carapace_server.kms.router import router as kms_router
 from carapace_server.ownerkeys.router import router as owner_keys_router
+from carapace_server.proxy import ForwardedClientMiddleware
 from carapace_server.ratelimit import limiter
 from carapace_server.receipts.router import router as receipts_router
 from carapace_server.store.router import router as secrets_router
@@ -114,12 +116,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(
         BodySizeLimitMiddleware, max_bytes=settings.max_request_body_bytes
     )
+    # Added last, so it is outermost: everything below it, the rate limiter
+    # included, sees the forwarded client address.
+    if settings.trusted_proxy_hops > 0:
+        app.add_middleware(
+            ForwardedClientMiddleware, trusted_hops=settings.trusted_proxy_hops
+        )
     app.state.attestation_verifier = AttestationVerifier(settings)
     routers = (
         auth_router,
         owner_keys_router,
         secrets_router,
         api_keys_router,
+        kms_router,
         receipts_router,
         internal_router,
     )

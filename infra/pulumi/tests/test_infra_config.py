@@ -1,12 +1,26 @@
 """Config and pure-function validation (no resources declared)."""
 
+import json
+from dataclasses import dataclass
+
 import pytest
 
 pytest.importorskip("pulumi_gcp")
 
-from components.config import ConfigError, build_image_reference  # noqa: E402
+from components.config import (  # noqa: E402
+    ConfigError,
+    StackConfig,
+    build_image_reference,
+    validate_control_plane_url,
+)
 from components.enclave_vm import build_enclave_metadata  # noqa: E402
-from components.kms import build_key_policy  # noqa: E402
+from components.kms import (  # noqa: E402
+    KEY_ALGORITHM,
+    KmsPublicKeyError,
+    build_key_policy,
+    select_public_key_pem,
+)
+from components.server import build_database_url, build_server_url  # noqa: E402
 from components.wif import (  # noqa: E402
     build_attribute_condition,
     build_provider_audience,
@@ -76,9 +90,116 @@ def test_config_alerts_require_recipients() -> None:
         make_config(enable_iam_alerts=True, alert_emails=[])
 
 
+def test_key_policy_makes_every_decrypter_a_public_key_viewer() -> None:
+    decrypter = "principalSet://iam.googleapis.com/projects/1/x/" + DIGEST_A
+    server = "serviceAccount:server@example.com"
+    policy = json.loads(build_key_policy([decrypter], [server]))
+    bindings = {b["role"]: b["members"] for b in policy["bindings"]}
+    assert bindings == {
+        "roles/cloudkms.cryptoKeyDecrypter": [decrypter],
+        "roles/cloudkms.publicKeyViewer": sorted([decrypter, server]),
+    }
+
+
 def test_key_policy_refuses_non_principal_set_decrypter() -> None:
     with pytest.raises(ValueError, match="principalSet"):
         build_key_policy(["serviceAccount:x@example.com"], [])
+
+
+PRINCIPAL_SET = "principalSet://iam.googleapis.com/projects/1/x/" + DIGEST_A
+
+
+@pytest.mark.parametrize("viewer", ["allUsers", "allAuthenticatedUsers"])
+def test_key_policy_refuses_public_viewers(viewer: str) -> None:
+    with pytest.raises(ValueError, match="must not be public"):
+        build_key_policy([PRINCIPAL_SET], [viewer])
+
+
+@pytest.mark.parametrize(
+    "viewer",
+    [
+        "",
+        "server@example.com",
+        "serviceAccount:",
+        "serviceAccount:server",
+        "serviceAccount:server@example.com ",
+        "serviceAccount: server@example.com",
+        "serviceAccount:a@b@example.com",
+        "domain:example.com",
+        "deleted:serviceAccount:server@example.com?uid=1",
+        "principal://iam.googleapis.com/projects/1/x",
+        "principalSet://",
+        "principalSet://evil.example.com/projects/1/x",
+        "allusers",
+        None,
+    ],
+)
+def test_key_policy_refuses_malformed_viewers(viewer: object) -> None:
+    with pytest.raises(ValueError, match="viewer"):
+        build_key_policy([PRINCIPAL_SET], [viewer])
+
+
+def test_key_policy_refuses_malformed_decrypter() -> None:
+    with pytest.raises(ValueError, match="principalSet"):
+        build_key_policy(["principalSet://"], [])
+
+
+@pytest.mark.parametrize(
+    "viewer",
+    [
+        "serviceAccount:cptest-server@example-project.iam.gserviceaccount.com",
+        "user:ops@example.com",
+        "group:kms-viewers@example.com",
+    ],
+)
+def test_key_policy_accepts_single_identity_viewers(viewer: str) -> None:
+    policy = json.loads(build_key_policy([PRINCIPAL_SET], [viewer]))
+    bindings = {b["role"]: b["members"] for b in policy["bindings"]}
+    assert viewer in bindings["roles/cloudkms.publicKeyViewer"]
+
+
+KEY_VERSION = (
+    "projects/example-project/locations/us-central1/keyRings/r"
+    "/cryptoKeys/k/cryptoKeyVersions/1"
+)
+PEM = "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n"
+
+
+@dataclass(frozen=True)
+class _PublicKey:
+    pem: str
+    algorithm: str = KEY_ALGORITHM
+
+
+def _select(**overrides: object) -> str:
+    args: dict[str, object] = {
+        "name": KEY_VERSION,
+        "algorithm": KEY_ALGORITHM,
+        "public_keys": [_PublicKey(PEM)],
+        "expected_name": KEY_VERSION,
+    }
+    args.update(overrides)
+    return select_public_key_pem(**args)
+
+
+def test_public_key_pem_is_taken_from_the_expected_version() -> None:
+    assert _select() == PEM
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"name": KEY_VERSION.replace("/1", "/2")}, "expected"),
+        ({"algorithm": "RSA_DECRYPT_OAEP_2048_SHA256"}, "algorithm"),
+        ({"public_keys": []}, "no public key"),
+        ({"public_keys": [_PublicKey(PEM), _PublicKey(PEM)]}, "no public key"),
+        ({"public_keys": [_PublicKey("not a pem")]}, "not a PEM"),
+        ({"public_keys": [object()]}, "not a PEM"),
+    ],
+)
+def test_public_key_pem_fails_closed(overrides: dict, match: str) -> None:
+    with pytest.raises(KmsPublicKeyError, match=match):
+        _select(**overrides)
 
 
 @pytest.mark.parametrize(
@@ -99,6 +220,37 @@ def test_attribute_condition_refuses_public_audiences(audience: str) -> None:
             enclave_sa_email="e@example-project.iam.gserviceaccount.com",
             allowed_digests=["sha256:" + "a" * 64],
             audience=audience,
+            control_plane_url="https://api.example.com",
+        )
+
+
+def test_config_rejects_wif_audience_equal_to_control_plane_url() -> None:
+    url = "https://api.example.com"
+    with pytest.raises(ConfigError, match="enclave-to-server"):
+        make_config(wif_audience=url, control_plane_url=url)
+    assert make_config(wif_audience="carapace-sts-test", control_plane_url=url)
+
+
+def test_attribute_condition_refuses_the_server_audience() -> None:
+    """Covers the derived server URL, which the config cannot see."""
+    with pytest.raises(ValueError, match="enclave-to-server"):
+        build_attribute_condition(
+            project_id="example-project",
+            enclave_sa_email="e@example-project.iam.gserviceaccount.com",
+            allowed_digests=["sha256:" + "a" * 64],
+            audience="https://cptest-server-42.us-central1.run.app",
+            control_plane_url="https://cptest-server-42.us-central1.run.app",
+        )
+
+
+def test_attribute_condition_requires_a_control_plane_url() -> None:
+    with pytest.raises(ValueError, match="control_plane_url"):
+        build_attribute_condition(
+            project_id="example-project",
+            enclave_sa_email="e@example-project.iam.gserviceaccount.com",
+            allowed_digests=["sha256:" + "a" * 64],
+            audience="carapace-sts-test",
+            control_plane_url="",
         )
 
 
@@ -107,3 +259,49 @@ def test_provider_audience_is_the_provider_resource_name() -> None:
         "//iam.googleapis.com/projects/42/locations/global"
         "/workloadIdentityPools/p-attest/providers/confidential-space"
     )
+
+
+def test_iam_alerts_are_on_by_default() -> None:
+    assert StackConfig.__dataclass_fields__["enable_iam_alerts"].default is True
+    with pytest.raises(ConfigError, match="alert_emails"):
+        make_config(alert_emails=[])
+    assert make_config(enable_iam_alerts=False, alert_emails=[])
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://api.example.com",
+        "https://api.example.com/",
+        "https://api.example.com/v1",
+        "https://API.example.com",
+        "https://user@api.example.com",
+        "https://api.example.com?x=1",
+        "https://api.example.com'",
+        "",
+    ],
+)
+def test_config_rejects_non_origin_control_plane_url(url: str) -> None:
+    with pytest.raises(ConfigError, match="control_plane_url"):
+        make_config(control_plane_url=url)
+
+
+@pytest.mark.parametrize(
+    "url", ["https://api.example.com", "https://api.example.com:8443"]
+)
+def test_config_accepts_bare_https_origin(url: str) -> None:
+    assert validate_control_plane_url(url) == url
+    assert make_config(control_plane_url=url).control_plane_url == url
+
+
+def test_database_url_uses_the_cloud_sql_socket_and_quotes_the_password() -> None:
+    url = build_database_url(password="p@ss/w:rd", connection_name="p:r:i")
+    assert url == (
+        "postgresql+asyncpg://carapace:p%40ss%2Fw%3Ard@/carapace?host=/cloudsql/p:r:i"
+    )
+
+
+def test_server_url_is_cloud_runs_deterministic_url() -> None:
+    assert build_server_url(
+        service_name="carapace-server", project_number="42", region="us-central1"
+    ) == ("https://carapace-server-42.us-central1.run.app")

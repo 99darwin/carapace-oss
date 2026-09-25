@@ -1,0 +1,26 @@
+[project]
+name = "carapace-cli"
+version = "0.1.0"
+description = "Carapace command-line client and Python SDK"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "carapace-crypto",
+    "cryptography>=43",
+    "httpx>=0.28,<0.29",
+    "pyjwt[crypto]>=2.9",
+]
+
+[project.scripts]
+carapace = "carapace_cli.main:main"
+
+[tool.uv.sources]
+carapace-crypto = { workspace = true }
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/carapace_cli"]

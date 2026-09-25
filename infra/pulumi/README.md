@@ -9,12 +9,12 @@ their config.
 | Component | Resources |
 |---|---|
 | `apis.py` | Enables the Compute, Cloud KMS, Confidential Computing, IAM, IAM Credentials, STS, Cloud Run, Cloud SQL Admin, Artifact Registry, Logging, Secret Manager and Monitoring APIs |
-| `kms.py` | One key ring and one `ASYMMETRIC_DECRYPT` / `RSA_DECRYPT_OAEP_4096_SHA256` / `HSM` key (`protect` is on by default), plus an **authoritative** IAM policy on the key |
+| `kms.py` | One key ring and one `ASYMMETRIC_DECRYPT` / `RSA_DECRYPT_OAEP_4096_SHA256` / `HSM` key (`protect` is on by default), an **authoritative** IAM policy on the key, and Data Access (`DATA_READ`) audit logs for Cloud KMS so every decrypt is logged |
 | `wif.py` | A Workload Identity pool and an OIDC provider that trust Confidential Space attestation tokens |
 | `identity.py` | Enclave VM service account and server (Cloud Run) service account |
-| `enclave_vm.py` | A dedicated VPC and subnet, one static external IP, one firewall rule (tcp:443 ingress), and one Confidential Space VM (AMD SEV, Secure Boot) |
-| `server.py` | An Artifact Registry repo, Cloud SQL Postgres 16 (`db-f1-micro`, zonal), a generated DB password in Secret Manager, and a Cloud Run v2 service (min 0 instances) |
-| `monitoring.py` | Optional. A log-match alert on IAM or configuration changes to the KMS key ring and key, the WIF pool, the enclave service account, or project IAM |
+| `enclave_vm.py` | A dedicated VPC and subnet, one static external IP, one firewall rule (tcp:8443 ingress), and one Confidential Space VM (AMD SEV, Secure Boot) |
+| `server.py` | An Artifact Registry repo, Cloud SQL Postgres 16 (`db-f1-micro`, zonal), two generated secrets in Secret Manager (the database URL and the JWT signing secret), a Cloud Run v2 service (min 0 instances), and a Cloud Run job that runs the database migrations |
+| `monitoring.py` | On by default. A log-match alert on IAM or configuration changes to the KMS key ring and key, the WIF pool, the enclave service account, project IAM, log routing (sinks, exclusions, buckets) and alerting, and on any `AsymmetricDecrypt` by a principal outside this project's attestation pool |
 
 ### Who can decrypt
 
@@ -24,7 +24,9 @@ added by hand. It contains exactly:
 - `roles/cloudkms.cryptoKeyDecrypter`: one WIF `principalSet` per entry in
   `allowed_digests`:
   `principalSet://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<prefix>-attest/attribute.image_digest/<digest>`
-- `roles/cloudkms.publicKeyViewer`: the server service account.
+- `roles/cloudkms.publicKeyViewer`: the same WIF `principalSet`s (the
+  enclave's boot self-test reads the public key with its federated
+  credentials) and the server service account.
 
 The key ring also has an authoritative IAM policy, and that policy has **zero**
 bindings. Ring-level grants would be inherited by the key, so `pulumi up`
@@ -48,7 +50,9 @@ audiences keep the two uses apart:
 `wif_audience` can be overridden with any other stack-specific string. The
 stack refuses `https://sts.googleapis.com`, the audience of the token the
 launcher writes into the container by default, and it refuses
-`carapace-attestation`.
+`carapace-attestation`. It also refuses the control plane URL: that is the
+audience of the bearer tokens the enclave sends to the untrusted server,
+which must never be exchangeable at STS.
 
 The WIF provider accepts a token only if **all** of the following hold:
 
@@ -62,11 +66,14 @@ assertion.secboot == true
 assertion.submods.container.image_digest in [<allowed_digests>]
 assertion.submods.gce.project_id == '<this project>'
 '<enclave SA email>' in assertion.google_service_accounts
+assertion.submods.container.env.CONTROL_PLANE_URL == '<control_plane_url>'
 ```
 
-The last two clauses pin the token to this project's VM. The enclave image is
-public, so without them anyone could run the same image in their own project
-and present a valid token.
+The `project_id` and service account clauses pin the token to this project's
+VM. The enclave image is public, so without them anyone could run the same
+image in their own project and present a valid token. The `CONTROL_PLANE_URL`
+clause refuses a VM of this project that was launched with a different control
+plane, since that override is one the launch policy allows.
 
 `hwmodel == GCP_AMD_SEV` means the VM is an AMD SEV Confidential VM. SEV
 encrypts guest memory, but it does **not** provide SNP's integrity protection
@@ -76,11 +83,42 @@ therefore includes AMD SEV, Google's vTPM and Shielded VM firmware, and the
 Confidential Space image. This stack does not use SEV-SNP (see
 [Open questions](#open-questions)).
 
-The enclave VM's service account has only `logging.logWriter`,
-`artifactregistry.reader` and `confidentialcomputing.workloadUser`. It has **no
-KMS role**, and the enclave never falls back to ambient credentials. The server
-service account has only `publicKeyViewer` on the key, `cloudsql.client`, and
-`secretAccessor` on the DB password secret.
+The enclave VM's service account has only `logging.logWriter` and
+`confidentialcomputing.workloadUser` on the project, and
+`artifactregistry.reader` on this stack's repository only. It has **no KMS
+role**, and the enclave never falls back to ambient credentials. The server
+service account has only `publicKeyViewer` on the key, `cloudsql.client` on
+the project, and `secretAccessor` on its two secrets (not on the project).
+`cloudsql.client` stays project-level because Cloud SQL has no instance-level
+IAM, only IAM conditions; the database password is still required to connect.
+
+### Server environment
+
+The server reads `CARAPACE_*` variables and silently ignores anything else, so
+`tests/test_server_env_contract.py` checks the names below against
+`server/src/carapace_server/config.py`:
+
+| Variable | Source |
+|---|---|
+| `CARAPACE_MODE` | `prod` |
+| `CARAPACE_PUBLIC_URL` | `control_plane_url` |
+| `CARAPACE_ALLOWED_IMAGE_DIGESTS` | `allowed_digests`, comma-separated |
+| `CARAPACE_ATTESTATION_PROJECT_ID` | `gcp:project` |
+| `CARAPACE_ATTESTATION_SERVICE_ACCOUNT` | the enclave service account |
+| `CARAPACE_KMS_PUBLIC_KEY_PEM` | public key of the KMS key version, read at deploy time (`gcp.kms.get_kms_crypto_key_version`) |
+| `CARAPACE_KMS_KEY_VERSION` | `kms_key_version_name`, the same `.../cryptoKeyVersions/1` name the enclave gets as `KMS_KEY_NAME` |
+| `CARAPACE_TRUSTED_PROXY_HOPS` | `1`: Cloud Run's frontend is the one proxy, and appends the client address as the last `X-Forwarded-For` entry, which rate limits key on |
+| `CARAPACE_DATABASE_URL` | Secret Manager `<prefix>-database-url` (`postgresql+asyncpg` over the `/cloudsql` socket, generated password) |
+| `CARAPACE_JWT_SECRET` | Secret Manager `<prefix>-jwt-secret` (64 random characters) |
+
+The two KMS values are public and set as plain env; without them
+`carapace verify` fails against the deployment. Reading the public key
+needs `cloudkms.cryptoKeyVersions.viewPublicKey` for whoever runs
+`pulumi up` (a project owner has it). The migration job gets exactly the
+same variables, including the two secret references, because the server's
+settings refuse to load in `prod` without them. Secret values are referenced
+by Cloud Run and never appear in plain env or
+stack outputs. They are in Pulumi state, encrypted as Pulumi secrets.
 
 No `serviceAccountUser`, `workloadIdentityUser` or `serviceAccountTokenCreator`
 binding is created. Whoever runs `pulumi up` needs `iam.serviceAccounts.actAs`
@@ -93,8 +131,8 @@ project owner already has it.
 - `gcloud auth application-default login`.
 - Pulumi CLI 3.x and Python 3.12. Any Pulumi backend works:
   `pulumi login --local` keeps state on your machine.
-- Enclave and server images **pinned by digest**. Use a published release, or
-  build your own and push it to the Artifact Registry repo this stack creates.
+- Enclave and server images **pinned by digest**, in Artifact Registry (see
+  [Images](#images)).
 
 ## Deploy
 
@@ -111,12 +149,88 @@ the images, set their digests, and deploy again:
 
 ```bash
 pulumi config set deploy_workloads false && pulumi up
-# push <image_registry>/enclave and /server, then:
+# copy or push <image_registry>/enclave and /server (see Images), then:
 pulumi config set deploy_workloads true && pulumi up
 ```
 
-The outputs include `enclave_url`, `server_url`, `kms_key_version_name`,
-`wif_provider_name` and `wif_audience`. `carapace verify` checks the enclave against these values.
+The outputs include `enclave_url` (`https://<enclave ip>:8443`),
+`server_url`, `control_plane_url`, `migration_job`, `kms_key_version_name`,
+`wif_provider_name` and `wif_audience`, plus the
+Secret Manager ids `database_url_secret` and `jwt_secret` (never the values).
+`carapace verify` checks the enclave against these values.
+
+### Images
+
+Cloud Run and the enclave VM pull both images from `image_registry`, which
+defaults to the Artifact Registry repository this stack creates (exported as
+`image_registry`). Releases are published to GitHub Container Registry by the
+`enclave-image` and `server-image` workflows:
+
+- `ghcr.io/<owner>/<repo>/enclave:<tag>`
+- `ghcr.io/<owner>/<repo>/server:<tag>`
+
+Both are signed with cosign. The digest of record is the **linux/amd64 image
+manifest**, not the tag's index (the index also holds provenance and SBOM
+attestations). For the enclave it is the digest in the release manifest
+`releases/<tag>.json`.
+
+Copy each image by that manifest digest with
+[`crane`](https://github.com/google/go-containerregistry/tree/main/cmd/crane),
+which copies the manifest bytes unchanged, so the digest stays the same:
+
+```bash
+REG="$(pulumi stack output image_registry)"
+SRC=ghcr.io/<owner>/<repo>
+TAG=v1.2.3
+SERVER_DIGEST="$(crane digest --platform linux/amd64 "$SRC/server:$TAG")"
+ENCLAVE_DIGEST=sha256:...   # from releases/$TAG.json
+
+# Verify the signatures on ghcr first; they are not copied.
+cosign verify "$SRC/server@$SERVER_DIGEST" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp \
+    '^https://github\.com/<owner>/<repo>/\.github/workflows/server-image\.yml@refs/tags/v'
+
+gcloud auth configure-docker "${REG%%/*}"
+crane copy "$SRC/server@$SERVER_DIGEST" "$REG/server:$TAG"
+crane copy "$SRC/enclave@$ENCLAVE_DIGEST" "$REG/enclave:$TAG"
+
+# Both must print the digest you copied.
+crane digest "$REG/server:$TAG"
+crane digest "$REG/enclave:$TAG"
+
+pulumi config set server_image_digest "$SERVER_DIGEST"
+pulumi config set enclave_image_digest "$ENCLAVE_DIGEST"
+```
+
+To build your own server image instead, run
+`docker buildx build -f server/Dockerfile --platform linux/amd64 .` from the
+repository root and push it to `$REG/server`.
+
+### Database migrations
+
+The `<prefix>-migrate` Cloud Run job runs
+`python3 -m alembic -c /app/server/alembic.ini upgrade head` from the server
+image, as the server service account, with the server's environment and
+Cloud SQL volume. It runs one task with no retries.
+
+The stack draws a new execution token whenever `server_image_digest` changes.
+`pulumi up` then starts an execution, waits for it to **succeed**, and only
+then updates the server service. A failed migration fails `pulumi up` and
+leaves the running server on its old image; read the job's logs in Cloud
+Run, fix the cause and run `pulumi up` again. The first deploy migrates the
+empty database the same way.
+
+To run it again by hand (for example after restoring a backup):
+
+```bash
+gcloud run jobs execute "$(pulumi stack output migration_job)" \
+  --region <region> --wait
+```
+
+The old server revision keeps serving while the job runs, so a migration
+must stay compatible with the previous image (add columns and tables first,
+remove them in a later release).
 
 ### Config keys
 
@@ -129,15 +243,15 @@ The outputs include `enclave_url`, `server_url`, `kms_key_version_name`,
 | `enclave_image_digest` | required* | Must appear in `allowed_digests`. Tags are refused |
 | `server_image_digest` | required* | Tags are refused |
 | `image_registry` | this stack's AR repo | Images are `<registry>/enclave@…` and `<registry>/server@…` |
-| `deploy_workloads` | `true` | `false` skips the VM and Cloud Run (*digests are then optional) |
-| `control_plane_url` | Cloud Run URL | Passed to the enclave as `CONTROL_PLANE_URL` |
-| `wif_audience` | provider resource name | The only audience WIF accepts. Must be stack-specific. `https://sts.googleapis.com` and `carapace-attestation` are refused |
+| `deploy_workloads` | `true` | `false` skips the VM, Cloud Run and the migration job (*digests are then optional) |
+| `control_plane_url` | `https://<prefix>-server-<project number>.<region>.run.app` | A bare `https://host[:port]` origin (no path or trailing slash). Used as the server's `CARAPACE_PUBLIC_URL`, the enclave's `CONTROL_PLANE_URL`, and in the WIF condition |
+| `wif_audience` | provider resource name | The only audience WIF accepts. Must be stack-specific. `https://sts.googleapis.com`, `carapace-attestation` and the control plane URL are refused |
 | `enclave_machine_type` | `n2d-standard-2` | Must support AMD SEV |
 | `db_tier` | `db-f1-micro` | |
 | `server_min_instances` / `server_max_instances` | `0` / `2` | |
 | `protect_kms_key` | `true` | Pulumi `protect` on the key ring and key |
 | `db_deletion_protection` | `true` | |
-| `enable_iam_alerts` / `alert_emails` | `false` / `[]` | Alert on changes to the decrypt path |
+| `enable_iam_alerts` / `alert_emails` | `true` / required | Alert on changes to the decrypt path. Set `enable_iam_alerts: "false"` to deploy without recipients |
 
 ### Rolling out a new enclave image
 
@@ -153,6 +267,13 @@ The enclave receives exactly three environment overrides:
 `CONTROL_PLANE_URL`, `KMS_KEY_NAME` (the key **version** resource name) and
 `WIF_AUDIENCE` (the STS audience). The image's launch policy must allow these
 three and nothing else.
+
+The enclave listens on **8443**, not 443. The image runs as a non-root user
+without capabilities, so it cannot bind a port below 1024. The Confidential
+Space launcher opens only the ports the image `EXPOSE`s, and a firewall rule
+cannot translate ports, so the listen port, the `EXPOSE`, the firewall rule
+and `enclave_url` all use 8443 (tests check this). The launch policy does not
+allow `tee-added-capabilities`.
 
 The VM also sets `tee-container-log-redirect=true`. This sends the
 container's stdout and stderr to Cloud Logging, and it is the only reason the
@@ -202,7 +323,7 @@ database still bill while the VM is stopped.
 - No DNS zones, custom domains, managed certificates, or load balancer. The
   enclave serves attested TLS on its IP; add a domain for the server
   yourself if you want one.
-- No SSH or other ingress besides tcp:443 to the enclave.
+- No SSH or other ingress besides tcp:8443 to the enclave.
 - No Workload Identity pool for CI (GitHub Actions) deploys.
 - No budget alerts, org policies, or VPC Service Controls.
 - No idle-stop scheduler for the VM.
@@ -216,9 +337,11 @@ database still bill while the VM is stopped.
 ## Residual risk
 
 A project owner can still change IAM on the key or loosen the WIF condition.
-Such changes appear in Cloud Audit Logs (Admin Activity, always on). Set
-`enable_iam_alerts` to get an alert within minutes. For self-hosters, the
-project owner is you.
+Such changes appear in Cloud Audit Logs (Admin Activity, always on), and the
+alert (on by default) fires within minutes. Every decrypt is also a Data
+Access entry, so a decrypt by anyone other than the attested enclave alerts
+too. Turning those logs off is itself a project `SetIamPolicy` change, which
+alerts. For self-hosters, the project owner is you.
 
 ## Open questions
 

@@ -23,6 +23,10 @@ from pydantic import (
 )
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from carapace_crypto import EnvelopeError
+from carapace_crypto.envelope import load_rsa_public_key
+from carapace_crypto.kms import is_kms_key_version_name
+
 MIN_JWT_SECRET_LENGTH = 32
 MIN_PROD_BCRYPT_ROUNDS = 12
 DEV_DATABASE_URL = "sqlite+aiosqlite:///./carapace-local.db"
@@ -88,7 +92,22 @@ class Settings(BaseSettings):
     attestation_service_account: str | None = None
     mock_attestation_public_key_pem: str | None = None
 
+    # The Cloud KMS public key clients seal envelopes to, served at
+    # /v1/kms/public-key. Clients only use it if it matches the key the
+    # attested enclave reports, so a wrong value here fails closed.
+    kms_public_key_pem: str | None = None
+    # Full projects/*/locations/*/keyRings/*/cryptoKeys/*/cryptoKeyVersions/N
+    # name, exactly as the enclave reports it.
+    kms_key_version: str | None = None
+
     rate_limit_enabled: bool = True
+    # How many X-Forwarded-For entries the trusted proxies in front of the
+    # server append; each hop normally appends the address it accepted the
+    # connection from (Cloud Run's frontend appends one, a Google external
+    # load balancer before it two). Rate limits and session records then
+    # key on that entry instead of the proxy's address. 0 keys on the peer
+    # address and ignores the header entirely. See ``proxy.py``.
+    trusted_proxy_hops: int = Field(default=0, ge=0)
     cleanup_interval_seconds: int = Field(default=3600, ge=10)
     max_request_body_bytes: int = Field(
         default=DEFAULT_MAX_REQUEST_BODY_BYTES, ge=MIN_MAX_REQUEST_BODY_BYTES
@@ -112,9 +131,33 @@ class Settings(BaseSettings):
             raise ConfigError(f"image digests must be sha256:<64 hex>: {bad}")
         return value
 
+    @field_validator("kms_public_key_pem")
+    @classmethod
+    def _check_kms_public_key(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        try:
+            load_rsa_public_key(value)
+        except EnvelopeError as exc:
+            raise ConfigError(f"kms_public_key_pem: {exc}") from None
+        return value
+
+    @field_validator("kms_key_version")
+    @classmethod
+    def _check_kms_key_version(cls, value: str | None) -> str | None:
+        if value is not None and not is_kms_key_version_name(value):
+            raise ConfigError(
+                "kms_key_version must be a full cryptoKeyVersions resource name"
+            )
+        return value
+
     @model_validator(mode="after")
     def _apply_mode(self) -> Settings:
         self._check_attestation_issuer()
+        if (self.kms_public_key_pem is None) != (self.kms_key_version is None):
+            raise ConfigError(
+                "kms_public_key_pem and kms_key_version must be set together"
+            )
         if self.mode == "dev":
             self._fill_dev_defaults()
         else:
