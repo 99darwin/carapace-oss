@@ -1,0 +1,142 @@
+"""Owner signing keys.
+
+Every Carapace owner holds an Ed25519 key on their own device. It signs
+envelopes (:mod:`carapace_crypto.envelope`) and grants
+(:mod:`carapace_crypto.grant`), and its fingerprint is embedded in every API
+key (:mod:`carapace_crypto.apikey`). The enclave learns the fingerprint from
+the key an agent presents, which the server never touches, and then requires
+that everything the server hands it chains to that fingerprint. See
+``docs/design/owner-signing.md``.
+
+Signatures are domain separated. For a context string ``ctx`` and a JSON
+object ``body``::
+
+    signing_input = ctx || 0x0A || canonical_json(body)
+    sig           = Ed25519.sign(owner_seed, signing_input)
+
+Canonical JSON escapes control characters, so the newline after the context
+is unambiguous. Context strings are ASCII, versioned, and never contain a
+newline.
+
+The fingerprint is the first 16 bytes of a tagged SHA-256 of the raw public
+key. 128 bits is enough because an attacker needs a *second preimage* (a key
+of their own with the victim's fingerprint), not a collision.
+
+Storage of the seed is a CLI concern. The interface is :attr:`OwnerKey.seed`
+and :meth:`OwnerKey.from_seed`; the CLI should keep the seed in a file with
+mode ``0600``, optionally passphrase-wrapped, and never send it anywhere.
+"""
+
+from __future__ import annotations
+
+import hmac
+from dataclasses import dataclass
+from typing import Any, Self
+
+from carapace_crypto.canonical import CanonicalJSONError, canonical_json
+from carapace_crypto.hashing import tagged_sha256
+from carapace_crypto.signing import KeyPair
+
+PUBLIC_KEY_SIZE = 32
+SEED_SIZE = 32
+SIGNATURE_SIZE = 64
+FINGERPRINT_SIZE = 16
+FINGERPRINT_TAG = b"carapace-owner-fp-v1"
+
+
+class SignatureError(ValueError):
+    """A signature did not verify, or its inputs were malformed."""
+
+
+def fingerprint(public_key: bytes) -> bytes:
+    """Return the 16-byte fingerprint of a raw Ed25519 public key.
+
+    Raises:
+        SignatureError: If ``public_key`` is not 32 bytes.
+    """
+    _require_public_key(public_key)
+    return tagged_sha256(FINGERPRINT_TAG, public_key)[:FINGERPRINT_SIZE]
+
+
+def fingerprints_match(public_key: bytes, expected: bytes) -> bool:
+    """Constant-time check that ``public_key`` has fingerprint ``expected``."""
+    return hmac.compare_digest(fingerprint(public_key), expected)
+
+
+def signing_input(context: bytes, body: dict[str, Any]) -> bytes:
+    """Return the exact bytes signed for ``body`` under ``context``.
+
+    Raises:
+        SignatureError: If the context is malformed or the body does not
+            canonicalize.
+    """
+    if not context or b"\n" in context:
+        raise SignatureError("context must be non-empty and newline-free")
+    try:
+        return context + b"\n" + canonical_json(body)
+    except CanonicalJSONError as exc:
+        raise SignatureError(f"body cannot be canonicalized: {exc}") from exc
+
+
+def verify_object(
+    public_key: bytes, context: bytes, body: dict[str, Any], signature: bytes
+) -> None:
+    """Verify an owner signature over ``body``. Raises on any failure.
+
+    Raises:
+        SignatureError: If the key or signature has the wrong length, the
+            body does not canonicalize, or the signature does not verify.
+    """
+    _require_public_key(public_key)
+    if len(signature) != SIGNATURE_SIZE:
+        raise SignatureError("signature must be 64 bytes")
+    message = signing_input(context, body)
+    if not KeyPair.verify(public_key, signature, message):
+        raise SignatureError("signature does not verify")
+
+
+@dataclass(frozen=True, slots=True)
+class OwnerKey:
+    """An owner's Ed25519 signing key. Lives only on the owner's device."""
+
+    _keypair: KeyPair
+
+    @classmethod
+    def generate(cls) -> Self:
+        return cls(KeyPair.generate())
+
+    @classmethod
+    def from_seed(cls, seed: bytes) -> Self:
+        """Rebuild the key from its 32-byte seed (the stored form).
+
+        Raises:
+            SignatureError: If the seed is not 32 bytes.
+        """
+        if len(seed) != SEED_SIZE:
+            raise SignatureError("seed must be 32 bytes")
+        return cls(KeyPair.from_private_bytes(seed))
+
+    @property
+    def seed(self) -> bytes:
+        """The 32-byte private seed. Store it; never log or transmit it."""
+        return self._keypair.private_key_bytes
+
+    @property
+    def public_key(self) -> bytes:
+        return self._keypair.public_key_bytes
+
+    @property
+    def fingerprint(self) -> bytes:
+        return fingerprint(self.public_key)
+
+    def sign_object(self, context: bytes, body: dict[str, Any]) -> bytes:
+        """Sign ``body`` under ``context``; see the module docstring."""
+        return self._keypair.sign(signing_input(context, body))
+
+    def __repr__(self) -> str:
+        return f"OwnerKey(fingerprint={self.fingerprint.hex()})"
+
+
+def _require_public_key(public_key: bytes) -> None:
+    if not isinstance(public_key, bytes) or len(public_key) != PUBLIC_KEY_SIZE:
+        raise SignatureError("public key must be 32 bytes")

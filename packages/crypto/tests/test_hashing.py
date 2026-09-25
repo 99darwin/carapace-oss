@@ -1,6 +1,16 @@
 """Tests for hashing utilities."""
 
-from carapace_crypto.hashing import hmac_sha256, hmac_sha256_verify, sha256, sha256_hex
+import hashlib
+
+import pytest
+
+from carapace_crypto.hashing import (
+    hmac_sha256,
+    hmac_sha256_verify,
+    sha256,
+    sha256_hex,
+    tagged_sha256,
+)
 
 
 class TestSHA256:
@@ -107,3 +117,18 @@ class TestHMAC:
         # Empty key
         result = hmac_sha256(b"", b"message")
         assert len(result) == 32
+
+
+class TestTaggedSHA256:
+    def test_framing(self):
+        expected = hashlib.sha256(b"carapace-test-v1\ndata").digest()
+        assert tagged_sha256(b"carapace-test-v1", b"data") == expected
+
+    def test_tags_separate_domains(self):
+        assert tagged_sha256(b"a", b"x") != tagged_sha256(b"b", b"x")
+        assert tagged_sha256(b"a", b"x") != sha256(b"x")
+
+    @pytest.mark.parametrize("tag", [b"", b"a\nb", b"a\n"])
+    def test_rejects_bad_tags(self, tag: bytes):
+        with pytest.raises(ValueError):
+            tagged_sha256(tag, b"x")
