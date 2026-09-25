@@ -12,6 +12,9 @@ from dataclasses import dataclass, field
 import pulumi
 
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+# A bare https origin: lowercase host and optional port, nothing after it.
+# Also keeps the value safe to embed in the WIF condition's CEL.
+CONTROL_PLANE_URL_PATTERN = re.compile(r"^https://[a-z0-9.-]+(:[0-9]{1,5})?$")
 # Short enough that every derived ID stays within GCP limits (service account
 # IDs max 30 chars, WIF pool/provider IDs max 32 chars).
 PREFIX_PATTERN = re.compile(r"^[a-z][a-z0-9-]{1,18}[a-z0-9]$")
@@ -37,6 +40,36 @@ def validate_digest(digest: str) -> str:
             "tags are not accepted"
         )
     return digest
+
+
+def validate_control_plane_url(url: str) -> str:
+    """Return ``url`` if it is a bare ``https://host[:port]`` origin, else raise.
+
+    The value is the server's public URL, the audience of enclave-to-server
+    tokens and a clause of the WIF condition, so it must match byte for byte
+    everywhere. A path or trailing slash would make that fragile.
+    """
+    if not CONTROL_PLANE_URL_PATTERN.fullmatch(url):
+        raise ConfigError(
+            f"control_plane_url {url!r} must be a bare lowercase https origin "
+            "such as 'https://api.example.com', with no path or trailing slash"
+        )
+    return url
+
+
+def reject_server_audience(wif_audience: str | None, control_plane_url: str) -> None:
+    """Refuse a WIF audience equal to the enclave-to-server token audience.
+
+    The enclave authenticates to the untrusted server with a bearer token whose
+    audience is the server's URL. If WIF accepted that audience, the server
+    could exchange the tokens it receives at STS and decrypt every secret.
+    """
+    if wif_audience is not None and wif_audience == control_plane_url:
+        raise ConfigError(
+            f"wif_audience {wif_audience!r} equals the control plane URL, the "
+            "audience of enclave-to-server tokens; the server must never be able "
+            "to exchange those tokens for decrypt access"
+        )
 
 
 def build_image_reference(repository: str, digest: str) -> str:
@@ -78,7 +111,7 @@ class StackConfig:
     protect_kms_key: bool = True
     db_deletion_protection: bool = True
     deploy_workloads: bool = True
-    enable_iam_alerts: bool = False
+    enable_iam_alerts: bool = True
     alert_emails: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
@@ -116,8 +149,16 @@ class StackConfig:
                 f"wif_audience {self.wif_audience!r} is not allowed; it must be "
                 "stack-specific and never a published token's audience"
             )
+        if self.control_plane_url is not None:
+            validate_control_plane_url(self.control_plane_url)
+            # The derived URL is checked again in build_attribute_condition.
+            reject_server_audience(self.wif_audience, self.control_plane_url)
         if self.enable_iam_alerts and not self.alert_emails:
-            raise ConfigError("enable_iam_alerts requires alert_emails")
+            raise ConfigError(
+                "IAM change alerts are on by default and need at least one "
+                "alert_emails entry; set enable_iam_alerts to false only if "
+                "you watch Cloud Audit Logs another way"
+            )
 
 
 def load_config() -> StackConfig:
@@ -143,7 +184,7 @@ def load_config() -> StackConfig:
         protect_kms_key=_get_bool(cfg, "protect_kms_key", default=True),
         db_deletion_protection=_get_bool(cfg, "db_deletion_protection", default=True),
         deploy_workloads=_get_bool(cfg, "deploy_workloads", default=True),
-        enable_iam_alerts=_get_bool(cfg, "enable_iam_alerts", default=False),
+        enable_iam_alerts=_get_bool(cfg, "enable_iam_alerts", default=True),
         alert_emails=cfg.get_object("alert_emails") or [],
     )
 

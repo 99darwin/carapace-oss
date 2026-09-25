@@ -5,7 +5,9 @@ stack's STS audience (by default the provider's full resource name) and
 presents it to STS through this pool. That audience is the only one the
 provider accepts. Tokens with the launcher's default audience or the
 client-facing ``carapace-attestation`` audience are published by the enclave
-and must never be exchangeable. Only tokens meeting every clause of
+and must never be exchangeable, and neither may the enclave-to-server token
+(audience: the control plane URL), which the untrusted server receives as a
+bearer token. Only tokens meeting every clause of
 ``build_attribute_condition`` are exchanged, and KMS decrypt is granted to the
 resulting ``principalSet`` for specific image digests. No service account is
 impersonated.
@@ -21,7 +23,7 @@ from dataclasses import dataclass
 import pulumi
 import pulumi_gcp as gcp
 
-from components.config import FORBIDDEN_WIF_AUDIENCES
+from components.config import FORBIDDEN_WIF_AUDIENCES, reject_server_audience
 
 CONFIDENTIAL_SPACE_ISSUER = "https://confidentialcomputing.googleapis.com"
 REQUIRED_HWMODEL = "GCP_AMD_SEV"
@@ -29,6 +31,8 @@ REQUIRED_SWNAME = "CONFIDENTIAL_SPACE"
 REQUIRED_DBGSTAT = "disabled-since-boot"
 REQUIRED_SUPPORT_ATTRIBUTE = "STABLE"
 PROVIDER_ID = "confidential-space"
+# Launch-time env override the condition pins (see enclave_vm.py).
+CONTROL_PLANE_URL_ENV = "CONTROL_PLANE_URL"
 
 # google.subject is limited to 127 bytes; the raw ``sub`` claim (a full GCE
 # instance URL) can exceed that, so use Google's documented compact form.
@@ -63,12 +67,17 @@ def build_attribute_condition(
     enclave_sa_email: str,
     allowed_digests: Sequence[str],
     audience: str,
+    control_plane_url: str,
 ) -> str:
     """Return the CEL condition every attestation token must satisfy."""
+    if not control_plane_url:
+        raise ValueError("control_plane_url must not be empty")
     if not allowed_digests:
         raise ValueError("allowed_digests must not be empty")
     if audience in FORBIDDEN_WIF_AUDIENCES:
         raise ValueError(f"audience {audience!r} must never be accepted by WIF")
+    # Runs on the resolved URL, so the derived Cloud Run URL is covered too.
+    reject_server_audience(audience, control_plane_url)
     digests = ", ".join(_cel_string(digest) for digest in allowed_digests)
     clauses = [
         # ``aud`` is a single string in Confidential Space tokens.
@@ -82,6 +91,11 @@ def build_attribute_condition(
         f"assertion.submods.container.image_digest in [{digests}]",
         f"assertion.submods.gce.project_id == {_cel_string(project_id)}",
         f"{_cel_string(enclave_sa_email)} in assertion.google_service_accounts",
+        # The allowed image can be booted by anyone who can create VMs in this
+        # project. Pinning the control plane stops a project Editor from
+        # pointing a decrypting enclave at a server of their own.
+        f"assertion.submods.container.env.{CONTROL_PLANE_URL_ENV}"
+        f" == {_cel_string(control_plane_url)}",
     ]
     return " && ".join(clauses)
 
@@ -110,6 +124,7 @@ def create_workload_identity(
     enclave_sa_email: pulumi.Input[str],
     allowed_digests: Sequence[str],
     audience: str | None,
+    control_plane_url: pulumi.Input[str],
     depends_on: Sequence[pulumi.Resource] = (),
 ) -> WorkloadIdentity:
     """Create the attestation pool and OIDC provider, in code."""
@@ -130,12 +145,15 @@ def create_workload_identity(
             )
         )
     )
-    condition = pulumi.Output.all(enclave_sa_email, sts_audience).apply(
+    condition = pulumi.Output.all(
+        enclave_sa_email, sts_audience, control_plane_url
+    ).apply(
         lambda args: build_attribute_condition(
             project_id=project_id,
             enclave_sa_email=args[0],
             allowed_digests=allowed_digests,
             audience=args[1],
+            control_plane_url=args[2],
         )
     )
     provider = gcp.iam.WorkloadIdentityPoolProvider(

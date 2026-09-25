@@ -2,14 +2,20 @@
 
 The server stores ciphertext, policy and receipts. It never sees plaintext,
 so it runs as an ordinary Cloud Run service with public ingress; auth is done
-by the application. The database password is generated here, stored only in
-Secret Manager, and injected into Cloud Run as a secret reference.
+by the application. The database URL (which embeds a generated password) and
+the JWT signing secret are generated here, stored only in Secret Manager, and
+injected into Cloud Run as secret references.
+
+Every environment variable name matches a ``CARAPACE_*`` setting in
+``server/src/carapace_server/config.py``. ``tests/test_server_env_contract.py``
+fails if the two drift apart.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from urllib.parse import quote
 
 import pulumi
 import pulumi_gcp as gcp
@@ -24,9 +30,13 @@ SQL_EDITION = "ENTERPRISE"
 DB_NAME = "carapace"
 DB_USER = "carapace"
 DB_PASSWORD_LENGTH = 40
+# The server refuses anything shorter than 32 characters.
+JWT_SECRET_LENGTH = 64
 CLOUDSQL_MOUNT_PATH = "/cloudsql"
 CONTAINER_PORT = 8080
 SERVER_MODE = "prod"
+SERVER_ENV_PREFIX = "CARAPACE_"
+SECRET_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor"  # noqa: S105
 
 
 @dataclass(frozen=True)
@@ -36,12 +46,53 @@ class Registry:
 
 
 @dataclass(frozen=True)
+class ServerSecret:
+    """A Secret Manager secret that only the server service account can read."""
+
+    secret: gcp.secretmanager.Secret
+    version: gcp.secretmanager.SecretVersion
+    access: gcp.secretmanager.SecretIamMember
+
+    def env(self, name: str) -> dict[str, object]:
+        """Cloud Run env entry that references this secret, never its value."""
+        return {
+            "name": name,
+            "value_source": {
+                "secret_key_ref": {
+                    "secret": self.secret.secret_id,
+                    "version": self.version.version,
+                }
+            },
+        }
+
+
+@dataclass(frozen=True)
 class Database:
     instance: gcp.sql.DatabaseInstance
-    password_secret: gcp.secretmanager.Secret
-    password_version: gcp.secretmanager.SecretVersion
-    password_access: gcp.secretmanager.SecretIamMember
+    url_secret: ServerSecret
     user: gcp.sql.User
+
+
+def server_service_name(prefix: str) -> str:
+    return f"{prefix}-server"
+
+
+def build_server_url(*, service_name: str, project_number: str, region: str) -> str:
+    """Cloud Run's deterministic URL for a service.
+
+    It is known before the service exists, so one value can serve as the
+    server's ``CARAPACE_PUBLIC_URL``, the enclave's ``CONTROL_PLANE_URL`` and a
+    clause of the WIF condition.
+    """
+    return f"https://{service_name}-{project_number}.{region}.run.app"
+
+
+def build_database_url(*, password: str, connection_name: str) -> str:
+    """asyncpg URL that connects through the Cloud SQL unix socket volume."""
+    return (
+        f"postgresql+asyncpg://{DB_USER}:{quote(password, safe='')}@/{DB_NAME}"
+        f"?host={CLOUDSQL_MOUNT_PATH}/{connection_name}"
+    )
 
 
 def create_registry(
@@ -59,6 +110,34 @@ def create_registry(
         lambda repo_id: f"{region}-docker.pkg.dev/{project}/{repo_id}"
     )
     return Registry(repository=repository, url=url)
+
+
+def create_server_secret(
+    *,
+    name: str,
+    value: pulumi.Input[str],
+    accessor_email: pulumi.Input[str],
+    depends_on: Sequence[pulumi.Resource] = (),
+) -> ServerSecret:
+    """Store ``value`` in Secret Manager, readable only by ``accessor_email``."""
+    secret = gcp.secretmanager.Secret(
+        f"{name}-secret",
+        secret_id=name,
+        replication={"auto": {}},
+        opts=pulumi.ResourceOptions(depends_on=list(depends_on)),
+    )
+    version = gcp.secretmanager.SecretVersion(
+        f"{name}-version",
+        secret=secret.id,
+        secret_data=pulumi.Output.secret(value),
+    )
+    access = gcp.secretmanager.SecretIamMember(
+        f"{name}-access",
+        secret_id=secret.id,
+        role=SECRET_ACCESSOR_ROLE,
+        member=pulumi.Output.concat("serviceAccount:", accessor_email),
+    )
+    return ServerSecret(secret=secret, version=version, access=access)
 
 
 def create_database(
@@ -100,48 +179,55 @@ def create_database(
         instance=instance.name,
         password=password.result,
     )
-    secret = gcp.secretmanager.Secret(
-        f"{prefix}-db-password-secret",
-        secret_id=f"{prefix}-db-password",
-        replication={"auto": {}},
-        opts=pulumi.ResourceOptions(depends_on=depends_on),
+    database_url = pulumi.Output.all(password.result, instance.connection_name).apply(
+        lambda args: build_database_url(password=args[0], connection_name=args[1])
     )
-    version = gcp.secretmanager.SecretVersion(
-        f"{prefix}-db-password-version",
-        secret=secret.id,
-        secret_data=password.result,
+    url_secret = create_server_secret(
+        name=f"{prefix}-database-url",
+        value=database_url,
+        accessor_email=server_sa_email,
+        depends_on=depends_on,
     )
-    password_access = gcp.secretmanager.SecretIamMember(
-        f"{prefix}-server-db-password-access",
-        secret_id=secret.id,
-        role="roles/secretmanager.secretAccessor",
-        member=pulumi.Output.concat("serviceAccount:", server_sa_email),
+    return Database(instance=instance, url_secret=url_secret, user=user)
+
+
+def create_jwt_secret(
+    *,
+    prefix: str,
+    server_sa_email: pulumi.Input[str],
+    depends_on: Sequence[pulumi.Resource] = (),
+) -> ServerSecret:
+    """Generate the server's JWT signing secret and store it in Secret Manager."""
+    value = random.RandomPassword(
+        f"{prefix}-jwt-secret-value", length=JWT_SECRET_LENGTH, special=False
     )
-    return Database(
-        instance=instance,
-        password_secret=secret,
-        password_version=version,
-        password_access=password_access,
-        user=user,
+    return create_server_secret(
+        name=f"{prefix}-jwt-secret",
+        value=value.result,
+        accessor_email=server_sa_email,
+        depends_on=depends_on,
     )
 
 
 def build_server_env(
     *,
-    connection_name: pulumi.Input[str],
-    kms_key_name: pulumi.Input[str],
+    public_url: pulumi.Input[str],
     allowed_digests: Sequence[str],
+    attestation_project_id: str,
+    attestation_service_account: pulumi.Input[str],
 ) -> list[dict[str, pulumi.Input[str]]]:
     """Plain (non-secret) environment for the server container."""
     values: dict[str, pulumi.Input[str]] = {
-        "CARAPACE_MODE": SERVER_MODE,
-        "DB_HOST": pulumi.Output.concat(CLOUDSQL_MOUNT_PATH, "/", connection_name),
-        "DB_NAME": DB_NAME,
-        "DB_USER": DB_USER,
-        "KMS_KEY_NAME": kms_key_name,
+        "MODE": SERVER_MODE,
+        "PUBLIC_URL": public_url,
         "ALLOWED_IMAGE_DIGESTS": ",".join(allowed_digests),
+        "ATTESTATION_PROJECT_ID": attestation_project_id,
+        "ATTESTATION_SERVICE_ACCOUNT": attestation_service_account,
     }
-    return [{"name": name, "value": value} for name, value in values.items()]
+    return [
+        {"name": f"{SERVER_ENV_PREFIX}{name}", "value": value}
+        for name, value in values.items()
+    ]
 
 
 def create_server_service(
@@ -152,30 +238,29 @@ def create_server_service(
     image_digest: str,
     service_account_email: pulumi.Input[str],
     database: Database,
-    kms_key_name: pulumi.Input[str],
+    jwt_secret: ServerSecret,
+    public_url: pulumi.Input[str],
     allowed_digests: Sequence[str],
+    attestation_project_id: str,
+    enclave_sa_email: pulumi.Input[str],
     min_instances: int,
     max_instances: int,
     depends_on: Sequence[pulumi.Resource] = (),
 ) -> gcp.cloudrunv2.Service:
     image = build_image_reference(image_repository, image_digest)
     plain_env = build_server_env(
-        connection_name=database.instance.connection_name,
-        kms_key_name=kms_key_name,
+        public_url=public_url,
         allowed_digests=allowed_digests,
+        attestation_project_id=attestation_project_id,
+        attestation_service_account=enclave_sa_email,
     )
-    secret_env = {
-        "name": "DB_PASSWORD",
-        "value_source": {
-            "secret_key_ref": {
-                "secret": database.password_secret.secret_id,
-                "version": database.password_version.version,
-            }
-        },
-    }
+    secret_env = [
+        database.url_secret.env(f"{SERVER_ENV_PREFIX}DATABASE_URL"),
+        jwt_secret.env(f"{SERVER_ENV_PREFIX}JWT_SECRET"),
+    ]
     return gcp.cloudrunv2.Service(
         f"{prefix}-server",
-        name=f"{prefix}-server",
+        name=server_service_name(prefix),
         location=region,
         ingress="INGRESS_TRAFFIC_ALL",
         # Public API; authentication is enforced by the application.
@@ -199,7 +284,7 @@ def create_server_service(
                 {
                     "image": image,
                     "ports": {"container_port": CONTAINER_PORT},
-                    "envs": [*plain_env, secret_env],
+                    "envs": [*plain_env, *secret_env],
                     "volume_mounts": [
                         {"name": "cloudsql", "mount_path": CLOUDSQL_MOUNT_PATH}
                     ],
@@ -207,6 +292,11 @@ def create_server_service(
             ],
         },
         opts=pulumi.ResourceOptions(
-            depends_on=[database.password_access, database.user, *depends_on]
+            depends_on=[
+                database.url_secret.access,
+                jwt_secret.access,
+                database.user,
+                *depends_on,
+            ]
         ),
     )
