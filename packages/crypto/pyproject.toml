@@ -1,0 +1,22 @@
+[project]
+name = "carapace-crypto"
+version = "0.1.0"
+description = "Envelope encryption, signing, and hashing primitives for Carapace"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "cryptography>=43",
+]
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security :: Cryptography",
+]
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/carapace_crypto"]
