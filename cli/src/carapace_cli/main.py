@@ -20,7 +20,6 @@ from carapace_cli.attestation import (
     COSIGN_NOT_VERIFIED_NOTICE,
     INSECURE_MOCK_BANNER,
     TrustPolicy,
-    load_release_manifest,
     validate_digest,
 )
 from carapace_cli.audit import (
@@ -169,10 +168,6 @@ def cmd_owner_show(_: argparse.Namespace, ctx: Context) -> int:
 
 def cmd_verify(args: argparse.Namespace, ctx: Context) -> int:
     digests = {validate_digest(d) for d in args.allow_digest}
-    for source in args.release_manifest:
-        manifest = load_release_manifest(source)
-        ctx.say(f"Release {manifest.tag}: {manifest.digest} (commit {manifest.commit})")
-        digests.add(manifest.digest)
     ctx.say(COSIGN_NOT_VERIFIED_NOTICE)
     mock_key_pem = None
     if args.insecure_mock:
@@ -433,8 +428,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     verify = sub.add_parser("verify", help="attest and pin the enclave")
     verify.add_argument("--enclave", required=True, help="https://host:port")
-    verify.add_argument("--allow-digest", action="append", default=[])
-    verify.add_argument("--release-manifest", action="append", default=[])
+    verify.add_argument(
+        "--allow-digest",
+        action="append",
+        default=[],
+        help="sha256:<hex> image digest to trust; compare it with the CI build",
+    )
     verify.add_argument(
         "--insecure-mock",
         action="store_true",

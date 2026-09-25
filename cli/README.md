@@ -13,7 +13,7 @@ leaves this machine.
 carapace init                                   # owner key; passphrase prompt
 carapace signup --server https://carapace.example.com --email you@example.com
 carapace verify --enclave https://enclave.example.com:8443 \
-    --release-manifest releases/v0.1.0.json     # or --allow-digest sha256:...
+    --allow-digest sha256:...                   # the digest CI printed for the release
 printf %s "$TOKEN" | carapace secret add github --host api.github.com
 carapace key create my-agent --secret github --output agent.key
 carapace request github GET https://api.github.com/user --api-key-file agent.key
@@ -61,8 +61,8 @@ refuses to overwrite one.
    (JWKS via OIDC discovery). The audience must be `carapace-attestation`
    and the token must not be expired. `hwmodel`, `swname`, `dbgstat`,
    `secboot` and the `STABLE` support attribute are checked.
-3. The container image digest is in your allowlist (`--allow-digest`,
-   `--release-manifest`). With no allowlist it fails.
+3. The container image digest is in your allowlist (`--allow-digest`).
+   With no allowlist it fails.
 4. `eat_nonce` is `sha256(TLS SPKI || receipt public key)`, which binds both
    keys to this boot.
 5. The server's `/v1/kms/public-key` must equal the attested KMS key and
@@ -76,9 +76,10 @@ no `verify=False` path.
 
 ### Limits
 
-- **Cosign signatures on release manifests are not verified.** A manifest
-  counts only as a list of digests that you chose to trust. Check its
-  signature out of band (`cosign verify-blob`) before passing it.
+- **Release signatures are not verified.** The CLI does not read release
+  manifests or check cosign/Rekor signatures. `--allow-digest` is the only
+  way to name a trusted image, and you must compare that digest with the
+  one the release build printed in CI (or that you reproduced) yourself.
 - `--insecure-mock --mock-issuer-key PEM` trusts the dev enclave's mock
   issuer. It is labelled loudly, stored in the pin, and accepts **only**
   `mock://local` tokens. It proves nothing about hardware; never use it
@@ -114,4 +115,4 @@ saves the pages so they can be checked later with `audit verify --file`.
 ## Not yet implemented
 
 - A loopback HTTP proxy for agents that cannot use the SDK.
-- Verifying cosign signatures on release manifests.
+- Release manifests and cosign/Rekor verification of release signatures.

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime
-import json
 import stat
 import uuid
 import warnings
@@ -253,21 +252,6 @@ def test_mock_issuer_key_requires_insecure_mock(owner) -> None:
     code, _, err = owner.cli(*args)
     assert code == 1
     assert "only valid with --insecure-mock" in err
-
-
-def test_verify_accepts_a_release_manifest(owner, tmp_path) -> None:
-    manifest = tmp_path / "v0.1.0.json"
-    manifest.write_text(
-        json.dumps(
-            {"tag": "v0.1.0", "digest": MOCK_IMAGE_DIGEST, "commit": "c", "epoch": 1}
-        )
-    )
-    args = owner.verify_args()
-    i = args.index("--allow-digest")
-    args[i : i + 2] = ["--release-manifest", str(manifest)]
-    code, _, err = owner.cli(*args)
-    assert code == 0, err
-    assert "Release v0.1.0" in err
 
 
 def test_verify_refuses_plain_http_enclave(owner) -> None:
