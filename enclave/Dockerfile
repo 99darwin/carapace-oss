@@ -45,8 +45,17 @@ RUN python -m pip install \
 COPY enclave/src/carapace_enclave/__init__.py \
      enclave/src/carapace_enclave/py.typed \
      /app/site-packages/carapace_enclave/
-COPY enclave/src/carapace_enclave/clock.py \
+COPY enclave/src/carapace_enclave/__main__.py \
+     enclave/src/carapace_enclave/broker.py \
+     enclave/src/carapace_enclave/clock.py \
+     enclave/src/carapace_enclave/dek_cache.py \
+     enclave/src/carapace_enclave/ratelimit.py \
+     enclave/src/carapace_enclave/receipts.py \
+     enclave/src/carapace_enclave/runtime.py \
      enclave/src/carapace_enclave/secure_memory.py \
+     enclave/src/carapace_enclave/server.py \
+     enclave/src/carapace_enclave/server_client.py \
+     enclave/src/carapace_enclave/tls.py \
      /app/site-packages/carapace_enclave/
 COPY enclave/src/carapace_enclave/attestation/ \
      /app/site-packages/carapace_enclave/attestation/
@@ -87,5 +96,4 @@ ENV PYTHONPATH=/app/site-packages \
 USER 65532:65532
 WORKDIR /app
 
-# carapace_enclave.__main__ (the attested HTTPS server) lands with milestone 6.
 ENTRYPOINT ["/usr/bin/python3", "-m", "carapace_enclave"]

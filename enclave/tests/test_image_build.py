@@ -366,3 +366,16 @@ def test_digest_script_refuses_ambiguous_or_missing_images(
     with pytest.raises(script.OciLayoutError):
         script.image_manifest_digest(str(layout))
     assert script.main([str(layout)]) == 1
+
+
+def test_every_enclave_module_is_copied() -> None:
+    """A new module under carapace_enclave must be added to the include list."""
+    package = ENCLAVE_DIR / "src" / "carapace_enclave"
+    sources = {source.rstrip("/") for source in _copy_sources()}
+    for path in sorted(package.iterdir()):
+        if path.name == "__pycache__":
+            continue
+        if path.is_file() and path.suffix not in {".py", ".typed"}:
+            continue
+        relative = path.relative_to(ENCLAVE_DIR.parent).as_posix()
+        assert relative in sources, f"{relative} missing from enclave/Dockerfile"
