@@ -23,6 +23,9 @@ SERVER_CONFIG = REPO_ROOT / "server" / "src" / "carapace_server" / "config.py"
 SETTINGS_CLASS = "Settings"
 REQUIRED_TUPLE = "PROD_REQUIRED_SETTINGS"
 SECRET_SETTINGS = ("database_url", "jwt_secret")
+# Not prod-required by the server, but without them /v1/kms/public-key is a
+# 404 and ``carapace verify`` fails against the deployment. Both are public.
+KMS_SETTINGS = ("kms_public_key_pem", "kms_key_version")
 
 
 def _parse_server_config() -> ast.Module:
@@ -106,3 +109,15 @@ def test_credentials_come_from_secret_manager(server_config, server_envs) -> Non
         env = server_envs[f"{prefix}{setting.upper()}"]
         assert env.get("value") is None, f"{setting} must not be a plain value"
         assert env["valueSource"]["secretKeyRef"]["secret"], setting
+
+
+def test_kms_public_key_settings_are_plain_values(server_config, server_envs) -> None:
+    prefix = _env_prefix(server_config)
+    fields = _settings_fields(server_config)
+    for setting in KMS_SETTINGS:
+        assert setting in fields, f"server no longer reads {setting}"
+        env = server_envs.get(f"{prefix}{setting.upper()}")
+        assert env is not None, f"{setting} is not set on the server"
+        assert "valueSource" not in env, f"{setting} is public; keep it plain"
+        assert isinstance(env.get("value"), str), setting
+        assert env["value"], setting

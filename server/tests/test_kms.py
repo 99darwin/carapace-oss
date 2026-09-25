@@ -7,14 +7,14 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 from pydantic import ValidationError
-from server_support import Account, create_account
+from server_support import KMS_KEY_VERSION, Account, create_account
 
 from carapace_server.app import create_app
 from carapace_server.config import Settings
 
 pytestmark = pytest.mark.anyio
 
-KEY_VERSION = "projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1"
+KEY_VERSION = KMS_KEY_VERSION
 
 
 def _public_pem(bits: int) -> str:
@@ -74,3 +74,28 @@ def test_rejects_a_weak_key() -> None:
 def test_rejects_a_key_without_a_version(kms_pem: str) -> None:
     with pytest.raises(ValidationError, match="set together"):
         Settings(mode="dev", kms_public_key_pem=kms_pem)
+
+
+@pytest.mark.parametrize(
+    "version",
+    [
+        KEY_VERSION.rsplit("/cryptoKeyVersions", 1)[0],  # key, not version
+        KEY_VERSION.replace("cryptoKeyVersions/1", "cryptoKeyVersions/0"),
+        KEY_VERSION + "/extra",
+        KEY_VERSION + "\n",
+        KEY_VERSION.replace("keyRings/mock", "keyRings/../x"),
+        "projects/p/locations/l/keyRings/r/cryptoKeys/k/cryptoKeyVersions/1",
+        "cryptoKeyVersions/1",
+        "",
+    ],
+)
+def test_rejects_a_malformed_key_version(kms_pem: str, version: str) -> None:
+    with pytest.raises(ValidationError, match="cryptoKeyVersions resource name"):
+        Settings(mode="dev", kms_public_key_pem=kms_pem, kms_key_version=version)
+
+
+def test_accepts_a_full_key_version_name(kms_pem: str) -> None:
+    settings = Settings(
+        mode="dev", kms_public_key_pem=kms_pem, kms_key_version=KEY_VERSION
+    )
+    assert settings.kms_key_version == KEY_VERSION

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -18,7 +19,13 @@ PUBLIC_KEY_VIEWER_ROLE = "roles/cloudkms.publicKeyViewer"
 # have no automatic rotation, so version 1 stays in use until an operator
 # rotates the key by hand.
 INITIAL_KEY_VERSION = 1
+PUBLIC_MEMBERS = frozenset({"allUsers", "allAuthenticatedUsers"})
+# One identity per member: a service account, user or group email, or a WIF
+# principalSet in a workload identity pool.
+EMAIL_MEMBER = re.compile(r"(?:serviceAccount|user|group):[^@\s:/]+@[^@\s:/]+\.[a-z]+")
+PRINCIPAL_SET_MEMBER = re.compile(r"principalSet://iam\.googleapis\.com/projects/\S+")
 EMPTY_POLICY = json.dumps({"bindings": []})
+PEM_PUBLIC_KEY_HEADER = "-----BEGIN PUBLIC KEY-----"
 KMS_SERVICE = "cloudkms.googleapis.com"
 # Cryptographic operations such as AsymmetricDecrypt are DATA_READ entries.
 KMS_DATA_ACCESS_LOG_TYPE = "DATA_READ"
@@ -78,6 +85,76 @@ def create_kms_key(
     )
 
 
+class KmsPublicKeyError(ValueError):
+    """The key version KMS reported is not the one the stack deploys."""
+
+
+def select_public_key_pem(
+    *,
+    name: str,
+    algorithm: str,
+    public_keys: Sequence[object],
+    expected_name: str,
+) -> str:
+    """Return the PEM of the key version the enclave is configured with.
+
+    ``expected_name`` is the version name handed to the enclave, which it
+    reports back to clients. The server advertises the PEM under that same
+    name, so a data source that resolved any other version (or no public key
+    yet) fails the deployment rather than shipping a mismatched pair.
+    """
+    if name != expected_name:
+        raise KmsPublicKeyError(
+            f"KMS returned key version {name!r}, expected {expected_name!r}"
+        )
+    if algorithm != KEY_ALGORITHM:
+        raise KmsPublicKeyError(f"KMS key version algorithm is {algorithm!r}")
+    if len(public_keys) != 1:
+        raise KmsPublicKeyError(
+            "KMS key version has no public key yet; re-run once it is ENABLED"
+        )
+    pem = getattr(public_keys[0], "pem", None)
+    if not isinstance(pem, str) or not pem.startswith(PEM_PUBLIC_KEY_HEADER):
+        raise KmsPublicKeyError("KMS public key is not a PEM public key")
+    return pem
+
+
+def read_public_key_pem(kms_key: KmsKey) -> pulumi.Output[str]:
+    """Read the public half of the key version the enclave decrypts with.
+
+    The public key is not secret; the server serves it at
+    ``/v1/kms/public-key`` so ``carapace verify`` can compare it with the key
+    the attested enclave reports.
+    """
+    version = gcp.kms.get_kms_crypto_key_version_output(
+        crypto_key=kms_key.crypto_key.id, version=INITIAL_KEY_VERSION
+    )
+    return pulumi.Output.all(version, kms_key.key_version_name).apply(
+        lambda args: select_public_key_pem(
+            name=args[0].name,
+            algorithm=args[0].algorithm,
+            public_keys=args[0].public_keys or [],
+            expected_name=args[1],
+        )
+    )
+
+
+def validate_viewer_member(member: str) -> str:
+    """Refuse public principals and anything that is not a single identity.
+
+    ``allUsers`` and ``allAuthenticatedUsers`` would publish the key's
+    metadata to the internet; a ``domain:`` or malformed member is refused
+    for the same reason: every viewer must name one principal.
+    """
+    if not isinstance(member, str):
+        raise ValueError(f"public key viewer must be a string: {member!r}")
+    if member in PUBLIC_MEMBERS:
+        raise ValueError(f"public key viewer must not be public: {member!r}")
+    if not (PRINCIPAL_SET_MEMBER.fullmatch(member) or EMAIL_MEMBER.fullmatch(member)):
+        raise ValueError(f"malformed public key viewer: {member!r}")
+    return member
+
+
 def build_key_policy(
     decrypter_members: Sequence[str], public_key_viewers: Sequence[str]
 ) -> str:
@@ -95,8 +172,10 @@ def build_key_policy(
     if not decrypter_members:
         raise ValueError("at least one decrypter member is required")
     for member in decrypter_members:
-        if not member.startswith("principalSet://"):
+        if not PRINCIPAL_SET_MEMBER.fullmatch(member):
             raise ValueError(f"decrypter must be a WIF principalSet: {member!r}")
+    for member in public_key_viewers:
+        validate_viewer_member(member)
     viewers = set(decrypter_members) | set(public_key_viewers)
     bindings = [
         {"role": DECRYPTER_ROLE, "members": sorted(decrypter_members)},

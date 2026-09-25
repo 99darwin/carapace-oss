@@ -1,6 +1,7 @@
 """Config and pure-function validation (no resources declared)."""
 
 import json
+from dataclasses import dataclass
 
 import pytest
 
@@ -13,7 +14,12 @@ from components.config import (  # noqa: E402
     validate_control_plane_url,
 )
 from components.enclave_vm import build_enclave_metadata  # noqa: E402
-from components.kms import build_key_policy  # noqa: E402
+from components.kms import (  # noqa: E402
+    KEY_ALGORITHM,
+    KmsPublicKeyError,
+    build_key_policy,
+    select_public_key_pem,
+)
 from components.server import build_database_url, build_server_url  # noqa: E402
 from components.wif import (  # noqa: E402
     build_attribute_condition,
@@ -98,6 +104,102 @@ def test_key_policy_makes_every_decrypter_a_public_key_viewer() -> None:
 def test_key_policy_refuses_non_principal_set_decrypter() -> None:
     with pytest.raises(ValueError, match="principalSet"):
         build_key_policy(["serviceAccount:x@example.com"], [])
+
+
+PRINCIPAL_SET = "principalSet://iam.googleapis.com/projects/1/x/" + DIGEST_A
+
+
+@pytest.mark.parametrize("viewer", ["allUsers", "allAuthenticatedUsers"])
+def test_key_policy_refuses_public_viewers(viewer: str) -> None:
+    with pytest.raises(ValueError, match="must not be public"):
+        build_key_policy([PRINCIPAL_SET], [viewer])
+
+
+@pytest.mark.parametrize(
+    "viewer",
+    [
+        "",
+        "server@example.com",
+        "serviceAccount:",
+        "serviceAccount:server",
+        "serviceAccount:server@example.com ",
+        "serviceAccount: server@example.com",
+        "serviceAccount:a@b@example.com",
+        "domain:example.com",
+        "deleted:serviceAccount:server@example.com?uid=1",
+        "principal://iam.googleapis.com/projects/1/x",
+        "principalSet://",
+        "principalSet://evil.example.com/projects/1/x",
+        "allusers",
+        None,
+    ],
+)
+def test_key_policy_refuses_malformed_viewers(viewer: object) -> None:
+    with pytest.raises(ValueError, match="viewer"):
+        build_key_policy([PRINCIPAL_SET], [viewer])
+
+
+def test_key_policy_refuses_malformed_decrypter() -> None:
+    with pytest.raises(ValueError, match="principalSet"):
+        build_key_policy(["principalSet://"], [])
+
+
+@pytest.mark.parametrize(
+    "viewer",
+    [
+        "serviceAccount:cptest-server@example-project.iam.gserviceaccount.com",
+        "user:ops@example.com",
+        "group:kms-viewers@example.com",
+    ],
+)
+def test_key_policy_accepts_single_identity_viewers(viewer: str) -> None:
+    policy = json.loads(build_key_policy([PRINCIPAL_SET], [viewer]))
+    bindings = {b["role"]: b["members"] for b in policy["bindings"]}
+    assert viewer in bindings["roles/cloudkms.publicKeyViewer"]
+
+
+KEY_VERSION = (
+    "projects/example-project/locations/us-central1/keyRings/r"
+    "/cryptoKeys/k/cryptoKeyVersions/1"
+)
+PEM = "-----BEGIN PUBLIC KEY-----\nAAAA\n-----END PUBLIC KEY-----\n"
+
+
+@dataclass(frozen=True)
+class _PublicKey:
+    pem: str
+    algorithm: str = KEY_ALGORITHM
+
+
+def _select(**overrides: object) -> str:
+    args: dict[str, object] = {
+        "name": KEY_VERSION,
+        "algorithm": KEY_ALGORITHM,
+        "public_keys": [_PublicKey(PEM)],
+        "expected_name": KEY_VERSION,
+    }
+    args.update(overrides)
+    return select_public_key_pem(**args)
+
+
+def test_public_key_pem_is_taken_from_the_expected_version() -> None:
+    assert _select() == PEM
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"name": KEY_VERSION.replace("/1", "/2")}, "expected"),
+        ({"algorithm": "RSA_DECRYPT_OAEP_2048_SHA256"}, "algorithm"),
+        ({"public_keys": []}, "no public key"),
+        ({"public_keys": [_PublicKey(PEM), _PublicKey(PEM)]}, "no public key"),
+        ({"public_keys": [_PublicKey("not a pem")]}, "not a PEM"),
+        ({"public_keys": [object()]}, "not a PEM"),
+    ],
+)
+def test_public_key_pem_fails_closed(overrides: dict, match: str) -> None:
+    with pytest.raises(KmsPublicKeyError, match=match):
+        _select(**overrides)
 
 
 @pytest.mark.parametrize(
