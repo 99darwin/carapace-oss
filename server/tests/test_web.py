@@ -1,5 +1,6 @@
 """The built web UI is served with security headers; the API is not."""
 
+import os
 from pathlib import Path
 
 import httpx
@@ -9,7 +10,7 @@ from pydantic import ValidationError
 
 from carapace_server.app import create_app
 from carapace_server.config import Settings
-from carapace_server.web import CONTENT_SECURITY_POLICY
+from carapace_server.web import CONTENT_SECURITY_POLICY, is_hidden
 
 pytestmark = pytest.mark.anyio
 
@@ -53,6 +54,7 @@ def test_csp_is_strict() -> None:
     assert directives["script-src"] == "'self'"
     assert directives["frame-ancestors"] == "'none'"
     assert directives["require-trusted-types-for"] == "'script'"
+    assert directives["trusted-types"] == "'none'"
     assert "unsafe" not in CONTENT_SECURITY_POLICY
 
 
@@ -115,3 +117,31 @@ async def test_no_web_dir_serves_nothing(client) -> None:
 def test_web_dir_must_exist(tmp_path: Path) -> None:
     with pytest.raises(ValidationError):
         Settings(mode="dev", web_dir=tmp_path / "missing")
+
+
+async def test_dotfiles_and_outside_symlinks_are_not_served(
+    web_settings, web_dir, tmp_path, app
+) -> None:
+    (web_dir / ".env").write_text("CARAPACE_JWT_SECRET=x")
+    (web_dir / ".well-known").mkdir()
+    (web_dir / ".well-known" / "x.txt").write_text("hidden")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside")
+    (web_dir / "assets" / "link.txt").symlink_to(outside)
+    async with _client(web_settings, app) as client:
+        responses = [
+            await client.get(path)
+            for path in ("/.env", "/.well-known/x.txt", "/assets/link.txt")
+        ]
+    for response in responses:
+        assert response.status_code == 404, response.request.url
+        assert "CARAPACE" not in response.text
+        _assert_security_headers(response)
+
+
+@pytest.mark.parametrize(
+    ("path", "hidden"),
+    [(".", False), ("index.html", False), (".env", True), ("a/.b/c", True)],
+)
+def test_is_hidden(path: str, hidden: bool) -> None:
+    assert is_hidden(os.path.normpath(path)) is hidden

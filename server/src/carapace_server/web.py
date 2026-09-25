@@ -26,6 +26,9 @@ CONTENT_SECURITY_POLICY = "; ".join(
         "form-action 'self'",
         "frame-ancestors 'none'",
         "require-trusted-types-for 'script'",
+        # No policy may be created, so nothing can launder a string into
+        # a DOM sink: React and Vite's output need none.
+        "trusted-types 'none'",
     )
 )
 PERMISSIONS_POLICY = ", ".join(
@@ -58,11 +61,21 @@ IMMUTABLE_CACHE = "public, max-age=31536000, immutable"
 REVALIDATE_CACHE = "no-cache"
 
 
+def is_hidden(path: str) -> bool:
+    """True if any component of the normalised path is a dotfile.
+
+    ``StaticFiles`` serves anything under the directory, so a stray
+    ``.env`` or ``.git`` copied next to the build would be public. The root
+    itself normalises to ``"."`` and is not hidden.
+    """
+    return any(part.startswith(".") and part != "." for part in path.split(os.sep))
+
+
 class SecureStaticFiles(StaticFiles):
     """``StaticFiles`` that adds security and cache headers to every response.
 
     Error responses (404, 405) get the same headers, so a missing path never
-    renders without the CSP.
+    renders without the CSP. Dotfiles are never served.
     """
 
     def __init__(self, *, directory: str | os.PathLike[str], hsts: bool) -> None:
@@ -71,6 +84,8 @@ class SecureStaticFiles(StaticFiles):
 
     async def get_response(self, path: str, scope: Scope) -> Response:
         try:
+            if is_hidden(path):
+                raise HTTPException(status_code=404)
             response = await super().get_response(path, scope)
         except HTTPException as exc:
             response = PlainTextResponse(exc.detail, status_code=exc.status_code)
