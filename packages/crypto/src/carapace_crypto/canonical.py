@@ -10,9 +10,9 @@ byte-identical output, so the encoding is deliberately narrow:
 * Floats are rejected, including NaN and the infinities. Integers must lie in
   the IEEE-754 safe range ``[-(2**53 - 1), 2**53 - 1]`` so JavaScript clients
   round-trip them exactly.
-* Object keys are sorted by Unicode code point, which is the same order as
-  sorting their UTF-8 encodings bytewise. (JavaScript's default sort compares
-  UTF-16 code units, which differs for keys outside the BMP.)
+* Object keys are sorted by their UTF-16 code units, as RFC 8785 §3.2.3
+  requires (and as JavaScript's default string sort does). This differs from
+  code point order only for keys outside the BMP.
 * No insignificant whitespace: separators are ``,`` and ``:``.
 * Strings are emitted as UTF-8 with no ``\\u`` escaping of non-ASCII
   characters. Only ``"``, ``\\`` and control characters U+0000..U+001F are
@@ -49,16 +49,31 @@ def canonical_json(value: dict[str, Any]) -> bytes:
         raise CanonicalJSONError("top-level value must be a JSON object")
     _validate(value, depth=0)
     text = json.dumps(
-        value,
+        _sorted(value),
         ensure_ascii=False,
         allow_nan=False,
-        sort_keys=True,
+        sort_keys=False,
         separators=(",", ":"),
     )
     try:
         return text.encode("utf-8")
     except UnicodeEncodeError as exc:
         raise CanonicalJSONError("strings must not contain lone surrogates") from exc
+
+
+def _utf16_key(key: str) -> bytes:
+    # Big-endian UTF-16 compares bytewise in code-unit order. Lone surrogates
+    # are rejected later, when the output is encoded as UTF-8.
+    return key.encode("utf-16-be", errors="surrogatepass")
+
+
+def _sorted(value: Any) -> Any:
+    """Rebuild ``value`` with every object's keys in RFC 8785 order."""
+    if isinstance(value, dict):
+        return {k: _sorted(value[k]) for k in sorted(value, key=_utf16_key)}
+    if isinstance(value, (list, tuple)):
+        return [_sorted(item) for item in value]
+    return value
 
 
 def _validate(value: Any, depth: int) -> None:

@@ -16,10 +16,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from carapace_crypto.canonical import canonical_json
-from carapace_crypto.envelope import _seal
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
+
+from carapace_crypto.canonical import canonical_json
+from carapace_crypto.envelope import _seal
 
 VECTORS_PATH = Path(__file__).with_name("envelope_v1.json")
 RSA_BITS = 4096
@@ -80,6 +81,21 @@ CANONICAL_CASES: list[dict[str, Any]] = [
     {"name": "sorted-keys", "value": {"b": 1, "a": 2, "A": 3}},
     {"name": "nested", "value": {"z": {"y": [3, {"b": None, "a": False}]}}},
     {"name": "unicode-order", "value": {"é": 1, "z": 2, "\U0001f511": 3}},
+    {
+        # RFC 8785 §3.2.3: sorted by UTF-16 code units, so U+1F600 (a
+        # surrogate pair) sorts between U+20AC and U+FB33.
+        "name": "utf16-key-order",
+        "value": {
+            "\u20ac": 0,
+            "\r": 1,
+            "\ufb33": 2,
+            "1": 3,
+            "\U0001f600": 4,
+            "\u0080": 5,
+            "\u00f6": 6,
+            "\uff61": 7,
+        },
+    },
     {"name": "escapes", "value": {"s": '"\\/\b\f\n\r\t\u0000\u001f\u007f'}},
     {"name": "safe-integers", "value": {"max": 2**53 - 1, "min": -(2**53 - 1)}},
     {"name": "empty", "value": {}},

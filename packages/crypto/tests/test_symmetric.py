@@ -1,6 +1,8 @@
 """Tests for symmetric encryption."""
 
 import pytest
+from cryptography.exceptions import InvalidTag
+
 from carapace_crypto.symmetric import (
     KEY_SIZE,
     NONCE_SIZE,
@@ -9,7 +11,6 @@ from carapace_crypto.symmetric import (
     encrypt_aes_gcm,
     generate_key,
 )
-from cryptography.exceptions import InvalidTag
 
 
 class TestGenerateKey:

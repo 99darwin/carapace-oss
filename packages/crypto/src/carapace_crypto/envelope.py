@@ -14,6 +14,14 @@ the AAD. Anyone who edits the stored policy, secret id or owner id makes
 decryption fail. See :mod:`carapace_crypto.canonical` for the exact JSON
 canonicalization.
 
+``kms_key_version`` is *not* authenticated: it is needed before the DEK can be
+unwrapped. Callers must check it against their own key ring before using it
+to build a KMS resource name, and never interpolate it unchecked.
+
+Zeroization of the DEK is best effort. The ``bytearray`` copies this module
+controls are cleared, but the RNG, the RSA encryption and the unwrapper
+exchange immutable ``bytes`` that Python cannot wipe.
+
 Serialized form (``Envelope.to_dict``): a JSON object with ``v``,
 ``secret_id``, ``owner_id``, ``policy``, ``kms_key_version`` (string or null)
 and ``wrapped``, ``nonce``, ``ct`` as standard padded base64 (RFC 4648 §4).
@@ -23,6 +31,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import hashlib
 import secrets
 from collections.abc import Callable
@@ -34,13 +43,15 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from carapace_crypto.canonical import canonical_json
+from carapace_crypto.canonical import CanonicalJSONError, canonical_json
 
 ENVELOPE_VERSION = 1
 DEK_SIZE = 32
 NONCE_SIZE = 12
 MIN_RSA_BITS = 3072
 MAX_PLAINTEXT_BYTES = 64 * 1024
+GCM_TAG_SIZE = 16
+MAX_RSA_BITS = 8192
 
 DekUnwrapper = Callable[[bytes], bytes]
 RandomBytes = Callable[[int], bytes]
@@ -101,17 +112,19 @@ class Envelope:
         key_version = data.get("kms_key_version")
         if key_version is not None and not isinstance(key_version, str):
             raise EnvelopeError("kms_key_version must be a string or null")
+        secret_id = _require_id(data.get("secret_id"), "secret_id")
+        owner_id = _require_id(data.get("owner_id"), "owner_id")
+        compute_aad(secret_id, owner_id, policy)  # policy must canonicalize
         envelope = cls(
-            secret_id=_require_id(data.get("secret_id"), "secret_id"),
-            owner_id=_require_id(data.get("owner_id"), "owner_id"),
-            policy=policy,
+            secret_id=secret_id,
+            owner_id=owner_id,
+            policy=copy.deepcopy(policy),
             wrapped=_b64d(data.get("wrapped"), "wrapped"),
             nonce=_b64d(data.get("nonce"), "nonce"),
             ct=_b64d(data.get("ct"), "ct"),
             kms_key_version=key_version,
         )
-        if len(envelope.nonce) != NONCE_SIZE:
-            raise EnvelopeError("nonce must be 12 bytes")
+        _check_sizes(envelope)
         return envelope
 
 
@@ -123,7 +136,10 @@ def compute_aad(secret_id: str, owner_id: str, policy: dict[str, Any]) -> bytes:
         "owner_id": _require_id(owner_id, "owner_id"),
         "policy": policy,
     }
-    return hashlib.sha256(canonical_json(bound)).digest()
+    try:
+        return hashlib.sha256(canonical_json(bound)).digest()
+    except CanonicalJSONError as exc:
+        raise EnvelopeError(f"policy cannot be canonicalized: {exc}") from exc
 
 
 def load_rsa_public_key(public_key_pem: bytes | str) -> rsa.RSAPublicKey:
@@ -201,7 +217,7 @@ def _seal(
     return Envelope(
         secret_id=secret_id,
         owner_id=owner_id,
-        policy=policy,
+        policy=copy.deepcopy(policy),
         wrapped=wrapped,
         nonce=nonce,
         ct=ct,
@@ -212,45 +228,52 @@ def _seal(
 def open_with_dek_unwrapper(
     envelope: Envelope,
     unwrap: DekUnwrapper,
-    secret_id: str,
-    owner_id: str,
-    policy: dict[str, Any],
-) -> bytes:
-    """Decrypt an envelope, authenticating it against the expected identity.
+    *,
+    expected_secret_id: str,
+    expected_owner_id: str,
+) -> tuple[bytes, dict[str, Any]]:
+    """Decrypt an envelope and return ``(plaintext, policy)``.
 
-    ``secret_id``, ``owner_id`` and ``policy`` are the values the caller is
-    about to enforce. The AAD is recomputed from them, so an envelope whose
-    stored policy was widened, or that was swapped between secrets or owners,
-    fails to open.
+    ``expected_secret_id`` and ``expected_owner_id`` must come from the
+    authenticated request (the secret the agent asked for, the owner the
+    agent belongs to), never from the envelope itself. Otherwise a malicious
+    store could hand one owner's envelope to another owner's request.
+
+    The returned policy is the stored one, authenticated by the AEAD tag; it
+    is the only policy the caller may enforce. There is no ``expected_policy``
+    because the enclave has no independent source for it.
 
     ``unwrap`` turns the wrapped DEK into the 32-byte DEK, for example by
     calling Cloud KMS ``asymmetricDecrypt``. Exceptions it raises propagate
     unchanged, so transport errors are not mistaken for tampering.
 
     Raises:
-        EnvelopeError: If the envelope is malformed or does not match the
-            expected identity.
+        EnvelopeError: If the envelope is malformed or belongs to a different
+            secret or owner.
         EnvelopeDecryptionError: If the DEK or ciphertext fails authentication.
     """
     if envelope.v != ENVELOPE_VERSION:
         raise EnvelopeError(f"unsupported envelope version: {envelope.v!r}")
-    if len(envelope.nonce) != NONCE_SIZE:
-        raise EnvelopeError("nonce must be 12 bytes")
-    aad = compute_aad(secret_id, owner_id, policy)
-    stored_aad = compute_aad(envelope.secret_id, envelope.owner_id, envelope.policy)
-    if aad != stored_aad:
-        raise EnvelopeError("envelope does not match the expected secret or policy")
+    _check_sizes(envelope)
+    if (envelope.secret_id, envelope.owner_id) != (
+        expected_secret_id,
+        expected_owner_id,
+    ):
+        raise EnvelopeError("envelope does not belong to the expected secret/owner")
+    policy = copy.deepcopy(envelope.policy)
+    aad = compute_aad(expected_secret_id, expected_owner_id, policy)
 
     dek = bytearray(unwrap(envelope.wrapped))
     try:
         if len(dek) != DEK_SIZE:
             raise EnvelopeDecryptionError("unwrapped DEK has the wrong length")
         try:
-            return AESGCM(dek).decrypt(envelope.nonce, envelope.ct, aad)
+            plaintext = AESGCM(dek).decrypt(envelope.nonce, envelope.ct, aad)
         except InvalidTag as exc:
             raise EnvelopeDecryptionError("ciphertext failed authentication") from exc
     finally:
         _zero(dek)
+    return plaintext, policy
 
 
 def rsa_oaep_unwrapper(private_key: rsa.RSAPrivateKey) -> DekUnwrapper:
@@ -266,6 +289,15 @@ def rsa_oaep_unwrapper(private_key: rsa.RSAPrivateKey) -> DekUnwrapper:
             raise EnvelopeDecryptionError("DEK unwrap failed") from exc
 
     return unwrap
+
+
+def _check_sizes(envelope: Envelope) -> None:
+    if len(envelope.nonce) != NONCE_SIZE:
+        raise EnvelopeError("nonce must be 12 bytes")
+    if not MIN_RSA_BITS // 8 <= len(envelope.wrapped) <= MAX_RSA_BITS // 8:
+        raise EnvelopeError("wrapped DEK has an invalid length")
+    if not GCM_TAG_SIZE < len(envelope.ct) <= MAX_PLAINTEXT_BYTES + GCM_TAG_SIZE:
+        raise EnvelopeError("ciphertext has an invalid length")
 
 
 def _zero(buffer: bytearray) -> None:

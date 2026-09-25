@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+
 from carapace_crypto.canonical import (
     MAX_DEPTH,
     MAX_SAFE_INTEGER,
@@ -44,10 +45,25 @@ def test_encoding(value: dict[str, Any], expected: bytes) -> None:
     assert canonical_json(value) == expected
 
 
-def test_key_order_is_code_point_order() -> None:
-    # U+FF61 sorts after U+1F511 in UTF-16 but before it by code point.
-    encoded = canonical_json({"\U0001f511": 1, "｡": 2})
-    assert encoded == '{"｡":2,"\U0001f511":1}'.encode()
+def test_key_order_is_utf16_code_unit_order() -> None:
+    # RFC 8785 §3.2.3: U+1F511 (surrogates D83D DD11) sorts before U+FF61,
+    # although it is the larger code point. Output matches JCS implementations
+    # and ``JSON.stringify`` over ``Object.keys(o).sort()``.
+    encoded = canonical_json({"｡": 2, "\U0001f511": 1})
+    assert encoded == '{"\U0001f511":1,"｡":2}'.encode()
+
+
+def test_nested_key_order() -> None:
+    value = {"z": {"b": [{"y": 1, "x": 2}], "a": None}, "a": 0}
+    assert canonical_json(value) == b'{"a":0,"z":{"a":null,"b":[{"x":2,"y":1}]}}'
+
+
+def test_rfc8785_sorting_example() -> None:
+    # RFC 8785 §3.2.3 key-sorting example (values replaced for brevity).
+    keys = ["\u20ac", "\r", "\ufb33", "1", "\U0001f600", "\u0080", "\u00f6"]
+    encoded = canonical_json({key: 0 for key in keys}).decode()
+    expected = ["\r", "1", "\u0080", "\u00f6", "\u20ac", "\U0001f600", "\ufb33"]
+    assert list(json.loads(encoded)) == expected
 
 
 def test_insertion_order_irrelevant() -> None:

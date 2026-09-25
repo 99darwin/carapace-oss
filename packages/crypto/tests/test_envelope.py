@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 from carapace_crypto.envelope import (
     DEK_SIZE,
     MAX_PLAINTEXT_BYTES,
@@ -24,9 +28,6 @@ from carapace_crypto.envelope import (
     rsa_oaep_unwrapper,
     seal,
 )
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric import ec, rsa
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 VECTORS = json.loads(
     (Path(__file__).parent / "vectors" / "envelope_v1.json").read_text()
@@ -69,13 +70,15 @@ def _sealed() -> Envelope:
 
 
 def _open(envelope: Envelope, **overrides: Any) -> bytes:
-    args = {
-        "secret_id": envelope.secret_id,
-        "owner_id": envelope.owner_id,
-        "policy": envelope.policy,
-    }
+    # Expected identity comes from the (simulated) authenticated request,
+    # never from the envelope under test.
+    args = {"expected_secret_id": SECRET_ID, "expected_owner_id": OWNER_ID}
     args.update(overrides)
-    return open_with_dek_unwrapper(envelope, rsa_oaep_unwrapper(_private_key()), **args)
+    plaintext, policy = open_with_dek_unwrapper(
+        envelope, rsa_oaep_unwrapper(_private_key()), **args
+    )
+    assert policy == envelope.policy
+    return plaintext
 
 
 def _flip(data: bytes, index: int = 0) -> bytes:
@@ -112,10 +115,34 @@ class TestRoundTrip:
     def test_accepts_3072_bit_key(self) -> None:
         key = _other_private_key()
         envelope = seal(_public_pem(key), SECRET_ID, OWNER_ID, POLICY, PLAINTEXT)
-        opened = open_with_dek_unwrapper(
-            envelope, rsa_oaep_unwrapper(key), SECRET_ID, OWNER_ID, POLICY
+        opened, _ = open_with_dek_unwrapper(
+            envelope,
+            rsa_oaep_unwrapper(key),
+            expected_secret_id=SECRET_ID,
+            expected_owner_id=OWNER_ID,
         )
         assert opened == PLAINTEXT
+
+    def test_returns_authenticated_policy_copy(self) -> None:
+        envelope = _sealed()
+        _, policy = open_with_dek_unwrapper(
+            envelope,
+            rsa_oaep_unwrapper(_private_key()),
+            expected_secret_id=SECRET_ID,
+            expected_owner_id=OWNER_ID,
+        )
+        assert policy == POLICY
+        policy["methods"].append("DELETE")
+        assert envelope.policy == POLICY
+
+    def test_seal_does_not_alias_caller_policy(self) -> None:
+        policy = copy.deepcopy(POLICY)
+        envelope = seal(
+            _public_pem(_private_key()), SECRET_ID, OWNER_ID, policy, PLAINTEXT
+        )
+        policy["methods"].append("DELETE")
+        assert envelope.policy == POLICY
+        assert _open(envelope) == PLAINTEXT
 
 
 class TestTampering:
@@ -126,28 +153,38 @@ class TestTampering:
         widened = copy.deepcopy(envelope.policy)
         widened["hosts"].append({"match": "suffix", "value": ".attacker.test"})
         tampered = dataclasses.replace(envelope, policy=widened)
-        # The enclave enforces the stored policy, so it passes that one in.
         with pytest.raises(EnvelopeDecryptionError):
             _open(tampered)
 
-    def test_expected_policy_mismatch_fails(self) -> None:
-        widened = {**POLICY, "methods": ["GET", "DELETE"]}
-        with pytest.raises(EnvelopeError):
-            _open(_sealed(), policy=widened)
+    def test_nested_policy_edit_fails(self) -> None:
+        envelope = _sealed()
+        edited = copy.deepcopy(envelope.policy)
+        edited["limits"]["resp_bytes"] = 10**9
+        with pytest.raises(EnvelopeDecryptionError):
+            _open(dataclasses.replace(envelope, policy=edited))
 
-    def test_policy_key_order_does_not_matter(self) -> None:
-        reordered = dict(reversed(list(POLICY.items())))
-        assert _open(_sealed(), policy=reordered) == PLAINTEXT
+    def test_stored_policy_key_order_does_not_matter(self) -> None:
+        envelope = _sealed()
+        reordered = {
+            key: (dict(reversed(value.items())) if isinstance(value, dict) else value)
+            for key, value in reversed(list(envelope.policy.items()))
+        }
+        assert _open(dataclasses.replace(envelope, policy=reordered)) == PLAINTEXT
 
-    @pytest.mark.parametrize("field", ["secret_id", "owner_id"])
-    def test_swapped_identity_in_storage_fails(self, field: str) -> None:
+    @pytest.mark.parametrize(
+        ("field", "expected_field"),
+        [("secret_id", "expected_secret_id"), ("owner_id", "expected_owner_id")],
+    )
+    def test_relabeled_envelope_fails(self, field: str, expected_field: str) -> None:
+        # A malicious store relabels owner A's envelope as owner B's and serves
+        # it to owner B's request: the labels match, the AAD does not.
         tampered = dataclasses.replace(_sealed(), **{field: "someone-else"})
         with pytest.raises(EnvelopeDecryptionError):
-            _open(tampered)
+            _open(tampered, **{expected_field: "someone-else"})
 
-    @pytest.mark.parametrize("field", ["secret_id", "owner_id"])
+    @pytest.mark.parametrize("field", ["expected_secret_id", "expected_owner_id"])
     def test_expected_identity_mismatch_fails(self, field: str) -> None:
-        with pytest.raises(EnvelopeError):
+        with pytest.raises(EnvelopeError, match="expected"):
             _open(_sealed(), **{field: "someone-else"})
 
     @pytest.mark.parametrize("index", [0, -1])
@@ -186,15 +223,17 @@ class TestTampering:
             open_with_dek_unwrapper(
                 envelope,
                 rsa_oaep_unwrapper(_other_private_key()),
-                SECRET_ID,
-                OWNER_ID,
-                POLICY,
+                expected_secret_id=SECRET_ID,
+                expected_owner_id=OWNER_ID,
             )
 
     def test_unwrapper_returning_wrong_length_fails(self) -> None:
         with pytest.raises(EnvelopeDecryptionError):
             open_with_dek_unwrapper(
-                _sealed(), lambda _: b"\x00" * 16, SECRET_ID, OWNER_ID, POLICY
+                _sealed(),
+                lambda _: b"\x00" * 16,
+                expected_secret_id=SECRET_ID,
+                expected_owner_id=OWNER_ID,
             )
 
     def test_unwrapper_errors_propagate(self) -> None:
@@ -203,7 +242,10 @@ class TestTampering:
 
         with pytest.raises(ConnectionError):
             open_with_dek_unwrapper(
-                _sealed(), failing_unwrap, SECRET_ID, OWNER_ID, POLICY
+                _sealed(),
+                failing_unwrap,
+                expected_secret_id=SECRET_ID,
+                expected_owner_id=OWNER_ID,
             )
 
     def test_unsupported_version_rejected(self) -> None:
@@ -244,7 +286,7 @@ class TestInputValidation:
             seal(_public_pem(_private_key()), bad_id, OWNER_ID, POLICY, PLAINTEXT)
 
     def test_rejects_float_in_policy(self) -> None:
-        with pytest.raises(ValueError):
+        with pytest.raises(EnvelopeError):
             seal(
                 _public_pem(_private_key()),
                 SECRET_ID,
@@ -263,6 +305,12 @@ class TestInputValidation:
             {"wrapped": None},
             {"kms_key_version": 1},
             {"secret_id": ""},
+            {"policy": {"limits": {"timeout_s": 60.0}}},
+            {"policy": {"n": 2**53}},
+            {"ct": base64.b64encode(b"x" * (MAX_PLAINTEXT_BYTES + 17)).decode()},
+            {"ct": base64.b64encode(b"x" * 16).decode()},
+            {"wrapped": base64.b64encode(b"x" * 256).decode()},
+            {"wrapped": base64.b64encode(b"x" * 1025).decode()},
         ],
     )
     def test_from_dict_rejects_malformed(self, mutation: dict[str, Any]) -> None:
@@ -286,14 +334,14 @@ class TestVectors:
         assert envelope.nonce == nonce
         assert base64.b64decode(vector["ct_b64"]) == envelope.ct
         assert AESGCM(dek).encrypt(nonce, plaintext, aad) == envelope.ct
-        opened = open_with_dek_unwrapper(
+        opened, policy = open_with_dek_unwrapper(
             envelope,
             rsa_oaep_unwrapper(_private_key()),
-            vector["secret_id"],
-            vector["owner_id"],
-            vector["policy"],
+            expected_secret_id=vector["secret_id"],
+            expected_owner_id=vector["owner_id"],
         )
         assert opened == plaintext
+        assert policy == vector["policy"]
 
     @pytest.mark.parametrize("vector", VECTORS["envelopes"], ids=lambda v: v["name"])
     def test_seal_is_deterministic_given_rng(self, vector: dict[str, Any]) -> None:

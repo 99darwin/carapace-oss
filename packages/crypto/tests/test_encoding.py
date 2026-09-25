@@ -1,6 +1,7 @@
 """Tests for encoding utilities."""
 
 import pytest
+
 from carapace_crypto.encoding import b64_decode, b64_encode, hex_decode, hex_encode
 
 
