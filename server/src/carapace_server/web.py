@@ -9,11 +9,13 @@ the Vite dev server proxies ``/v1`` in development.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable
 
 from starlette.exceptions import HTTPException
 from starlette.responses import PlainTextResponse, Response
+from starlette.routing import Match, Mount
 from starlette.staticfiles import StaticFiles
-from starlette.types import Scope
+from starlette.types import ASGIApp, Scope
 
 CONTENT_SECURITY_POLICY = "; ".join(
     (
@@ -97,3 +99,57 @@ class SecureStaticFiles(StaticFiles):
             IMMUTABLE_CACHE if is_hashed else REVALIDATE_CACHE
         )
         return response
+
+
+def route_prefixes(paths: Iterable[str]) -> frozenset[str]:
+    """The first segment of each path: ``/v1/secrets`` and ``/v1`` give ``/v1``.
+
+    Empty paths and anything not rooted at ``/`` contribute nothing.
+    """
+    prefixes: set[str] = set()
+    for path in paths:
+        if not path.startswith("/"):
+            continue
+        segment = path.split("/", 2)[1]
+        if segment:
+            prefixes.add("/" + segment)
+    return frozenset(prefixes)
+
+
+def is_reserved(path: str, prefixes: Iterable[str]) -> bool:
+    """True if ``path`` is one of ``prefixes`` or lies under one of them."""
+    return any(path == prefix or path.startswith(prefix + "/") for prefix in prefixes)
+
+
+def _route_path(scope: Scope) -> str:
+    """The path the router matches on: ``scope["path"]`` minus its root_path."""
+    path: str = scope["path"]
+    root_path: str = scope.get("root_path", "")
+    if not root_path or not path.startswith(root_path):
+        return path
+    rest = path[len(root_path) :]
+    return rest if rest == "" or rest.startswith("/") else path
+
+
+class WebMount(Mount):
+    """A ``Mount("/")`` for the UI that leaves the API's paths to the router.
+
+    The router takes the first full match, and a mount at ``/`` fully
+    matches every path. Without this, any request no API route fully
+    matched would land on the UI: a wrong method would get its plain-text
+    404 instead of the API's JSON 405 with ``Allow``, an unknown ``/v1``
+    path a plain-text 404 instead of the JSON one, and a trailing slash no
+    redirect at all. Declining every path under a prefix the API owns
+    keeps those responses exactly as they are without the UI.
+    """
+
+    def __init__(self, app: ASGIApp, *, reserved: Iterable[str]) -> None:
+        super().__init__("/", app=app, name="web")
+        self.reserved = frozenset(reserved)
+
+    def matches(self, scope: Scope) -> tuple[Match, Scope]:
+        if scope["type"] in ("http", "websocket") and is_reserved(
+            _route_path(scope), self.reserved
+        ):
+            return Match.NONE, {}
+        return super().matches(scope)

@@ -10,7 +10,13 @@ from pydantic import ValidationError
 
 from carapace_server.app import create_app
 from carapace_server.config import Settings
-from carapace_server.web import CONTENT_SECURITY_POLICY, is_hidden
+from carapace_server.web import (
+    CONTENT_SECURITY_POLICY,
+    WebMount,
+    is_hidden,
+    is_reserved,
+    route_prefixes,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -145,3 +151,65 @@ async def test_dotfiles_and_outside_symlinks_are_not_served(
 )
 def test_is_hidden(path: str, hidden: bool) -> None:
     assert is_hidden(os.path.normpath(path)) is hidden
+
+
+# (method, path): the API's own answer, which enabling the UI must not change.
+API_MISSES = (
+    ("GET", "/v1/auth/login"),  # wrong method: 405 with Allow
+    ("POST", "/healthz"),
+    ("GET", "/v1/nope"),  # unknown API path: JSON 404
+    ("GET", "/v1/secrets/"),  # trailing slash: redirect
+)
+
+
+async def test_enabling_the_ui_changes_no_api_response(settings, web_settings, app):
+    async def probe(config: Settings) -> list[tuple[int, str | None, str | None]]:
+        async with _client(config, app) as client:
+            responses = [
+                await client.request(method, path) for method, path in API_MISSES
+            ]
+        return [
+            (r.status_code, r.headers.get("content-type"), r.headers.get("allow"))
+            for r in responses
+        ]
+
+    without_ui = await probe(settings)
+    with_ui = await probe(web_settings)
+    assert with_ui == without_ui
+    assert [status for status, _, _ in with_ui] == [405, 405, 404, 307]
+    assert with_ui[0] == (405, "application/json", "POST")
+    async with _client(web_settings, app) as client:
+        response = await client.get("/v1/nope")
+        assert response.json() == {"detail": "Not Found"}
+        assert "content-security-policy" not in response.headers
+
+
+def test_the_ui_mount_reserves_every_api_root(web_settings) -> None:
+    mounts = [
+        r for r in create_app(web_settings).router.routes if isinstance(r, WebMount)
+    ]
+    assert len(mounts) == 1
+    assert {"/v1", "/healthz"} <= mounts[0].reserved
+    assert "/" not in mounts[0].reserved
+
+
+def test_route_prefixes() -> None:
+    assert route_prefixes(["/v1/secrets", "/v1", "/healthz", "", "x", "/"]) == {
+        "/v1",
+        "/healthz",
+    }
+
+
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        ("/v1", True),
+        ("/v1/secrets", True),
+        ("/v1x", False),
+        ("/healthz", True),
+        ("/", False),
+        ("/assets/index-abc123.js", False),
+    ],
+)
+def test_is_reserved(path: str, expected: bool) -> None:
+    assert is_reserved(path, {"/v1", "/healthz"}) is expected

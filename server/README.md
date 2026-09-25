@@ -35,7 +35,8 @@ enclave reports; anything else is refused at startup). They are served at
 KMS key the attested enclave reports. Without them `carapace verify` fails.
 
 Optional: `CARAPACE_WEB_DIR` points at a built web UI (`web/dist`), which is
-then served at `/` after every API route. Only those static responses carry
+then served at `/`, never under a path the API owns (`/v1`, `/healthz`), so
+enabling it changes no API response. Only those static responses carry
 the UI's security headers (a strict CSP with Trusted Types, `nosniff`,
 `DENY` framing, `no-referrer`, COOP/CORP `same-origin`, a Permissions-Policy
 and, for an https public URL, HSTS). Hashed `assets/*` are cached as
