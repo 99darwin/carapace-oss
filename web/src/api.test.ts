@@ -75,6 +75,54 @@ describe("ApiClient", () => {
     await expect(client.get("/v1/secrets", isRecord)).rejects.toThrow(ApiError);
   });
 
+  it("revokes tokens minted by a refresh that a logout overtook", async () => {
+    const { client, calls } = await loggedIn({
+      "GET /v1/secrets": () => json({}, 401),
+      "POST /v1/auth/refresh": async () => {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return json(tokens(2));
+      },
+      "POST /v1/auth/logout": () => new Response(null, { status: 204 }),
+    });
+    const pending = client.get("/v1/secrets", Array.isArray);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await client.logout();
+    await expect(pending).rejects.toThrow("session has ended");
+    expect(client.isLoggedIn).toBe(false);
+    const revoked = calls
+      .filter((c) => c.url === "/v1/auth/logout")
+      .map((c) => c.body);
+    expect(revoked).toEqual([
+      { refresh_token: "refresh-1", access_token: "access-1" },
+      { refresh_token: "refresh-2", access_token: "access-2" },
+    ]);
+  });
+
+  it("does not let a stale refresh answer for a newer login", async () => {
+    let logins = 0;
+    const fake = fakeFetch({
+      "POST /v1/auth/login": () => json(tokens((logins += 2) - 1)),
+      "GET /v1/secrets": (call) =>
+        authorized(call, "access-4") ? json([]) : json({}, 401),
+      "POST /v1/auth/refresh": async (call) => {
+        const body = call.body as { refresh_token: string };
+        if (body.refresh_token === "refresh-3") return json(tokens(4));
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return json(tokens(2));
+      },
+      "POST /v1/auth/logout": () => new Response(null, { status: 204 }),
+    });
+    const client = new ApiClient(fake.fetch);
+    await client.login("a@example.com", "pw");
+    const first = client.get("/v1/secrets", Array.isArray);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await client.logout();
+    await client.login("a@example.com", "pw");
+    await expect(client.get("/v1/secrets", Array.isArray)).resolves.toEqual([]);
+    expect(client.isLoggedIn).toBe(true);
+    await expect(first).rejects.toThrow("session has ended");
+  });
+
   it("reports bad credentials without a session", async () => {
     const { fetch } = fakeFetch({
       "POST /v1/auth/login": () => json({ detail: "Invalid" }, 401),

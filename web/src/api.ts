@@ -53,7 +53,7 @@ async function readJson<T>(response: Response, guard: Guard<T>): Promise<T> {
 
 export class ApiClient {
   #session: Session | null = null;
-  #refreshing: Promise<boolean> | null = null;
+  #refreshing: { stale: Session; promise: Promise<boolean> } | null = null;
   readonly #listeners = new Set<() => void>();
   readonly #fetch: Fetch;
 
@@ -91,14 +91,7 @@ export class ApiClient {
     const session = this.#session;
     if (session === null) return;
     this.#endSession();
-    try {
-      await this.#send("POST", "/v1/auth/logout", {
-        refresh_token: session.refreshToken,
-        access_token: session.accessToken,
-      });
-    } catch {
-      // Tokens are already gone from memory; they expire on their own.
-    }
+    await this.#revoke(session);
   }
 
   async get<T>(path: string, guard: Guard<T>): Promise<T> {
@@ -134,10 +127,15 @@ export class ApiClient {
       // Someone else already refreshed (or logged out) since we sent.
       return Promise.resolve(this.#session !== null);
     }
-    this.#refreshing ??= this.#rotate(stale).finally(() => {
-      this.#refreshing = null;
-    });
-    return this.#refreshing;
+    // Keyed by session: a refresh still running for a session that has
+    // since been logged out must not answer for the one logged in after.
+    if (this.#refreshing?.stale !== stale) {
+      const promise = this.#rotate(stale).finally(() => {
+        if (this.#refreshing?.promise === promise) this.#refreshing = null;
+      });
+      this.#refreshing = { stale, promise };
+    }
+    return this.#refreshing.promise;
   }
 
   async #rotate(stale: Session): Promise<boolean> {
@@ -151,12 +149,30 @@ export class ApiClient {
       if (this.#session === stale) this.#endSession();
       return false;
     }
-    if (this.#session !== stale) return false; // logged out meanwhile
-    this.#session = {
+    const fresh = {
       accessToken: tokens.access_token,
       refreshToken: tokens.refresh_token,
     };
+    if (this.#session !== stale) {
+      // Logged out meanwhile. Nobody holds these tokens, so revoke them
+      // rather than leave a live session on the server.
+      await this.#revoke(fresh);
+      return false;
+    }
+    this.#session = fresh;
     return true;
+  }
+
+  /** Best effort: the tokens are gone from memory and expire on their own. */
+  async #revoke(session: Session): Promise<void> {
+    try {
+      await this.#send("POST", "/v1/auth/logout", {
+        refresh_token: session.refreshToken,
+        access_token: session.accessToken,
+      });
+    } catch {
+      // Nothing to do; see above.
+    }
   }
 
   #endSession(): void {
