@@ -12,6 +12,9 @@ dependencies = [
     "pyjwt[crypto]>=2.9",
 ]
 
+[project.scripts]
+carapace = "carapace_cli.main:main"
+
 [tool.uv.sources]
 carapace-crypto = { workspace = true }
 

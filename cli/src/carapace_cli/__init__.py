@@ -1,4 +1,7 @@
-"""Carapace command-line client and Python SDK."""
+"""Carapace command-line client and Python SDK.
+
+The SDK entry point is :class:`Client`; see :mod:`carapace_cli.sdk`.
+"""
 
 from carapace_cli.errors import (
     CarapaceError,
@@ -8,12 +11,16 @@ from carapace_cli.errors import (
     ServerError,
     VerificationError,
 )
+from carapace_cli.sdk import Client, InsecureMockWarning, Response
 
 __all__ = [
     "CarapaceError",
+    "Client",
     "EnclaveError",
+    "InsecureMockWarning",
     "NetworkError",
     "PinError",
+    "Response",
     "ServerError",
     "VerificationError",
 ]

@@ -76,8 +76,9 @@ lookup hash of each key. What a key may use is an owner-signed *grant*
 the enclave fetches by lookup hash and verifies against the key the agent
 presented: the grant's owner key must match the fingerprint in the key, the
 signature must verify, and the grant's `key_bind` (a hash the server cannot
-derive from the lookup hash) must match. Grants expire within 90 days and
-the CLI renews them. Full formats, the enclave verification order and the
+derive from the lookup hash) must match. Grants expire within 90 days; to
+extend one, the owner revokes the key and creates a new one (v0.1 has no
+`key renew`, see the CLI README). Full formats, the enclave verification order and the
 freshness semantics are in
 [`docs/design/owner-signing.md`](design/owner-signing.md).
 
