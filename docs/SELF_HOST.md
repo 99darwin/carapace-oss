@@ -160,16 +160,17 @@ with `alembic -c server/alembic.ini upgrade head` and
 Proxy. The instance accepts no direct connections (no authorized networks),
 so the proxy is required. This path has not been tried.
 
-**Gap: KMS public key.** The Pulumi program does not set
-`CARAPACE_KMS_PUBLIC_KEY_PEM` and `CARAPACE_KMS_KEY_VERSION` on the Cloud
-Run service. Without them `GET /v1/kms/public-key` returns 404 and
-`carapace verify` fails at its last check. Until the infra sets them, you
-can fetch the public key with
-`gcloud kms keys versions get-public-key <n> --key … --keyring … --location …`
-and set both variables on the service by hand. `CARAPACE_KMS_KEY_VERSION`
-is the full `kms_key_version_name` output. The next `pulumi up` will remove
-variables set outside Pulumi, so repeat this after each deploy until the gap
-is closed.
+**KMS public key.** `pulumi up` reads the public key of key version 1 at
+deploy time and sets `CARAPACE_KMS_PUBLIC_KEY_PEM` and
+`CARAPACE_KMS_KEY_VERSION` (the `kms_key_version_name` output, the same
+name the enclave gets as `KMS_KEY_NAME`) on the Cloud Run service, so
+`GET /v1/kms/public-key` serves exactly the key the enclave reports. The
+deployment fails, rather than shipping a mismatched pair, if KMS returns a
+different version, a different algorithm, or no public key yet (the version
+is not `ENABLED`; re-run). Whoever runs `pulumi up` needs
+`cloudkms.cryptoKeyVersions.get` and `cloudkms.cryptoKeyVersions.viewPublicKey`
+on the key; a project Owner has both. Both values are public. The server
+refuses to start if only one of them is set.
 
 ## 6. First run: verify the enclave
 
@@ -283,8 +284,6 @@ Blocking a working deployment today:
 
 - No server container image or Dockerfile (step 3).
 - No automated database migrations (step 5).
-- The server's KMS public key variables are not set by Pulumi, so
-  `carapace verify` fails without a manual step (step 5).
 - CI publishes the enclave to ghcr.io, while the stack pulls both images
   from one `image_registry`; copying by digest is untested (step 3).
 
