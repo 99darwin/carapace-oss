@@ -7,7 +7,11 @@ import pulumi_gcp as gcp
 
 from components.apis import enable_apis
 from components.config import StackConfig
-from components.enclave_vm import create_enclave_network, create_enclave_vm
+from components.enclave_vm import (
+    build_enclave_url,
+    create_enclave_network,
+    create_enclave_vm,
+)
 from components.identity import create_service_identities, grant_image_pull
 from components.kms import (
     bind_key_policy,
@@ -175,7 +179,7 @@ def deploy(cfg: StackConfig) -> dict[str, pulumi.Input[object]]:
     outputs.update(
         {
             "enclave_image_reference": enclave.image_reference,
-            "enclave_url": network.address.address.apply(lambda ip: f"https://{ip}"),
+            "enclave_url": network.address.address.apply(build_enclave_url),
         }
     )
     return outputs

@@ -12,7 +12,7 @@ their config.
 | `kms.py` | One key ring and one `ASYMMETRIC_DECRYPT` / `RSA_DECRYPT_OAEP_4096_SHA256` / `HSM` key (`protect` is on by default), an **authoritative** IAM policy on the key, and Data Access (`DATA_READ`) audit logs for Cloud KMS so every decrypt is logged |
 | `wif.py` | A Workload Identity pool and an OIDC provider that trust Confidential Space attestation tokens |
 | `identity.py` | Enclave VM service account and server (Cloud Run) service account |
-| `enclave_vm.py` | A dedicated VPC and subnet, one static external IP, one firewall rule (tcp:443 ingress), and one Confidential Space VM (AMD SEV, Secure Boot) |
+| `enclave_vm.py` | A dedicated VPC and subnet, one static external IP, one firewall rule (tcp:8443 ingress), and one Confidential Space VM (AMD SEV, Secure Boot) |
 | `server.py` | An Artifact Registry repo, Cloud SQL Postgres 16 (`db-f1-micro`, zonal), two generated secrets in Secret Manager (the database URL and the JWT signing secret), and a Cloud Run v2 service (min 0 instances) |
 | `monitoring.py` | On by default. A log-match alert on IAM or configuration changes to the KMS key ring and key, the WIF pool, the enclave service account, project IAM, log routing (sinks, exclusions, buckets) and alerting, and on any `AsymmetricDecrypt` by a principal outside this project's attestation pool |
 
@@ -24,7 +24,9 @@ added by hand. It contains exactly:
 - `roles/cloudkms.cryptoKeyDecrypter`: one WIF `principalSet` per entry in
   `allowed_digests`:
   `principalSet://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<prefix>-attest/attribute.image_digest/<digest>`
-- `roles/cloudkms.publicKeyViewer`: the server service account.
+- `roles/cloudkms.publicKeyViewer`: the same WIF `principalSet`s (the
+  enclave's boot self-test reads the public key with its federated
+  credentials) and the server service account.
 
 The key ring also has an authoritative IAM policy, and that policy has **zero**
 bindings. Ring-level grants would be inherited by the key, so `pulumi up`
@@ -142,8 +144,9 @@ pulumi config set deploy_workloads false && pulumi up
 pulumi config set deploy_workloads true && pulumi up
 ```
 
-The outputs include `enclave_url`, `server_url`, `control_plane_url`,
-`kms_key_version_name`, `wif_provider_name` and `wif_audience`, plus the
+The outputs include `enclave_url` (`https://<enclave ip>:8443`),
+`server_url`, `control_plane_url`, `kms_key_version_name`,
+`wif_provider_name` and `wif_audience`, plus the
 Secret Manager ids `database_url_secret` and `jwt_secret` (never the values).
 `carapace verify` checks the enclave against these values.
 
@@ -182,6 +185,13 @@ The enclave receives exactly three environment overrides:
 `CONTROL_PLANE_URL`, `KMS_KEY_NAME` (the key **version** resource name) and
 `WIF_AUDIENCE` (the STS audience). The image's launch policy must allow these
 three and nothing else.
+
+The enclave listens on **8443**, not 443. The image runs as a non-root user
+without capabilities, so it cannot bind a port below 1024. The Confidential
+Space launcher opens only the ports the image `EXPOSE`s, and a firewall rule
+cannot translate ports, so the listen port, the `EXPOSE`, the firewall rule
+and `enclave_url` all use 8443 (tests check this). The launch policy does not
+allow `tee-added-capabilities`.
 
 The VM also sets `tee-container-log-redirect=true`. This sends the
 container's stdout and stderr to Cloud Logging, and it is the only reason the
@@ -231,7 +241,7 @@ database still bill while the VM is stopped.
 - No DNS zones, custom domains, managed certificates, or load balancer. The
   enclave serves attested TLS on its IP; add a domain for the server
   yourself if you want one.
-- No SSH or other ingress besides tcp:443 to the enclave.
+- No SSH or other ingress besides tcp:8443 to the enclave.
 - No Workload Identity pool for CI (GitHub Actions) deploys.
 - No budget alerts, org policies, or VPC Service Controls.
 - No idle-stop scheduler for the VM.

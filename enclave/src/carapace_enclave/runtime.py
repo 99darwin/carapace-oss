@@ -45,8 +45,11 @@ from carapace_enclave.tls import server_ssl_context
 
 logger = logging.getLogger(__name__)
 
-# Matches INGRESS_PORT in infra/pulumi/components/enclave_vm.py.
-ENCLAVE_PORT = 443
+# Unprivileged on purpose: the image runs as UID 65532 with no ambient
+# capabilities, so it cannot bind below 1024. Must equal INGRESS_PORT in
+# infra/pulumi/components/enclave_vm.py and the EXPOSE in enclave/Dockerfile,
+# which is what makes the Confidential Space launcher open the port.
+ENCLAVE_PORT = 8443
 # The VM's only interface carries its public address (see infra): the API is
 # meant to be reachable, and authorization is the API key, not the network.
 LISTEN_HOST = "0.0.0.0"  # noqa: S104
