@@ -1,0 +1,30 @@
+[project]
+name = "carapace-server"
+version = "0.0.0"
+description = "Carapace control-plane server: accounts, ciphertext store, receipts"
+license = "Apache-2.0"
+requires-python = ">=3.12"
+dependencies = [
+    "aiosqlite>=0.20",
+    "alembic>=1.13",
+    "asyncpg>=0.29",
+    "bcrypt>=4.1",
+    "cryptography>=43",
+    "email-validator>=2.1",
+    "fastapi>=0.115",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "pyjwt[crypto]>=2.9",
+    "slowapi>=0.1.9",
+    "sqlalchemy[asyncio]>=2.0.30",
+    "uvicorn>=0.30",
+    "webauthn>=2.2",
+]
+
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/carapace_server"]
