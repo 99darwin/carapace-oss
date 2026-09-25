@@ -9,6 +9,7 @@ dependencies = [
     "alembic>=1.13",
     "asyncpg>=0.29",
     "bcrypt>=4.1",
+    "carapace-crypto",
     "cryptography>=43",
     "email-validator>=2.1",
     "fastapi>=0.115",
@@ -21,6 +22,9 @@ dependencies = [
     "uvicorn>=0.30",
     "webauthn>=2.2",
 ]
+
+[tool.uv.sources]
+carapace-crypto = { workspace = true }
 
 [build-system]
 requires = ["hatchling>=1.25"]

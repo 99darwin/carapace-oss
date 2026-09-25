@@ -46,6 +46,7 @@ from carapace_crypto.grant import (
     GrantSignatureError,
     create_grant,
     verify_grant,
+    verify_grant_signature,
 )
 from carapace_crypto.hashing import hmac_sha256, sha256, sha256_hex, tagged_sha256
 from carapace_crypto.ownerkey import (
@@ -102,6 +103,7 @@ __all__ = [
     "validate_public_key",
     "verify_envelope_signature",
     "verify_grant",
+    "verify_grant_signature",
 ]
 
 __version__ = "0.1.0"

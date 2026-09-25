@@ -203,10 +203,13 @@ and before step 6 so a tombstone (which has no secrets and fails step 6)
 still advances the cache: once a running enclave has seen the tombstone,
 the server cannot revive the older grant for the rest of that boot. This
 only works if the server *serves* the tombstone: `/internal/keys/verify`
-must return the current grant for every known key, revoked or not, and
-must not pre-filter by `secret_id`. A server that answered 404 for revoked
-or out-of-scope keys would keep every tombstone and narrowed grant away
-from the cache.
+must return the current grant for every known key, tombstones included, and
+must not pre-filter by `secret_id`. A server that answered 404 for
+tombstoned or out-of-scope keys would keep every tombstone and narrowed
+grant away from the cache. The one key it answers 404 for is one revoked
+*without* a tombstone (the web UI path): its stored grant is still the last
+live one, which the enclave would honour until `exp`, so an honest server
+withholds it and the enclave refuses the key as unknown.
 
 Step 8 records the envelope version once the owner signature has verified
 and before KMS is called, so a rolled-back envelope costs no unwrap. The
@@ -448,12 +451,16 @@ defense in depth, not as the security boundary.
   the enclave does. Add `update_grant` (same checks, plus `grant.iat >
   stored.grant_iat` and same `owner_pk`). `is_key_allowed_for_secret` becomes
   `find_grant(db, lookup_hash) -> dict | None`: returns the key's current
-  `grant_json` whenever the key exists, including when it is revoked (the
-  stored grant is then the tombstone), expired, or does not cover the
-  requested secret; touches `last_used_at`. It must not filter by
-  `revoked_at`, expiry or `secret_id`: the enclave checks all three from
-  the signed grant, and it can only record a tombstone or narrowed grant in
-  its per-boot cache if the server hands it over.
+  `grant_json` whenever the key exists, including when it is revoked with
+  a tombstone (the stored grant is then the tombstone), expired, or does
+  not cover the requested secret; touches `last_used_at`. It must not
+  filter by expiry or `secret_id`: the enclave checks both from the signed
+  grant, and it can only record a tombstone or narrowed grant in its
+  per-boot cache if the server hands it over. It returns `None` for a key
+  revoked *without* a tombstone: that key's stored grant is still the last
+  live one, which the enclave would honour until `exp`, and withholding it
+  is how "an honest server enforces `revoked_at` immediately" (Web UI in
+  v0.1) holds.
 - `router.py`: `POST /v1/api-keys` (10/min) with the new body. Add
   `PUT /v1/api-keys/{id}/grant`. `DELETE /v1/api-keys/{id}` becomes
   `POST /v1/api-keys/{id}/revoke` with an optional `{grant}` tombstone body

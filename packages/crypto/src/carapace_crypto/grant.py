@@ -185,6 +185,26 @@ def create_grant(
     return Grant(**{**_fields(unsigned), "sig": sig})
 
 
+def verify_grant_signature(grant: Grant) -> Grant:
+    """Check only that ``grant.sig`` verifies under ``grant.owner_pk``.
+
+    For holders of a grant but not the raw API key, such as the control-plane
+    server checking what an owner uploads. This is *not* authorization: it
+    says nothing about which key the grant is for, whether that key names
+    ``owner_pk``, or whether the grant is current. The enclave must call
+    :func:`verify_grant`.
+
+    Raises:
+        GrantSignatureError: The key is invalid or the signature does not
+            verify.
+    """
+    try:
+        verify_object(grant.owner_pk, GRANT_CONTEXT, grant.signed_body(), grant.sig)
+    except SignatureError as exc:
+        raise GrantSignatureError(str(exc)) from exc
+    return grant
+
+
 def verify_grant(grant: Grant, api_key: ApiKey, *, now: int) -> Grant:
     """Check that ``grant`` authorizes ``api_key`` right now.
 
@@ -207,10 +227,7 @@ def verify_grant(grant: Grant, api_key: ApiKey, *, now: int) -> Grant:
         raise GrantKeyMismatchError(f"grant owner key is invalid: {exc}") from exc
     if not owner_matches:
         raise GrantKeyMismatchError("grant owner key does not match the API key")
-    try:
-        verify_object(grant.owner_pk, GRANT_CONTEXT, grant.signed_body(), grant.sig)
-    except SignatureError as exc:
-        raise GrantSignatureError(str(exc)) from exc
+    verify_grant_signature(grant)
     if not hmac.compare_digest(grant.key_bind, api_key.bind_hash):
         raise GrantKeyMismatchError("grant is bound to a different API key")
     _check_lifetime(grant)

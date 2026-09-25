@@ -33,3 +33,5 @@ known-first-party = ["carapace_*"]
 
 [tool.pytest.ini_options]
 addopts = "-q --import-mode=importlib"
+# Plain helper modules next to the tests (see server/tests/server_support.py).
+pythonpath = ["server/tests"]

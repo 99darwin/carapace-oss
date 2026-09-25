@@ -6,14 +6,19 @@ from pathlib import Path
 import httpx
 import pytest
 from fastapi import FastAPI
+from server_support import (
+    Account,
+    create_account,
+    create_secret,
+    make_envelope,
+    register,
+)
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from carapace_server.app import create_app
 from carapace_server.config import Settings
 from carapace_server.db import create_engine, create_sessionmaker
 from carapace_server.models import Base
-
-STRONG_PASSWORD = "Correct-Horse-9-Battery"  # noqa: S105
 
 
 @pytest.fixture
@@ -65,16 +70,26 @@ async def client(app: FastAPI) -> AsyncIterator[httpx.AsyncClient]:
         yield c
 
 
-async def register(
-    client: httpx.AsyncClient, email: str, password: str = STRONG_PASSWORD
-) -> dict:
-    response = await client.post(
-        "/v1/auth/register", json={"email": email, "password": password}
-    )
-    assert response.status_code == 201, response.text
-    return response.json()
-
-
 @pytest.fixture
 def register_user():
     return register
+
+
+@pytest.fixture
+async def alice(client: httpx.AsyncClient) -> Account:
+    return await create_account(client, "alice@example.com")
+
+
+@pytest.fixture
+async def bob(client: httpx.AsyncClient) -> Account:
+    return await create_account(client, "bob@example.com")
+
+
+@pytest.fixture
+def envelope_factory():
+    return make_envelope
+
+
+@pytest.fixture
+def new_secret():
+    return create_secret
