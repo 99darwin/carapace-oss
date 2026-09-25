@@ -15,13 +15,15 @@ dev = [
 package = false
 
 [tool.uv.workspace]
-members = ["packages/*", "enclave", "server"]
+members = ["packages/*", "enclave", "server", "cli"]
 
 [tool.ruff]
 line-length = 88
 target-version = "py312"
 # Lets isort classify workspace packages as first-party.
-src = [".", "server/src", "packages/*/src", "enclave/src", "enclave/mock"]
+src = [
+    ".", "server/src", "packages/*/src", "enclave/src", "enclave/mock", "cli/src"
+]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "S", "SIM"]
@@ -35,6 +37,7 @@ known-first-party = ["carapace_*"]
 
 [tool.pytest.ini_options]
 addopts = "-q --import-mode=importlib"
-# Plain helper modules next to the tests (see server/tests/server_support.py),
+# Plain helper modules next to the tests (server/tests/server_support.py,
+# cli/tests/cli_support.py),
 # and the dev-only enclave mock, which is deliberately not a distribution.
-pythonpath = ["server/tests", "enclave/mock"]
+pythonpath = ["server/tests", "cli/tests", "enclave/mock"]
