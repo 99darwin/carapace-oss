@@ -178,6 +178,15 @@ full list:
 
 - A GCP project owner can change KMS IAM. That change is visible in Cloud
   Audit Logs. Self-hosters are their own project owner.
+- The key's IAM policy is not the only path to the key. A principal with the
+  basic Editor or Owner role on the project can call `AsymmetricDecrypt`
+  directly, without changing KMS IAM and without an attested enclave, and
+  so unwrap any envelope's data key. The stack enables KMS Data Access logs,
+  so every such call is logged, and the `foreign_decrypt` clause of the
+  decrypt-path alert (on unless `enable_iam_alerts` is `false`) fires on any
+  `AsymmetricDecrypt` against the key ring from a caller outside the stack's
+  attestation pool. It detects the decrypt; it does not prevent it. Keep
+  Editor and Owner to as few principals as possible.
 - Anyone with database write access can deny service, and can serve an
   *older* owner-signed grant or envelope in place of the current one. A
   withheld revocation, narrowing or rotation takes effect no later than the

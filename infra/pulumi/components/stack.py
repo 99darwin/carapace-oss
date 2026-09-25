@@ -17,6 +17,7 @@ from components.kms import (
     bind_key_policy,
     create_kms_key,
     enable_kms_data_access_logs,
+    read_public_key_pem,
 )
 from components.monitoring import create_iam_change_alert
 from components.server import (
@@ -151,6 +152,10 @@ def deploy(cfg: StackConfig) -> dict[str, pulumi.Input[object]]:
         allowed_digests=cfg.allowed_digests,
         attestation_project_id=cfg.project,
         enclave_sa_email=identities.enclave.email,
+        # The version name is the one the enclave is configured with (below),
+        # so the server advertises exactly the key the enclave reports.
+        kms_public_key_pem=read_public_key_pem(kms_key),
+        kms_key_version=kms_key.key_version_name,
         min_instances=cfg.server_min_instances,
         max_instances=cfg.server_max_instances,
         depends_on=[identities.server_grants["roles/cloudsql.client"]],

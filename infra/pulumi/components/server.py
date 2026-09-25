@@ -215,14 +215,23 @@ def build_server_env(
     allowed_digests: Sequence[str],
     attestation_project_id: str,
     attestation_service_account: pulumi.Input[str],
+    kms_public_key_pem: pulumi.Input[str],
+    kms_key_version: pulumi.Input[str],
 ) -> list[dict[str, pulumi.Input[str]]]:
-    """Plain (non-secret) environment for the server container."""
+    """Plain (non-secret) environment for the server container.
+
+    The KMS public key and version name are public values: the server serves
+    them at ``/v1/kms/public-key`` and clients only trust them if they match
+    what the attested enclave reports.
+    """
     values: dict[str, pulumi.Input[str]] = {
         "MODE": SERVER_MODE,
         "PUBLIC_URL": public_url,
         "ALLOWED_IMAGE_DIGESTS": ",".join(allowed_digests),
         "ATTESTATION_PROJECT_ID": attestation_project_id,
         "ATTESTATION_SERVICE_ACCOUNT": attestation_service_account,
+        "KMS_PUBLIC_KEY_PEM": kms_public_key_pem,
+        "KMS_KEY_VERSION": kms_key_version,
     }
     return [
         {"name": f"{SERVER_ENV_PREFIX}{name}", "value": value}
@@ -243,6 +252,8 @@ def create_server_service(
     allowed_digests: Sequence[str],
     attestation_project_id: str,
     enclave_sa_email: pulumi.Input[str],
+    kms_public_key_pem: pulumi.Input[str],
+    kms_key_version: pulumi.Input[str],
     min_instances: int,
     max_instances: int,
     depends_on: Sequence[pulumi.Resource] = (),
@@ -253,6 +264,8 @@ def create_server_service(
         allowed_digests=allowed_digests,
         attestation_project_id=attestation_project_id,
         attestation_service_account=enclave_sa_email,
+        kms_public_key_pem=kms_public_key_pem,
+        kms_key_version=kms_key_version,
     )
     secret_env = [
         database.url_secret.env(f"{SERVER_ENV_PREFIX}DATABASE_URL"),

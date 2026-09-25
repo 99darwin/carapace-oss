@@ -16,6 +16,12 @@ DIGEST_B = "sha256:" + "b" * 64
 STATIC_IP = "203.0.113.10"
 GET_PROJECT_TOKEN = "gcp:organizations/getProject:getProject"  # noqa: S105
 GET_IMAGE_TOKEN = "gcp:compute/getImage:getImage"  # noqa: S105
+GET_KEY_VERSION_TOKEN = "gcp:kms/getKMSCryptoKeyVersion:getKMSCryptoKeyVersion"  # noqa: S105
+KMS_KEY_ALGORITHM = "RSA_DECRYPT_OAEP_4096_SHA256"
+# Stand-in for the KMS public key; never parsed by the infra tests.
+KMS_PUBLIC_KEY_PEM = (
+    "-----BEGIN PUBLIC KEY-----\nMOCKKMSPUBLICKEY\n-----END PUBLIC KEY-----\n"
+)
 ENCLAVE_SA_UNIQUE_ID = "104200000000000000001"
 CONFIDENTIAL_SPACE_IMAGE = (
     "https://www.googleapis.com/compute/v1/projects/confidential-space-images"
@@ -30,9 +36,16 @@ class Recorded:
     inputs: dict
 
 
+@dataclass(frozen=True)
+class Invoked:
+    token: str
+    args: dict
+
+
 class RecordingMocks(pulumi.runtime.Mocks):
     def __init__(self) -> None:
         self.resources: list[Recorded] = []
+        self.calls: list[Invoked] = []
 
     def new_resource(self, args: pulumi.runtime.MockResourceArgs):
         self.resources.append(Recorded(args.typ, args.name, dict(args.inputs)))
@@ -42,6 +55,9 @@ class RecordingMocks(pulumi.runtime.Mocks):
         return resource_id, state
 
     def call(self, args: pulumi.runtime.MockCallArgs):
+        self.calls.append(Invoked(args.token, dict(args.args)))
+        if args.token == GET_KEY_VERSION_TOKEN:
+            return _key_version(args.args)
         if args.token == GET_PROJECT_TOKEN:
             return {"number": PROJECT_NUMBER, "projectId": PROJECT_ID}
         if args.token == GET_IMAGE_TOKEN:
@@ -59,6 +75,20 @@ class RecordingMocks(pulumi.runtime.Mocks):
         matches = self.of_type(typ)
         assert len(matches) == 1, f"expected one {typ}, got {len(matches)}"
         return matches[0]
+
+
+def _key_version(args: dict) -> dict:
+    """What KMS reports for an ENABLED version of the stack's key."""
+    version = int(args.get("version") or 1)
+    return {
+        "name": f"{args['cryptoKey']}/cryptoKeyVersions/{version}",
+        "cryptoKey": args["cryptoKey"],
+        "version": version,
+        "state": "ENABLED",
+        "algorithm": KMS_KEY_ALGORITHM,
+        "protectionLevel": "HSM",
+        "publicKeys": [{"algorithm": KMS_KEY_ALGORITHM, "pem": KMS_PUBLIC_KEY_PEM}],
+    }
 
 
 def _computed_state(typ: str, inputs: dict) -> dict:
