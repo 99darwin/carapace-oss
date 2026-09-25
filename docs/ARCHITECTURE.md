@@ -120,8 +120,9 @@ so it is never an allowed audience.
 1. Verifies the token signature against Google's published JWKS, plus the
    issuer, audience, and expiry.
 2. Checks the hardware, software, debug, and secure-boot claims.
-3. Checks that the container image digest appears in a signed release
-   manifest.
+3. Checks that the container image digest is one the user allowed
+   (`--allow-digest`, compared by hand against the CI build output; release
+   signature verification is not implemented yet).
 4. Checks that the nonce binds the served TLS certificate and receipt key.
 5. Pins the TLS certificate for all further enclave connections.
 6. Refuses to encrypt if the KMS public key from the server differs from the
