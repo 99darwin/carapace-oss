@@ -1,7 +1,9 @@
-# Extends the default gitleaks rules with narrowly scoped allowlists.
+# Extends the default gitleaks rules with a narrowly scoped allowlist.
+# Uses the single [allowlist] table (not [[allowlists]]) so that the
+# gitleaks version pinned by gitleaks-action (8.24.x) honors it.
 [extend]
 useDefault = true
 
-[[allowlists]]
+[allowlist]
 description = "Envelope test vectors: a deliberately public RSA test key and fixed ids"
 paths = ['''^packages/crypto/tests/vectors/''']
