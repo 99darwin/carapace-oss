@@ -60,6 +60,7 @@ DEFAULT_GRANT_TTL_SECONDS = 30 * 24 * 3600
 MAX_GRANT_TTL_SECONDS = 90 * 24 * 3600
 # How far in the future ``iat`` may lie before the grant is rejected.
 CLOCK_SKEW_SECONDS = 300
+GRANT_FIELDS = frozenset({"v", "owner_pk", "key_bind", "secrets", "iat", "exp", "sig"})
 
 
 class GrantError(ValueError):
@@ -127,6 +128,8 @@ class Grant:
         """Parse the output of :meth:`to_dict`. Shape only; see :func:`verify_grant`."""
         if not isinstance(data, dict):
             raise GrantError("grant must be a JSON object")
+        if set(data) != GRANT_FIELDS:
+            raise GrantError("grant has missing or unknown fields")
         if data.get("v") != GRANT_VERSION or type(data.get("v")) is not int:
             raise GrantError(f"unsupported grant version: {data.get('v')!r}")
         grant = cls(
@@ -148,23 +151,32 @@ def create_grant(
     *,
     now: int,
     ttl_seconds: int = DEFAULT_GRANT_TTL_SECONDS,
+    previous_iat: int | None = None,
 ) -> Grant:
     """Issue a grant for ``api_key`` covering ``secrets`` (id -> version floor).
 
     ``api_key.fingerprint`` must be ``owner_key``'s: a grant can only be
     issued by the key an API key names. Pass ``secrets={}`` for a tombstone.
 
+    ``previous_iat`` is the ``iat`` of the grant this one replaces, if any.
+    The new ``iat`` is forced strictly above it so that the enclave's
+    per-boot cache treats the replacement as newer even when both are issued
+    within the same second (create-then-revoke, renew-then-narrow).
+
     Raises:
         GrantError: On bad inputs, including a TTL above the format's cap.
     """
     if not fingerprints_match(owner_key.public_key, api_key.fingerprint):
         raise GrantKeyMismatchError("API key names a different owner key")
+    iat = _require_time(now, "now")
+    if previous_iat is not None:
+        iat = max(iat, _require_time(previous_iat, "previous_iat") + 1)
     unsigned = Grant(
         owner_pk=owner_key.public_key,
         key_bind=api_key.bind_hash,
         secrets=_require_secrets(secrets),
-        iat=_require_time(now, "now"),
-        exp=_require_time(now + ttl_seconds, "exp"),
+        iat=iat,
+        exp=_require_time(iat + ttl_seconds, "exp"),
         sig=b"",
     )
     _check_lifetime(unsigned)
@@ -186,6 +198,7 @@ def verify_grant(grant: Grant, api_key: ApiKey, *, now: int) -> Grant:
         GrantSignatureError: Signature does not verify.
         GrantExpiredError: Outside ``[iat - skew, exp)``.
     """
+    now = _require_time(now, "now")
     if not fingerprints_match(grant.owner_pk, api_key.fingerprint):
         raise GrantKeyMismatchError("grant owner key does not match the API key")
     try:

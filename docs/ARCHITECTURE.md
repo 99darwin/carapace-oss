@@ -159,9 +159,14 @@ These will be documented in full in `THREAT_MODEL.md`:
   *older* owner-signed grant or envelope in place of the current one. A
   withheld revocation, narrowing or rotation takes effect no later than the
   old grant's expiry (at most 90 days, chosen by the owner), and a running
-  enclave refuses to go back to anything older than it has already verified
-  in that boot. Retiring a `secret_id` cuts off a revoked key immediately.
-  They cannot substitute secrets, edit policies, or authorize keys.
+  enclave refuses, best-effort, to go back to anything older than it has
+  already verified in that boot. Sealing a rotated value under a fresh
+  `secret_id` keeps it away from a revoked key; taking the *old* value away
+  before expiry means rotating the credential at its provider. They cannot
+  substitute secrets, edit policies, or authorize keys.
+- The enclave's clock comes from `max(VM clock, attestation token iat)` and
+  never decreases within a boot; the VM operator can delay the enclave's
+  view of time by at most the token refresh interval.
 - The owner's device holds the owner signing key and is in the TCB, as it
   already is for plaintext at sealing time.
 - Google's hardware, the Confidential Space launcher, and the KMS HSMs are in

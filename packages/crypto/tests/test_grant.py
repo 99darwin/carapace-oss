@@ -193,6 +193,26 @@ class TestLifetime:
     def test_within_skew(self) -> None:
         verify_grant(_grant(), KEY, now=NOW - CLOCK_SKEW_SECONDS)
 
+    @pytest.mark.parametrize("now", [float("nan"), True, "1", None, NOW + 0.5])
+    def test_verify_rejects_non_integer_now(self, now: Any) -> None:
+        with pytest.raises(GrantError):
+            verify_grant(_grant(), KEY, now=now)
+
+    def test_replacement_iat_is_strictly_above_previous(self) -> None:
+        first = _grant()
+        tombstone = create_grant(OWNER, KEY, {}, now=NOW, previous_iat=first.iat)
+        assert tombstone.iat == first.iat + 1
+        assert tombstone.exp == tombstone.iat + DEFAULT_GRANT_TTL_SECONDS
+        verify_grant(tombstone, KEY, now=NOW)
+
+    def test_replacement_keeps_now_when_already_later(self) -> None:
+        later = create_grant(OWNER, KEY, {}, now=NOW + 60, previous_iat=NOW)
+        assert later.iat == NOW + 60
+
+    def test_replacement_rejects_bad_previous_iat(self) -> None:
+        with pytest.raises(GrantError):
+            _grant(previous_iat=True)
+
     def test_create_rejects_ttl_over_cap(self) -> None:
         with pytest.raises(GrantError, match="lifetime"):
             _grant(ttl_seconds=MAX_GRANT_TTL_SECONDS + 1)
@@ -254,6 +274,16 @@ class TestParsing:
     def test_from_dict_rejects_malformed(self, mutation: dict[str, Any]) -> None:
         with pytest.raises(GrantError):
             Grant.from_dict({**_grant().to_dict(), **mutation})
+
+    def test_from_dict_rejects_unknown_field(self) -> None:
+        with pytest.raises(GrantError, match="missing or unknown"):
+            Grant.from_dict({**_grant().to_dict(), "extra": 1})
+
+    def test_from_dict_rejects_missing_field(self) -> None:
+        wire = _grant().to_dict()
+        del wire["exp"]
+        with pytest.raises(GrantError, match="missing or unknown"):
+            Grant.from_dict(wire)
 
     def test_from_dict_rejects_urlsafe_or_unpadded_base64(self) -> None:
         wire = _grant().to_dict()

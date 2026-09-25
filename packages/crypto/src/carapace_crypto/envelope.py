@@ -80,6 +80,23 @@ GCM_TAG_SIZE = 16
 MAX_RSA_BITS = 8192
 # Bound on canonical_json(header); part of the format.
 MAX_AAD_INPUT_BYTES = 64 * 1024
+# Exactly the keys ``Envelope.to_dict`` emits. Unknown or missing keys are
+# rejected so a stored object has one encoding, the one that was signed.
+ENVELOPE_FIELDS = frozenset(
+    {
+        "v",
+        "secret_id",
+        "owner_id",
+        "owner_pk",
+        "version",
+        "policy",
+        "kms_key_version",
+        "wrapped",
+        "nonce",
+        "ct",
+        "sig",
+    }
+)
 # Longest base64 text any binary field may carry, checked before decoding.
 _MAX_B64_CHARS = 4 * ((MAX_PLAINTEXT_BYTES + GCM_TAG_SIZE + 2) // 3)
 
@@ -170,6 +187,8 @@ class Envelope:
         """
         if not isinstance(data, dict):
             raise EnvelopeError("envelope must be a JSON object")
+        if set(data) != ENVELOPE_FIELDS:
+            raise EnvelopeError("envelope has missing or unknown fields")
         # ``bool`` is an ``int`` subclass and ``True == 1``; compare the type.
         version = data.get("v")
         if type(version) is not int or version != ENVELOPE_VERSION:
@@ -177,14 +196,25 @@ class Envelope:
         policy = data.get("policy")
         if not isinstance(policy, dict):
             raise EnvelopeError("policy must be a JSON object")
+        # Canonicalizing bounds depth and size before anything recurses into
+        # the policy; ``deepcopy`` of a deeply nested value would otherwise
+        # raise ``RecursionError`` instead of ``EnvelopeError``.
+        header = _header(
+            _require_id(data.get("secret_id"), "secret_id"),
+            _require_id(data.get("owner_id"), "owner_id"),
+            _b64d(data.get("owner_pk"), "owner_pk"),
+            _require_version(data.get("version")),
+            policy,
+        )
+        compute_aad(header)
         key_version = data.get("kms_key_version")
         if key_version is not None and not isinstance(key_version, str):
             raise EnvelopeError("kms_key_version must be a string or null")
         envelope = cls(
-            secret_id=_require_id(data.get("secret_id"), "secret_id"),
-            owner_id=_require_id(data.get("owner_id"), "owner_id"),
+            secret_id=header["secret_id"],
+            owner_id=header["owner_id"],
             owner_pk=_b64d(data.get("owner_pk"), "owner_pk"),
-            version=_require_version(data.get("version")),
+            version=header["version"],
             policy=copy.deepcopy(policy),
             wrapped=_b64d(data.get("wrapped"), "wrapped"),
             nonce=_b64d(data.get("nonce"), "nonce"),
@@ -193,7 +223,6 @@ class Envelope:
             kms_key_version=key_version,
         )
         _check_sizes(envelope)
-        compute_aad(envelope.header())  # policy must canonicalize within bounds
         return envelope
 
 
@@ -299,14 +328,17 @@ def _seal(
     if not 0 < len(plaintext) <= MAX_PLAINTEXT_BYTES:
         raise EnvelopeError(f"plaintext must be 1..{MAX_PLAINTEXT_BYTES} bytes")
     public_key = load_rsa_public_key(public_key_pem)
+    if not isinstance(policy, dict):
+        raise EnvelopeError("policy must be a JSON object")
     header = _header(
         _require_id(secret_id, "secret_id"),
         _require_id(owner_id, "owner_id"),
         owner_key.public_key,
         _require_version(version),
-        copy.deepcopy(policy),
+        policy,
     )
-    aad = compute_aad(header)
+    aad = compute_aad(header)  # bounds depth and size before the copy below
+    header["policy"] = copy.deepcopy(policy)
 
     dek = bytearray(random_bytes(DEK_SIZE))
     try:
@@ -360,7 +392,7 @@ def open_with_dek_unwrapper(
     *,
     expected_secret_id: str,
     expected_owner_pk: bytes,
-    min_version: int = 1,
+    min_version: int,
 ) -> tuple[bytes, dict[str, Any]]:
     """Verify, then decrypt an envelope and return ``(plaintext, policy)``.
 
@@ -370,8 +402,9 @@ def open_with_dek_unwrapper(
     from the envelope itself or from the store; otherwise a malicious store
     could substitute an envelope of its own.
 
-    ``min_version`` is the floor from the grant. Older envelopes are refused
-    even though they are validly signed, which bounds rollback.
+    ``min_version`` is the floor from the grant (:meth:`Grant.min_version_for`).
+    Older envelopes are refused even though they are validly signed, which
+    bounds rollback. It is required so that no caller can forget it.
 
     Checks run in this order, and ``unwrap`` (the KMS call) is reached only
     if every one of them passes: shape, identity, signature, version.

@@ -422,6 +422,30 @@ class TestInputValidation:
         with pytest.raises(EnvelopeError, match="AAD input"):
             Envelope.from_dict(wire)
 
+    def test_deeply_nested_policy_is_a_typed_error_not_recursion(self) -> None:
+        nested: dict[str, Any] = {}
+        for _ in range(900):
+            nested = {"n": nested}
+        with pytest.raises(EnvelopeError):
+            _sealed(policy=nested)
+        wire = _sealed().to_dict()
+        wire["policy"] = nested
+        with pytest.raises(EnvelopeError):
+            Envelope.from_dict(wire)
+
+    @pytest.mark.parametrize("field", ["kms_key_version", "sig", "policy", "v"])
+    def test_from_dict_rejects_missing_field(self, field: str) -> None:
+        wire = _sealed().to_dict()
+        del wire[field]
+        with pytest.raises(EnvelopeError, match="missing or unknown"):
+            Envelope.from_dict(wire)
+
+    def test_from_dict_rejects_unknown_field(self) -> None:
+        wire = _sealed().to_dict()
+        wire["extra"] = 1
+        with pytest.raises(EnvelopeError, match="missing or unknown"):
+            Envelope.from_dict(wire)
+
     def test_from_dict_rejects_overlong_base64_before_decoding(self) -> None:
         wire = _sealed().to_dict()
         wire["ct"] = "A" * (_MAX_B64_CHARS + 4)
