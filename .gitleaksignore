@@ -1,0 +1,3 @@
+# False positive: the fake RandomId hex fixture MIGRATION_TOKEN in the Pulumi
+# test harness (PR #21, since replaced by "0" * 16). Scoped to that one commit.
+d46734fad8c3556966d6130465a85210e69fb2bb:infra/pulumi/tests/harness.py:generic-api-key:17

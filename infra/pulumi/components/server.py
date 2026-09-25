@@ -2,9 +2,11 @@
 
 The server stores ciphertext, policy and receipts. It never sees plaintext,
 so it runs as an ordinary Cloud Run service with public ingress; auth is done
-by the application. The database URL (which embeds a generated password) and
-the JWT signing secret are generated here, stored only in Secret Manager, and
-injected into Cloud Run as secret references.
+by the application. A Cloud Run job runs the alembic migrations from the same
+image, with the same environment, before each new server image is rolled out.
+The database URL (which embeds a generated password) and the JWT signing
+secret are generated here, stored only in Secret Manager, and injected into
+Cloud Run as secret references.
 
 Every environment variable name matches a ``CARAPACE_*`` setting in
 ``server/src/carapace_server/config.py``. ``tests/test_server_env_contract.py``
@@ -33,10 +35,23 @@ DB_PASSWORD_LENGTH = 40
 # The server refuses anything shorter than 32 characters.
 JWT_SECRET_LENGTH = 64
 CLOUDSQL_MOUNT_PATH = "/cloudsql"
+CLOUDSQL_VOLUME_MOUNT = {"name": "cloudsql", "mount_path": CLOUDSQL_MOUNT_PATH}
 CONTAINER_PORT = 8080
 SERVER_MODE = "prod"
+# Cloud Run's frontend is the one proxy between the client and the
+# container; it appends the client address as the last X-Forwarded-For
+# entry. The server keys rate limits on that entry (never a client-supplied
+# one) instead of the frontend's address, which every caller would share.
+CLOUD_RUN_PROXY_HOPS = 1
 SERVER_ENV_PREFIX = "CARAPACE_"
 SECRET_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor"  # noqa: S105
+# Overrides the image's entrypoint; server/Dockerfile copies alembic.ini to
+# this path (server/tests/test_image_build.py checks it).
+MIGRATION_COMMAND = ("/usr/bin/python3",)
+MIGRATION_ARGS = ("-m", "alembic", "-c", "/app/server/alembic.ini", "upgrade", "head")
+MIGRATION_TIMEOUT = "600s"
+# Hex suffix of the execution name; job name + token must stay under 63 chars.
+MIGRATION_TOKEN_BYTES = 8
 
 
 @dataclass(frozen=True)
@@ -69,12 +84,23 @@ class ServerSecret:
 @dataclass(frozen=True)
 class Database:
     instance: gcp.sql.DatabaseInstance
+    sql_database: gcp.sql.Database
     url_secret: ServerSecret
     user: gcp.sql.User
 
 
+@dataclass(frozen=True)
+class ServerWorkloads:
+    service: gcp.cloudrunv2.Service
+    migration_job: gcp.cloudrunv2.Job
+
+
 def server_service_name(prefix: str) -> str:
     return f"{prefix}-server"
+
+
+def migration_job_name(prefix: str) -> str:
+    return f"{prefix}-migrate"
 
 
 def build_server_url(*, service_name: str, project_number: str, region: str) -> str:
@@ -169,7 +195,9 @@ def create_database(
         },
         opts=pulumi.ResourceOptions(depends_on=depends_on),
     )
-    gcp.sql.Database(f"{prefix}-db-carapace", name=DB_NAME, instance=instance.name)
+    sql_database = gcp.sql.Database(
+        f"{prefix}-db-carapace", name=DB_NAME, instance=instance.name
+    )
     password = random.RandomPassword(
         f"{prefix}-db-password", length=DB_PASSWORD_LENGTH, special=False
     )
@@ -188,7 +216,9 @@ def create_database(
         accessor_email=server_sa_email,
         depends_on=depends_on,
     )
-    return Database(instance=instance, url_secret=url_secret, user=user)
+    return Database(
+        instance=instance, sql_database=sql_database, url_secret=url_secret, user=user
+    )
 
 
 def create_jwt_secret(
@@ -232,6 +262,7 @@ def build_server_env(
         "ATTESTATION_SERVICE_ACCOUNT": attestation_service_account,
         "KMS_PUBLIC_KEY_PEM": kms_public_key_pem,
         "KMS_KEY_VERSION": kms_key_version,
+        "TRUSTED_PROXY_HOPS": str(CLOUD_RUN_PROXY_HOPS),
     }
     return [
         {"name": f"{SERVER_ENV_PREFIX}{name}", "value": value}
@@ -239,7 +270,74 @@ def build_server_env(
     ]
 
 
-def create_server_service(
+def _cloudsql_volume(database: Database) -> dict[str, object]:
+    return {
+        "name": "cloudsql",
+        "cloud_sql_instance": {"instances": [database.instance.connection_name]},
+    }
+
+
+def create_migration_job(
+    *,
+    prefix: str,
+    region: str,
+    image: str,
+    service_account_email: pulumi.Input[str],
+    envs: Sequence[dict[str, object]],
+    database: Database,
+    depends_on: Sequence[pulumi.Resource] = (),
+) -> gcp.cloudrunv2.Job:
+    """A job that runs ``alembic upgrade head`` from the server image.
+
+    It gets exactly the server's environment and Cloud SQL volume, so the
+    database URL comes from the same Secret Manager reference. A new execution
+    token is drawn whenever the image changes; Pulumi then runs the job and
+    waits for it to succeed, and the service is updated only after that.
+    """
+    token = random.RandomId(
+        f"{prefix}-migrate-token",
+        byte_length=MIGRATION_TOKEN_BYTES,
+        keepers={"image": image},
+    )
+    return gcp.cloudrunv2.Job(
+        f"{prefix}-migrate",
+        name=migration_job_name(prefix),
+        location=region,
+        deletion_protection=False,
+        run_execution_token=token.hex,
+        template={
+            # One task, no retries: alembic runs each migration in a
+            # transaction, and two runners must never race on the schema.
+            "task_count": 1,
+            "parallelism": 1,
+            "template": {
+                "service_account": service_account_email,
+                "max_retries": 0,
+                "timeout": MIGRATION_TIMEOUT,
+                "volumes": [_cloudsql_volume(database)],
+                "containers": [
+                    {
+                        "image": image,
+                        "commands": list(MIGRATION_COMMAND),
+                        "args": list(MIGRATION_ARGS),
+                        "envs": list(envs),
+                        "volume_mounts": [CLOUDSQL_VOLUME_MOUNT],
+                    }
+                ],
+            },
+        },
+        opts=pulumi.ResourceOptions(
+            depends_on=[
+                database.url_secret.access,
+                database.user,
+                database.sql_database,
+                *depends_on,
+            ]
+        ),
+    )
+
+
+def create_server_workloads(
     *,
     prefix: str,
     region: str,
@@ -257,7 +355,8 @@ def create_server_service(
     min_instances: int,
     max_instances: int,
     depends_on: Sequence[pulumi.Resource] = (),
-) -> gcp.cloudrunv2.Service:
+) -> ServerWorkloads:
+    """The server service and its migration job, from one pinned image."""
     image = build_image_reference(image_repository, image_digest)
     plain_env = build_server_env(
         public_url=public_url,
@@ -271,7 +370,20 @@ def create_server_service(
         database.url_secret.env(f"{SERVER_ENV_PREFIX}DATABASE_URL"),
         jwt_secret.env(f"{SERVER_ENV_PREFIX}JWT_SECRET"),
     ]
-    return gcp.cloudrunv2.Service(
+    envs = [*plain_env, *secret_env]
+    # The server's settings refuse to load in prod without every required
+    # variable, so the job needs the JWT secret too even though it never
+    # signs anything.
+    migration_job = create_migration_job(
+        prefix=prefix,
+        region=region,
+        image=image,
+        service_account_email=service_account_email,
+        envs=envs,
+        database=database,
+        depends_on=[jwt_secret.access, *depends_on],
+    )
+    service = gcp.cloudrunv2.Service(
         f"{prefix}-server",
         name=server_service_name(prefix),
         location=region,
@@ -285,22 +397,13 @@ def create_server_service(
                 "min_instance_count": min_instances,
                 "max_instance_count": max_instances,
             },
-            "volumes": [
-                {
-                    "name": "cloudsql",
-                    "cloud_sql_instance": {
-                        "instances": [database.instance.connection_name]
-                    },
-                }
-            ],
+            "volumes": [_cloudsql_volume(database)],
             "containers": [
                 {
                     "image": image,
                     "ports": {"container_port": CONTAINER_PORT},
-                    "envs": [*plain_env, *secret_env],
-                    "volume_mounts": [
-                        {"name": "cloudsql", "mount_path": CLOUDSQL_MOUNT_PATH}
-                    ],
+                    "envs": envs,
+                    "volume_mounts": [CLOUDSQL_VOLUME_MOUNT],
                 }
             ],
         },
@@ -309,7 +412,9 @@ def create_server_service(
                 database.url_secret.access,
                 jwt_secret.access,
                 database.user,
+                migration_job,
                 *depends_on,
             ]
         ),
     )
+    return ServerWorkloads(service=service, migration_job=migration_job)

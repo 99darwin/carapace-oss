@@ -1,0 +1,11 @@
+# Deny everything, then allow exactly what server/Dockerfile copies. This
+# keeps the build context small and keeps local files (.env, databases,
+# virtualenvs) out of it.
+*
+!server/requirements.lock
+!server/src/carapace_server/
+!packages/crypto/src/carapace_crypto/
+!server/alembic.ini
+!server/migrations/
+**/__pycache__
+**/*.pyc

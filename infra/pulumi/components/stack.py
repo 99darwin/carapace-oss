@@ -25,7 +25,7 @@ from components.server import (
     create_database,
     create_jwt_secret,
     create_registry,
-    create_server_service,
+    create_server_workloads,
     server_service_name,
 )
 from components.wif import create_workload_identity
@@ -140,7 +140,7 @@ def deploy(cfg: StackConfig) -> dict[str, pulumi.Input[object]]:
     image_registry = (
         cfg.image_registry or f"{cfg.region}-docker.pkg.dev/{cfg.project}/{cfg.prefix}"
     )
-    create_server_service(
+    server = create_server_workloads(
         prefix=cfg.prefix,
         region=cfg.region,
         image_repository=f"{image_registry}/server",
@@ -184,6 +184,7 @@ def deploy(cfg: StackConfig) -> dict[str, pulumi.Input[object]]:
     outputs.update(
         {
             "enclave_image_reference": enclave.image_reference,
+            "migration_job": server.migration_job.name,
             "enclave_url": network.address.address.apply(build_enclave_url),
         }
     )

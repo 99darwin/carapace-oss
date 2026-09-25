@@ -25,8 +25,8 @@ Freshness: ``exp - iat`` is capped at ``MAX_GRANT_TTL_SECONDS``. Whatever a
 malicious server withholds (a narrower grant, a tombstone, a re-sealed
 secret's new version floor) takes effect at the latest when the grant it
 keeps serving expires. That bound is the whole freshness guarantee across
-enclave boots; the CLI can renew grants automatically while the owner key
-is available.
+enclave boots. Grants are not renewed automatically: when one expires, the
+owner revokes the key and creates a new one (see ``carapace_cli.keys``).
 """
 
 from __future__ import annotations

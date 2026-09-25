@@ -26,6 +26,10 @@ SECRET_SETTINGS = ("database_url", "jwt_secret")
 # Not prod-required by the server, but without them /v1/kms/public-key is a
 # 404 and ``carapace verify`` fails against the deployment. Both are public.
 KMS_SETTINGS = ("kms_public_key_pem", "kms_key_version")
+# Cloud Run's frontend is the one proxy hop; without this every caller shares
+# the frontend's address and so one rate-limit bucket.
+PROXY_HOPS_SETTING = "trusted_proxy_hops"
+CLOUD_RUN_PROXY_HOPS = "1"
 
 
 def _parse_server_config() -> ast.Module:
@@ -121,3 +125,11 @@ def test_kms_public_key_settings_are_plain_values(server_config, server_envs) ->
         assert "valueSource" not in env, f"{setting} is public; keep it plain"
         assert isinstance(env.get("value"), str), setting
         assert env["value"], setting
+
+
+def test_server_trusts_exactly_one_proxy_hop(server_config, server_envs) -> None:
+    prefix = _env_prefix(server_config)
+    assert PROXY_HOPS_SETTING in _settings_fields(server_config)
+    env = server_envs.get(f"{prefix}{PROXY_HOPS_SETTING.upper()}")
+    assert env is not None, "the server would key rate limits on the frontend"
+    assert env.get("value") == CLOUD_RUN_PROXY_HOPS

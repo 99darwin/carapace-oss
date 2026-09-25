@@ -95,6 +95,13 @@ class Settings(BaseSettings):
     kms_key_version: str | None = None
 
     rate_limit_enabled: bool = True
+    # How many X-Forwarded-For entries the trusted proxies in front of the
+    # server append; each hop normally appends the address it accepted the
+    # connection from (Cloud Run's frontend appends one, a Google external
+    # load balancer before it two). Rate limits and session records then
+    # key on that entry instead of the proxy's address. 0 keys on the peer
+    # address and ignores the header entirely. See ``proxy.py``.
+    trusted_proxy_hops: int = Field(default=0, ge=0)
     cleanup_interval_seconds: int = Field(default=3600, ge=10)
     max_request_body_bytes: int = Field(
         default=DEFAULT_MAX_REQUEST_BODY_BYTES, ge=MIN_MAX_REQUEST_BODY_BYTES
