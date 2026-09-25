@@ -205,6 +205,70 @@ def test_lock_matches_uv_export() -> None:
     )
 
 
+# --- .github/workflows/enclave-image.yml ----------------------------------
+
+WORKFLOW = REPO_ROOT / ".github" / "workflows" / "enclave-image.yml"
+GITHUB_DIR = REPO_ROOT / ".github"
+SHA_PINNED_USES = re.compile(r"^\s*-?\s*uses:\s*(\./\S+|\S+@[0-9a-f]{40})\s*(#.*)?$")
+
+
+def _workflow_files() -> list[Path]:
+    workflows = sorted((GITHUB_DIR / "workflows").glob("*.yml"))
+    actions = sorted((GITHUB_DIR / "actions").glob("*/action.yml"))
+    assert workflows and actions
+    return workflows + actions
+
+
+def test_every_action_is_pinned_to_a_commit_sha() -> None:
+    for path in _workflow_files():
+        for line in path.read_text().splitlines():
+            if "uses:" in line:
+                assert SHA_PINNED_USES.match(line), f"{path.name}: {line.strip()}"
+
+
+def test_workflows_never_run_untrusted_code_with_secrets() -> None:
+    for path in _workflow_files():
+        assert "pull_request_target" not in path.read_text(), path.name
+
+
+def test_image_workflow_has_read_only_default_permissions() -> None:
+    text = WORKFLOW.read_text()
+    assert re.search(r"^permissions:\n  contents: read\n", text, re.MULTILINE)
+    # Write scopes exist only on the tag-gated publish job.
+    assert text.count("contents: write") == 1
+    assert "startsWith(github.ref, 'refs/tags/v')" in text
+
+
+def test_publish_requires_the_tag_commit_on_the_default_branch() -> None:
+    text = WORKFLOW.read_text()
+    assert "compare/${DEFAULT_BRANCH}...${commit}" in text
+    assert "identical|behind" in text
+
+
+def test_publish_never_rewrites_a_release_manifest() -> None:
+    text = WORKFLOW.read_text()
+    assert "--clobber" not in text
+    assert "release manifests are immutable" in text
+    # Annotated tags: the manifest records the commit, not the tag object.
+    assert "git rev-parse 'HEAD^{commit}'" in text
+    assert '--arg commit "$GITHUB_SHA"' not in text
+
+
+def test_github_context_never_reaches_shell_inline() -> None:
+    """Untrusted github.* values go through env, never into run: text."""
+    run_indent: int | None = None
+    for line in WORKFLOW.read_text().splitlines():
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        if line.lstrip().startswith("run:"):
+            run_indent = indent
+        elif run_indent is not None and indent <= run_indent:
+            run_indent = None
+        if run_indent is not None:
+            assert "${{" not in line, line.strip()
+
+
 # --- scripts/oci_image_digest.py ------------------------------------------
 
 

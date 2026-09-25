@@ -65,11 +65,34 @@ Compare the printed digest with the `digest` field in the signed
 `.github/workflows/enclave-image.yml` builds the image on `ubuntu-24.04` and
 on `ubuntu-22.04` and fails if the two digests differ. On a `v*` tag it:
 
-1. Builds a third time and pushes to `ghcr.io/<owner>/<repo>/enclave`.
-2. Checks that the pushed digest equals the reproduced one.
-3. Signs the image with keyless `cosign sign`.
-4. Attaches `releases/<tag>.json` (`{digest, commit, epoch}`) and its
-   `cosign sign-blob` bundle to the release.
+1. Refuses the tag unless its commit is already on the default branch, so
+   a tag alone cannot release unreviewed code. Push `main` first, then the
+   tag.
+2. Refuses to proceed if the tag already has a release manifest naming a
+   different image or commit. Release manifests are immutable; a moved tag
+   fails before anything is pushed. Cut a new tag instead.
+3. Builds a third time and pushes to `ghcr.io/<owner>/<repo>/enclave`.
+4. Checks that the pushed digest equals the reproduced one.
+5. Signs the image with keyless `cosign sign`.
+6. Attaches `releases/<tag>.json` (`{tag, digest, commit, epoch}`) and its
+   `cosign sign-blob` bundle to the release. `commit` is the tagged commit,
+   also for annotated tags.
+
+Both signatures are keyless and identify this workflow on a release tag.
+Verify a manifest with:
+
+```sh
+cosign verify-blob \
+  --bundle "releases/${TAG}.json.sigstore.json" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-identity-regexp \
+    '^https://github\.com/<owner>/<repo>/\.github/workflows/enclave-image\.yml@refs/tags/v' \
+  "releases/${TAG}.json"
+```
+
+and the image with `cosign verify` and the same issuer and identity flags.
+Check that the manifest's `tag` is the tag you asked for, so one release's
+manifest cannot be served in place of another's.
 
 The entrypoint is `python3 -m carapace_enclave`. The attested HTTPS server
 (`carapace_enclave/__main__.py`) lands in a later PR. Until then the image
