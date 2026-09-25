@@ -3,9 +3,11 @@
 Serves the API on ``$PORT`` (Cloud Run sets it) on all interfaces. The image
 has no shell to expand ``$PORT`` in a command line, so it is read here.
 
-Forwarded headers are trusted only from the addresses in uvicorn's
-``FORWARDED_ALLOW_IPS`` (default ``127.0.0.1``), never from every peer: with
-``*`` uvicorn takes the leftmost, client-supplied ``X-Forwarded-For`` entry.
+uvicorn's own ``X-Forwarded-*`` handling is off: it trusts by peer address,
+which behind Cloud Run is never ``127.0.0.1``, and ``FORWARDED_ALLOW_IPS=*``
+would make it take the leftmost, client-supplied entry. The app trusts a
+configured number of proxy hops instead (``CARAPACE_TRUSTED_PROXY_HOPS``,
+see ``proxy.py``), so there is exactly one place that reads the header.
 """
 
 from __future__ import annotations
@@ -49,7 +51,12 @@ def main() -> None:
     except PortError as exc:
         sys.exit(f"carapace-server: {exc}")
     uvicorn.run(
-        APP_FACTORY, factory=True, host=LISTEN_HOST, port=port, server_header=False
+        APP_FACTORY,
+        factory=True,
+        host=LISTEN_HOST,
+        port=port,
+        server_header=False,
+        proxy_headers=False,
     )
 
 

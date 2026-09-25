@@ -38,6 +38,11 @@ CLOUDSQL_MOUNT_PATH = "/cloudsql"
 CLOUDSQL_VOLUME_MOUNT = {"name": "cloudsql", "mount_path": CLOUDSQL_MOUNT_PATH}
 CONTAINER_PORT = 8080
 SERVER_MODE = "prod"
+# Cloud Run's frontend is the one proxy between the client and the
+# container; it appends the client address as the last X-Forwarded-For
+# entry. The server keys rate limits on that entry (never a client-supplied
+# one) instead of the frontend's address, which every caller would share.
+CLOUD_RUN_PROXY_HOPS = 1
 SERVER_ENV_PREFIX = "CARAPACE_"
 SECRET_ACCESSOR_ROLE = "roles/secretmanager.secretAccessor"  # noqa: S105
 # Overrides the image's entrypoint; server/Dockerfile copies alembic.ini to
@@ -257,6 +262,7 @@ def build_server_env(
         "ATTESTATION_SERVICE_ACCOUNT": attestation_service_account,
         "KMS_PUBLIC_KEY_PEM": kms_public_key_pem,
         "KMS_KEY_VERSION": kms_key_version,
+        "TRUSTED_PROXY_HOPS": str(CLOUD_RUN_PROXY_HOPS),
     }
     return [
         {"name": f"{SERVER_ENV_PREFIX}{name}", "value": value}

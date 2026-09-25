@@ -107,6 +107,7 @@ The server reads `CARAPACE_*` variables and silently ignores anything else, so
 | `CARAPACE_ATTESTATION_SERVICE_ACCOUNT` | the enclave service account |
 | `CARAPACE_KMS_PUBLIC_KEY_PEM` | public key of the KMS key version, read at deploy time (`gcp.kms.get_kms_crypto_key_version`) |
 | `CARAPACE_KMS_KEY_VERSION` | `kms_key_version_name`, the same `.../cryptoKeyVersions/1` name the enclave gets as `KMS_KEY_NAME` |
+| `CARAPACE_TRUSTED_PROXY_HOPS` | `1`: Cloud Run's frontend is the one proxy, and appends the client address as the last `X-Forwarded-For` entry, which rate limits key on |
 | `CARAPACE_DATABASE_URL` | Secret Manager `<prefix>-database-url` (`postgresql+asyncpg` over the `/cloudsql` socket, generated password) |
 | `CARAPACE_JWT_SECRET` | Secret Manager `<prefix>-jwt-secret` (64 random characters) |
 

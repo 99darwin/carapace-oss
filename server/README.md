@@ -34,9 +34,19 @@ enclave reports; anything else is refused at startup). They are served at
 `GET /v1/kms/public-key` for the CLI, which seals only if they equal the
 KMS key the attested enclave reports. Without them `carapace verify` fails.
 
-Behind a reverse proxy, run uvicorn with `--proxy-headers` and
-`--forwarded-allow-ips` set to the proxy address so rate limits key on the
-real client IP. The app never reads `X-Forwarded-For` itself.
+Rate limits (and the address stored with a session) key on the client IP;
+IPv6 clients are bucketed by /64. Behind a reverse proxy the client IP is
+the proxy's address, so every caller shares one bucket and one client can
+exhaust the login limits for everyone. Set `CARAPACE_TRUSTED_PROXY_HOPS`
+to the number of `X-Forwarded-For` entries the proxies in front of the
+server append (default `0`): each hop normally appends the address it
+accepted the connection from, so the client is the entry that many from
+the right. Entries to its left are client-supplied and ignored; a shorter
+chain or a non-IP entry falls back to the peer address. Cloud Run's
+frontend appends one, so the Pulumi stack sets `1`; a Google external load
+balancer in front of it appends two more. Do not combine this with
+uvicorn's `--proxy-headers`, and never use `--forwarded-allow-ips='*'`,
+which takes the leftmost, client-supplied entry.
 
 ## Container image
 
@@ -53,10 +63,9 @@ docker buildx build -f server/Dockerfile --platform linux/amd64 -t carapace-serv
 The entrypoint, `python3 -m carapace_server`, serves on `$PORT` (default
 8080) as uid 65532 and needs no writable path. Migrations run from the same
 image with `python3 -m alembic -c /app/server/alembic.ini upgrade head`; the
-Pulumi stack does this in a Cloud Run job (`infra/pulumi/README.md`). uvicorn
-trusts `X-Forwarded-For` only from the addresses in `FORWARDED_ALLOW_IPS`
-(default `127.0.0.1`). Never set it to `*`: uvicorn then takes the leftmost,
-client-supplied entry.
+Pulumi stack does this in a Cloud Run job (`infra/pulumi/README.md`). The
+entrypoint starts uvicorn with its proxy-header handling off; the client
+address behind a proxy comes only from `CARAPACE_TRUSTED_PROXY_HOPS` (above).
 
 ## Design notes
 
