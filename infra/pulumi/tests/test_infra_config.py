@@ -109,6 +109,25 @@ def test_attribute_condition_refuses_public_audiences(audience: str) -> None:
         )
 
 
+def test_config_rejects_wif_audience_equal_to_control_plane_url() -> None:
+    url = "https://api.example.com"
+    with pytest.raises(ConfigError, match="enclave-to-server"):
+        make_config(wif_audience=url, control_plane_url=url)
+    assert make_config(wif_audience="carapace-sts-test", control_plane_url=url)
+
+
+def test_attribute_condition_refuses_the_server_audience() -> None:
+    """Covers the derived server URL, which the config cannot see."""
+    with pytest.raises(ValueError, match="enclave-to-server"):
+        build_attribute_condition(
+            project_id="example-project",
+            enclave_sa_email="e@example-project.iam.gserviceaccount.com",
+            allowed_digests=["sha256:" + "a" * 64],
+            audience="https://cptest-server-42.us-central1.run.app",
+            control_plane_url="https://cptest-server-42.us-central1.run.app",
+        )
+
+
 def test_attribute_condition_requires_a_control_plane_url() -> None:
     with pytest.raises(ValueError, match="control_plane_url"):
         build_attribute_condition(

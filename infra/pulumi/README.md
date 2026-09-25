@@ -48,7 +48,9 @@ audiences keep the two uses apart:
 `wif_audience` can be overridden with any other stack-specific string. The
 stack refuses `https://sts.googleapis.com`, the audience of the token the
 launcher writes into the container by default, and it refuses
-`carapace-attestation`.
+`carapace-attestation`. It also refuses the control plane URL: that is the
+audience of the bearer tokens the enclave sends to the untrusted server,
+which must never be exchangeable at STS.
 
 The WIF provider accepts a token only if **all** of the following hold:
 
@@ -158,7 +160,7 @@ Secret Manager ids `database_url_secret` and `jwt_secret` (never the values).
 | `image_registry` | this stack's AR repo | Images are `<registry>/enclave@…` and `<registry>/server@…` |
 | `deploy_workloads` | `true` | `false` skips the VM and Cloud Run (*digests are then optional) |
 | `control_plane_url` | `https://<prefix>-server-<project number>.<region>.run.app` | A bare `https://host[:port]` origin (no path or trailing slash). Used as the server's `CARAPACE_PUBLIC_URL`, the enclave's `CONTROL_PLANE_URL`, and in the WIF condition |
-| `wif_audience` | provider resource name | The only audience WIF accepts. Must be stack-specific. `https://sts.googleapis.com` and `carapace-attestation` are refused |
+| `wif_audience` | provider resource name | The only audience WIF accepts. Must be stack-specific. `https://sts.googleapis.com`, `carapace-attestation` and the control plane URL are refused |
 | `enclave_machine_type` | `n2d-standard-2` | Must support AMD SEV |
 | `db_tier` | `db-f1-micro` | |
 | `server_min_instances` / `server_max_instances` | `0` / `2` | |

@@ -5,7 +5,9 @@ stack's STS audience (by default the provider's full resource name) and
 presents it to STS through this pool. That audience is the only one the
 provider accepts. Tokens with the launcher's default audience or the
 client-facing ``carapace-attestation`` audience are published by the enclave
-and must never be exchangeable. Only tokens meeting every clause of
+and must never be exchangeable, and neither may the enclave-to-server token
+(audience: the control plane URL), which the untrusted server receives as a
+bearer token. Only tokens meeting every clause of
 ``build_attribute_condition`` are exchanged, and KMS decrypt is granted to the
 resulting ``principalSet`` for specific image digests. No service account is
 impersonated.
@@ -21,7 +23,7 @@ from dataclasses import dataclass
 import pulumi
 import pulumi_gcp as gcp
 
-from components.config import FORBIDDEN_WIF_AUDIENCES
+from components.config import FORBIDDEN_WIF_AUDIENCES, reject_server_audience
 
 CONFIDENTIAL_SPACE_ISSUER = "https://confidentialcomputing.googleapis.com"
 REQUIRED_HWMODEL = "GCP_AMD_SEV"
@@ -74,6 +76,8 @@ def build_attribute_condition(
         raise ValueError("allowed_digests must not be empty")
     if audience in FORBIDDEN_WIF_AUDIENCES:
         raise ValueError(f"audience {audience!r} must never be accepted by WIF")
+    # Runs on the resolved URL, so the derived Cloud Run URL is covered too.
+    reject_server_audience(audience, control_plane_url)
     digests = ", ".join(_cel_string(digest) for digest in allowed_digests)
     clauses = [
         # ``aud`` is a single string in Confidential Space tokens.

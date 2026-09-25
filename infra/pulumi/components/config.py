@@ -57,6 +57,21 @@ def validate_control_plane_url(url: str) -> str:
     return url
 
 
+def reject_server_audience(wif_audience: str | None, control_plane_url: str) -> None:
+    """Refuse a WIF audience equal to the enclave-to-server token audience.
+
+    The enclave authenticates to the untrusted server with a bearer token whose
+    audience is the server's URL. If WIF accepted that audience, the server
+    could exchange the tokens it receives at STS and decrypt every secret.
+    """
+    if wif_audience is not None and wif_audience == control_plane_url:
+        raise ConfigError(
+            f"wif_audience {wif_audience!r} equals the control plane URL, the "
+            "audience of enclave-to-server tokens; the server must never be able "
+            "to exchange those tokens for decrypt access"
+        )
+
+
 def build_image_reference(repository: str, digest: str) -> str:
     """Build ``<repository>@<digest>``, refusing tag-based references.
 
@@ -136,6 +151,8 @@ class StackConfig:
             )
         if self.control_plane_url is not None:
             validate_control_plane_url(self.control_plane_url)
+            # The derived URL is checked again in build_attribute_condition.
+            reject_server_audience(self.wif_audience, self.control_plane_url)
         if self.enable_iam_alerts and not self.alert_emails:
             raise ConfigError(
                 "IAM change alerts are on by default and need at least one "
