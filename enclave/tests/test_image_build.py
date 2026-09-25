@@ -182,7 +182,9 @@ def test_lock_pins_every_requirement_with_hashes() -> None:
     assert blocks
     for block in blocks:
         requirement = block.splitlines()[0]
-        assert re.match(r"^[A-Za-z0-9._-]+==\S+ \\$", requirement), requirement
+        assert re.match(r"^[A-Za-z0-9._-]+==\S+( ; [^\\]+)? \\$", requirement), (
+            requirement
+        )
         assert "--hash=sha256:" in block, requirement
         assert not requirement.startswith(("-e", "carapace")), requirement
 

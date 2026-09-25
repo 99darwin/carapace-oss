@@ -6,5 +6,9 @@
 !enclave/src/carapace_enclave/__init__.py
 !enclave/src/carapace_enclave/py.typed
 !enclave/src/carapace_enclave/egress/
+!enclave/src/carapace_enclave/clock.py
+!enclave/src/carapace_enclave/secure_memory.py
+!enclave/src/carapace_enclave/attestation/
+!packages/crypto/src/carapace_crypto/
 **/__pycache__
 **/*.pyc

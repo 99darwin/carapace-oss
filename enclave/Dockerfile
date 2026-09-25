@@ -45,8 +45,15 @@ RUN python -m pip install \
 COPY enclave/src/carapace_enclave/__init__.py \
      enclave/src/carapace_enclave/py.typed \
      /app/site-packages/carapace_enclave/
+COPY enclave/src/carapace_enclave/clock.py \
+     enclave/src/carapace_enclave/secure_memory.py \
+     /app/site-packages/carapace_enclave/
+COPY enclave/src/carapace_enclave/attestation/ \
+     /app/site-packages/carapace_enclave/attestation/
 COPY enclave/src/carapace_enclave/egress/ \
      /app/site-packages/carapace_enclave/egress/
+COPY packages/crypto/src/carapace_crypto/ \
+     /app/site-packages/carapace_crypto/
 
 # Fail the build if any mock code or bytecode slipped in, then normalise
 # permissions so the result does not depend on the builder's umask.
