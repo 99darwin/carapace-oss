@@ -14,7 +14,7 @@ their config.
 | `identity.py` | Enclave VM service account and server (Cloud Run) service account |
 | `enclave_vm.py` | A dedicated VPC and subnet, one static external IP, one firewall rule (tcp:443 ingress), and one Confidential Space VM (AMD SEV, Secure Boot) |
 | `server.py` | An Artifact Registry repo, Cloud SQL Postgres 16 (`db-f1-micro`, zonal), two generated secrets in Secret Manager (the database URL and the JWT signing secret), and a Cloud Run v2 service (min 0 instances) |
-| `monitoring.py` | On by default. A log-match alert on IAM or configuration changes to the KMS key ring and key, the WIF pool, the enclave service account, or project IAM, and on any `AsymmetricDecrypt` by a principal outside the attestation pool |
+| `monitoring.py` | On by default. A log-match alert on IAM or configuration changes to the KMS key ring and key, the WIF pool, the enclave service account, project IAM, log routing (sinks, exclusions, buckets) and alerting, and on any `AsymmetricDecrypt` by a principal outside this project's attestation pool |
 
 ### Who can decrypt
 

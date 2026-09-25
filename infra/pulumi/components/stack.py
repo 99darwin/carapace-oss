@@ -120,6 +120,7 @@ def deploy(cfg: StackConfig) -> dict[str, pulumi.Input[object]]:
         create_iam_change_alert(
             prefix=cfg.prefix,
             key_ring_name=kms_key.key_ring.id,
+            project_number=project.number,
             pool_id=workload_identity.pool.workload_identity_pool_id,
             enclave_sa_email=identities.enclave.email,
             enclave_sa_unique_id=identities.enclave.unique_id,

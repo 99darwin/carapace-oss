@@ -379,7 +379,18 @@ def test_iam_change_alert_watches_decrypt_path(stack) -> None:
         ' AND protoPayload.methodName="AsymmetricDecrypt"'
         f' AND protoPayload.resourceName:"{KEY_RING_ID}"'
         " AND NOT protoPayload.authenticationInfo.principalSubject:"
-        '"/workloadIdentityPools/cptest-attest/")'
+        f'"/projects/{PROJECT_NUMBER}/locations/global'
+        '/workloadIdentityPools/cptest-attest/")'
+    ) in log_filter
+    # The alert's own blind spots: log routing and alerting configuration.
+    assert (
+        '(protoPayload.serviceName="logging.googleapis.com"'
+        ' AND protoPayload.methodName:("Sink" OR "Exclusion" OR "Bucket"'
+        ' OR "Settings"))'
+    ) in log_filter
+    assert (
+        '(protoPayload.serviceName="monitoring.googleapis.com"'
+        ' AND protoPayload.methodName:("AlertPolicy" OR "NotificationChannel"))'
     ) in log_filter
 
 

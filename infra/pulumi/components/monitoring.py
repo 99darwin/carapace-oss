@@ -5,6 +5,12 @@ loosening the WIF gate. Both are Admin Activity audit log entries (always on),
 so a log-match alert makes such a change visible within minutes. Decrypt
 calls are Data Access entries, which the stack turns on for Cloud KMS; the
 alert also fires on a decrypt by anyone other than the attested enclave.
+
+The alert also watches its own blind spots: log routing (a sink exclusion
+would drop the KMS entries before they are matched) and the project's alert
+policies and notification channels. Deleting this policy cannot page anyone,
+but the deletion stays in Cloud Audit Logs, and every other change to these
+resources fires while the policy still exists.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ AUTO_CLOSE = "1800s"
 def build_alert_filter(
     *,
     key_ring_name: str,
+    project_number: str,
     pool_id: str,
     enclave_sa_email: str,
     enclave_sa_unique_id: str,
@@ -52,22 +59,38 @@ def build_alert_filter(
         'protoPayload.serviceName="cloudresourcemanager.googleapis.com"'
         ' AND protoPayload.methodName="SetIamPolicy"'
     )
+    # Sinks, exclusions, log buckets and settings decide whether the KMS Data
+    # Access entries below are ever ingested. Only writes are Admin Activity
+    # entries, so the substrings match no read-only method.
+    log_routing_change = (
+        'protoPayload.serviceName="logging.googleapis.com"'
+        ' AND protoPayload.methodName:("Sink" OR "Exclusion" OR "Bucket"'
+        ' OR "Settings")'
+    )
+    alerting_change = (
+        'protoPayload.serviceName="monitoring.googleapis.com"'
+        ' AND protoPayload.methodName:("AlertPolicy" OR "NotificationChannel")'
+    )
     # A Data Access entry (see kms.enable_kms_data_access_logs). The enclave
-    # decrypts as a federated principal of the attestation pool; any other
-    # caller, allowed or denied, is suspicious. An entry without a principal
+    # decrypts as a federated principal of this project's attestation pool;
+    # any other caller, allowed or denied, is suspicious, including a
+    # same-named pool in another project. An entry without a principal
     # subject also matches, which errs towards alerting.
     foreign_decrypt = (
         'protoPayload.serviceName="cloudkms.googleapis.com"'
         ' AND protoPayload.methodName="AsymmetricDecrypt"'
         f' AND protoPayload.resourceName:"{key_ring_name}"'
         " AND NOT protoPayload.authenticationInfo.principalSubject:"
-        f'"/workloadIdentityPools/{pool_id}/"'
+        f'"/projects/{project_number}/locations/global'
+        f'/workloadIdentityPools/{pool_id}/"'
     )
     clauses = (
         kms_change,
         wif_change,
         enclave_sa_change,
         project_iam_change,
+        log_routing_change,
+        alerting_change,
         foreign_decrypt,
     )
     return " OR ".join(f"({clause})" for clause in clauses)
@@ -77,6 +100,7 @@ def create_iam_change_alert(
     *,
     prefix: str,
     key_ring_name: pulumi.Input[str],
+    project_number: pulumi.Input[str],
     pool_id: pulumi.Input[str],
     enclave_sa_email: pulumi.Input[str],
     enclave_sa_unique_id: pulumi.Input[str],
@@ -92,13 +116,14 @@ def create_iam_change_alert(
         for index, email in enumerate(emails)
     ]
     log_filter = pulumi.Output.all(
-        key_ring_name, pool_id, enclave_sa_email, enclave_sa_unique_id
+        key_ring_name, project_number, pool_id, enclave_sa_email, enclave_sa_unique_id
     ).apply(
         lambda args: build_alert_filter(
             key_ring_name=args[0],
-            pool_id=args[1],
-            enclave_sa_email=args[2],
-            enclave_sa_unique_id=args[3],
+            project_number=args[1],
+            pool_id=args[2],
+            enclave_sa_email=args[3],
+            enclave_sa_unique_id=args[4],
         )
     )
     return gcp.monitoring.AlertPolicy(
@@ -120,10 +145,11 @@ def create_iam_change_alert(
             "content": (
                 "Someone changed IAM or configuration on the Carapace KMS key "
                 "ring, the attestation WIF pool, the enclave service account, "
-                "or project IAM, or a principal other than the attested "
-                "enclave called AsymmetricDecrypt on the key. Confirm it "
-                "was intended; an unexpected decrypter grant defeats the "
-                "attestation gate."
+                "project IAM, log routing, or alerting, or a principal other "
+                "than the attested enclave called AsymmetricDecrypt on the "
+                "key. Confirm it was intended; an unexpected decrypter grant "
+                "defeats the attestation gate, and a log exclusion or alert "
+                "change can hide one."
             ),
             "mime_type": "text/markdown",
         },
