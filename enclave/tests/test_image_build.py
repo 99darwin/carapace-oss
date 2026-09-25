@@ -19,6 +19,8 @@ from types import ModuleType
 
 import pytest
 
+from carapace_enclave.runtime import ENCLAVE_PORT
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ENCLAVE_DIR = REPO_ROOT / "enclave"
 DOCKERFILE = ENCLAVE_DIR / "Dockerfile"
@@ -41,6 +43,11 @@ UV_EXPORT_ARGS = (
 PINNED_IMAGE = re.compile(r"^\S+@sha256:[0-9a-f]{64}$")
 LABEL_PREFIX = "tee.launch_policy."
 LOG_REDIRECT_VALUES = frozenset({"always", "debugonly", "never"})
+# Linux default for net.ipv4.ip_unprivileged_port_start.
+UNPRIVILEGED_PORT_START = 1024
+# A numeric, non-zero uid[:gid]. Names are refused on purpose: "root" would
+# pass a "not 0" check, and a name needs /etc/passwd resolution at runtime.
+UNPRIVILEGED_USER = re.compile(r"^[1-9][0-9]*(:[1-9][0-9]*)?$")
 
 
 def _dockerfile_instructions() -> list[tuple[str, str]]:
@@ -105,6 +112,48 @@ def test_launch_policy_env_overrides_match_infra() -> None:
     allowed = labels[LABEL_PREFIX + "allow_env_override"].split(",")
     assert len(allowed) == len(set(allowed))
     assert set(allowed) == _infra_env_overrides()
+
+
+def _infra_int_constant(name: str) -> int:
+    tree = ast.parse(INFRA_ENCLAVE_VM.read_text())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == name for t in node.targets
+        ):
+            value = ast.literal_eval(node.value)
+            assert isinstance(value, int), f"{name} must be an int literal"
+            return value
+    raise AssertionError(f"{name} not found in enclave_vm.py")
+
+
+def _exposed_ports() -> list[str]:
+    ports = []
+    for keyword, rest in _dockerfile_instructions():
+        if keyword == "EXPOSE":
+            ports.extend(rest.split())
+    return ports
+
+
+def test_listen_port_matches_image_and_infra() -> None:
+    """One port end to end: the launcher opens only EXPOSEd ports, each to the
+    same number, and a GCE firewall rule cannot translate ports."""
+    assert _exposed_ports() == [f"{ENCLAVE_PORT}/tcp"]
+    assert _infra_int_constant("INGRESS_PORT") == ENCLAVE_PORT
+
+
+def _final_stage_instructions() -> list[tuple[str, str]]:
+    """Instructions after the last FROM: only these shape the runtime image."""
+    instructions = _dockerfile_instructions()
+    froms = [i for i, (keyword, _) in enumerate(instructions) if keyword == "FROM"]
+    return instructions[max(froms) + 1 :]
+
+
+def test_listen_port_is_bindable_without_capabilities() -> None:
+    """The image runs as a non-root user with no ambient capabilities."""
+    users = [rest for keyword, rest in _final_stage_instructions() if keyword == "USER"]
+    assert users, "the runtime stage must set USER"
+    assert UNPRIVILEGED_USER.fullmatch(users[-1]), users[-1]
+    assert ENCLAVE_PORT >= UNPRIVILEGED_PORT_START
 
 
 def test_launch_policy_is_otherwise_closed() -> None:

@@ -1,5 +1,7 @@
 """Config and pure-function validation (no resources declared)."""
 
+import json
+
 import pytest
 
 pytest.importorskip("pulumi_gcp")
@@ -80,6 +82,17 @@ def test_config_rejects_bad_prefix(prefix: str) -> None:
 def test_config_alerts_require_recipients() -> None:
     with pytest.raises(ConfigError):
         make_config(enable_iam_alerts=True, alert_emails=[])
+
+
+def test_key_policy_makes_every_decrypter_a_public_key_viewer() -> None:
+    decrypter = "principalSet://iam.googleapis.com/projects/1/x/" + DIGEST_A
+    server = "serviceAccount:server@example.com"
+    policy = json.loads(build_key_policy([decrypter], [server]))
+    bindings = {b["role"]: b["members"] for b in policy["bindings"]}
+    assert bindings == {
+        "roles/cloudkms.cryptoKeyDecrypter": [decrypter],
+        "roles/cloudkms.publicKeyViewer": sorted([decrypter, server]),
+    }
 
 
 def test_key_policy_refuses_non_principal_set_decrypter() -> None:
