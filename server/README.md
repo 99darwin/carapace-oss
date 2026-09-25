@@ -67,6 +67,12 @@ uv export --package carapace-server --no-dev --frozen --no-emit-workspace \
 docker buildx build -f server/Dockerfile --platform linux/amd64 -t carapace-server .
 ```
 
+A `web` build stage (a node image pinned by digest, like the others)
+installs the UI's dependencies from `web/package-lock.json` with
+`npm ci --ignore-scripts` and runs `npm run build`; only the resulting
+`dist/` is copied into the final image, at `/app/web`, and the image sets
+`CARAPACE_WEB_DIR` to it, so the service serves the UI at `/`.
+
 The entrypoint, `python3 -m carapace_server`, serves on `$PORT` (default
 8080) as uid 65532 and needs no writable path. Migrations run from the same
 image with `python3 -m alembic -c /app/server/alembic.ini upgrade head`; the
