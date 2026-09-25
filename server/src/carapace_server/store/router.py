@@ -36,6 +36,19 @@ def _mismatch() -> HTTPException:
     )
 
 
+def _unknown_owner_key() -> HTTPException:
+    return HTTPException(
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "Envelope is not signed by one of your active owner keys",
+    )
+
+
+def _stale() -> HTTPException:
+    return HTTPException(
+        status.HTTP_409_CONFLICT, "Envelope version must exceed the stored version"
+    )
+
+
 def _detail(secret: Secret) -> SecretDetail:
     summary = SecretSummary.model_validate(secret)
     return SecretDetail(**summary.model_dump(), envelope=service.envelope_dict(secret))
@@ -50,6 +63,8 @@ async def create_secret(
         secret = await service.create_secret(db, user.id, body.name, body.envelope)
     except service.EnvelopeMismatchError:
         raise _mismatch() from None
+    except service.UnknownOwnerKeyError:
+        raise _unknown_owner_key() from None
     except service.SecretConflictError:
         raise _conflict() from None
     return _detail(secret)
@@ -88,6 +103,10 @@ async def update_secret(
         raise _not_found() from None
     except service.EnvelopeMismatchError:
         raise _mismatch() from None
+    except service.UnknownOwnerKeyError:
+        raise _unknown_owner_key() from None
+    except service.StaleVersionError:
+        raise _stale() from None
     except service.SecretConflictError:
         raise _conflict() from None
     return _detail(secret)

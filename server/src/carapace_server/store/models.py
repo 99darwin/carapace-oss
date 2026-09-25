@@ -6,9 +6,19 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, ForeignKey, LargeBinary, String, UniqueConstraint, Uuid
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    ForeignKey,
+    LargeBinary,
+    String,
+    UniqueConstraint,
+    Uuid,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
+from carapace_crypto import fingerprint
+from carapace_crypto.ownerkey import PUBLIC_KEY_SIZE, SIGNATURE_SIZE
 from carapace_server.db import Base, UTCDateTime, utcnow
 
 SECRET_NAME_MAX_LENGTH = 200
@@ -18,12 +28,14 @@ NONCE_BYTES = 12
 
 
 class Secret(Base):
-    """One envelope-v1 secret.
+    """One owner-signed envelope-v1 secret.
 
-    ``id`` is chosen by the client because it is bound into the AAD. The
-    policy is stored in cleartext for the enclave to read, but editing it
-    here breaks decryption, which is why it can only change together with a
-    fresh envelope.
+    ``id`` is chosen by the client because it is bound into the AAD and the
+    owner signature. The columns hold exactly the fields of the signed
+    envelope, so ``store.service.envelope_dict`` rebuilds it byte for byte.
+    The policy is stored in cleartext for the enclave to read, but editing
+    it here breaks both the signature and decryption, which is why it can
+    only change together with a fresh envelope.
     """
 
     __tablename__ = "secrets"
@@ -35,7 +47,9 @@ class Secret(Base):
     )
     name: Mapped[str] = mapped_column(String(SECRET_NAME_MAX_LENGTH))
     policy_json: Mapped[dict[str, Any]] = mapped_column(JSON)
-    aad_hash: Mapped[str] = mapped_column(String(64))
+    owner_pk: Mapped[bytes] = mapped_column(LargeBinary(PUBLIC_KEY_SIZE))
+    version: Mapped[int] = mapped_column(BigInteger)
+    signature: Mapped[bytes] = mapped_column(LargeBinary(SIGNATURE_SIZE))
     kms_key_version: Mapped[str | None] = mapped_column(
         String(KMS_KEY_VERSION_MAX_LENGTH)
     )
@@ -46,3 +60,7 @@ class Secret(Base):
     updated_at: Mapped[datetime] = mapped_column(
         UTCDateTime, default=utcnow, onupdate=utcnow
     )
+
+    @property
+    def owner_fingerprint(self) -> str:
+        return fingerprint(self.owner_pk).hex()
