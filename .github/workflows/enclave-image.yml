@@ -86,8 +86,24 @@ jobs:
           fi
           echo "Reproducible: ${DIGEST_A}" >> "$GITHUB_STEP_SUMMARY"
 
+  # The file-based guards (launch policy matches infra, explicit COPY list,
+  # hash-locked requirements, pinned actions). A tag must pass them too; CI
+  # on the branch is not a prerequisite for a tag push.
+  guards:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.12"
+      - run: uv sync --all-packages --locked
+      - run: uv run pytest enclave/tests/test_image_build.py
+
   publish:
-    needs: compare
+    needs: [compare, guards]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -172,6 +188,26 @@ jobs:
           set -euo pipefail
           if [ "$PUSHED_DIGEST" != "$EXPECTED_DIGEST" ]; then
             echo "::error::pushed ${PUSHED_DIGEST}, reproduced ${EXPECTED_DIGEST}"
+            exit 1
+          fi
+
+      # The digest above comes from the local OCI tarball. Ask the registry
+      # what the tag now serves for linux/amd64 before signing anything.
+      - name: Require the registry to serve the reproduced manifest
+        env:
+          IMAGE_REF: ${{ steps.ref.outputs.image }}:${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          registry_digest="$(docker buildx imagetools inspect --raw "$IMAGE_REF" \
+            | jq -r '[.manifests[]?
+                      | select(.platform.os == "linux"
+                               and .platform.architecture == "amd64"
+                               and (.annotations["vnd.docker.reference.type"] == null))
+                      | .digest]
+                     | if length == 1 then .[0] else "ambiguous" end')"
+          if [ "$registry_digest" != "$EXPECTED_DIGEST" ]; then
+            echo "::error::${IMAGE_REF} serves ${registry_digest} for linux/amd64," \
+              "reproduced ${EXPECTED_DIGEST}"
             exit 1
           fi
 

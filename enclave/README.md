@@ -63,7 +63,8 @@ Compare the printed digest with the `digest` field in the signed
 ### CI
 
 `.github/workflows/enclave-image.yml` builds the image on `ubuntu-24.04` and
-on `ubuntu-22.04` and fails if the two digests differ. On a `v*` tag it:
+on `ubuntu-22.04` and fails if the two digests differ, and runs the guards
+in `enclave/tests/test_image_build.py`. On a `v*` tag it also:
 
 1. Refuses the tag unless its commit is already on the default branch, so
    a tag alone cannot release unreviewed code. Push `main` first, then the
@@ -72,7 +73,8 @@ on `ubuntu-22.04` and fails if the two digests differ. On a `v*` tag it:
    different image or commit. Release manifests are immutable; a moved tag
    fails before anything is pushed. Cut a new tag instead.
 3. Builds a third time and pushes to `ghcr.io/<owner>/<repo>/enclave`.
-4. Checks that the pushed digest equals the reproduced one.
+4. Checks that the pushed digest equals the reproduced one, and that the
+   registry now serves that manifest for linux/amd64 under the tag.
 5. Signs the image with keyless `cosign sign`.
 6. Attaches `releases/<tag>.json` (`{tag, digest, commit, epoch}`) and its
    `cosign sign-blob` bundle to the release. `commit` is the tagged commit,
@@ -90,7 +92,10 @@ cosign verify-blob \
   "releases/${TAG}.json"
 ```
 
-and the image with `cosign verify` and the same issuer and identity flags.
+and the image with `cosign verify` and the same issuer and identity flags,
+by digest: `ghcr.io/<owner>/<repo>/enclave@<digest>`. The `:<tag>` reference
+resolves to an image index (it also carries the provenance and SBOM
+attestations), and the signature is on the linux/amd64 manifest inside it.
 Check that the manifest's `tag` is the tag you asked for, so one release's
 manifest cannot be served in place of another's.
 

@@ -243,6 +243,7 @@ def test_publish_requires_the_tag_commit_on_the_default_branch() -> None:
     text = WORKFLOW.read_text()
     assert "compare/${DEFAULT_BRANCH}...${commit}" in text
     assert "identical|behind" in text
+    assert "needs: [compare, guards]" in text
 
 
 def test_publish_never_rewrites_a_release_manifest() -> None:
