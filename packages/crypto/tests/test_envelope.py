@@ -16,9 +16,13 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from carapace_crypto.canonical import canonical_json
 from carapace_crypto.envelope import (
+    _MAX_B64_CHARS,
     DEK_SIZE,
+    MAX_AAD_INPUT_BYTES,
     MAX_PLAINTEXT_BYTES,
+    MAX_RSA_BITS,
     Envelope,
     EnvelopeDecryptionError,
     EnvelopeError,
@@ -59,6 +63,21 @@ def _other_private_key() -> rsa.RSAPrivateKey:
     return rsa.generate_private_key(public_exponent=65537, key_size=3072)
 
 
+def _oversized_public_pem() -> bytes:
+    # A syntactically valid public key just past MAX_RSA_BITS. The modulus is
+    # not a real RSA modulus; only the size check is exercised, and generating
+    # a genuine key of this size would take minutes.
+    modulus = (1 << (MAX_RSA_BITS + 7)) | 1
+    return (
+        rsa.RSAPublicNumbers(65537, modulus)
+        .public_key()
+        .public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+
+
 def _public_pem(key: rsa.RSAPrivateKey) -> bytes:
     return key.public_key().public_bytes(
         serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
@@ -79,6 +98,18 @@ def _open(envelope: Envelope, **overrides: Any) -> bytes:
     )
     assert policy == envelope.policy
     return plaintext
+
+
+def _padded_policy(aad_input_bytes: int) -> dict[str, Any]:
+    """Return POLICY plus a pad so the canonical AAD input has the given size."""
+    bound = {
+        "v": 1,
+        "secret_id": SECRET_ID,
+        "owner_id": OWNER_ID,
+        "policy": {**POLICY, "pad": ""},
+    }
+    room = aad_input_bytes - len(canonical_json(bound))
+    return {**POLICY, "pad": "x" * room}
 
 
 def _flip(data: bytes, index: int = 0) -> bytes:
@@ -259,6 +290,41 @@ class TestInputValidation:
         with pytest.raises(EnvelopeError, match="3072"):
             seal(_public_pem(small), SECRET_ID, OWNER_ID, POLICY, PLAINTEXT)
 
+    def test_rejects_oversized_rsa_key(self) -> None:
+        # seal and open must agree on the accepted key range; without this
+        # check seal produced envelopes that from_dict/open then rejected.
+        with pytest.raises(EnvelopeError, match=str(MAX_RSA_BITS)):
+            seal(_oversized_public_pem(), SECRET_ID, OWNER_ID, POLICY, PLAINTEXT)
+
+    def test_rejects_oversized_policy(self) -> None:
+        policy = _padded_policy(MAX_AAD_INPUT_BYTES + 1)
+        with pytest.raises(EnvelopeError, match="AAD input"):
+            seal(_public_pem(_private_key()), SECRET_ID, OWNER_ID, policy, PLAINTEXT)
+
+    def test_accepts_policy_at_aad_limit(self) -> None:
+        policy = _padded_policy(MAX_AAD_INPUT_BYTES)
+        envelope = seal(
+            _public_pem(_private_key()), SECRET_ID, OWNER_ID, policy, PLAINTEXT
+        )
+        assert _open(envelope) == PLAINTEXT
+
+    def test_from_dict_rejects_oversized_policy(self) -> None:
+        wire = _sealed().to_dict()
+        wire["policy"] = _padded_policy(MAX_AAD_INPUT_BYTES + 1)
+        with pytest.raises(EnvelopeError, match="AAD input"):
+            Envelope.from_dict(wire)
+
+    def test_from_dict_rejects_overlong_base64_before_decoding(self) -> None:
+        wire = _sealed().to_dict()
+        wire["ct"] = "A" * (_MAX_B64_CHARS + 4)
+        with pytest.raises(EnvelopeError, match="too long"):
+            Envelope.from_dict(wire)
+
+    def test_to_dict_does_not_alias_policy(self) -> None:
+        envelope = _sealed()
+        envelope.to_dict()["policy"]["methods"].append("DELETE")
+        assert envelope.policy == POLICY
+
     def test_rejects_non_rsa_key(self) -> None:
         pem = (
             ec.generate_private_key(ec.SECP256R1())
@@ -299,6 +365,8 @@ class TestInputValidation:
         "mutation",
         [
             {"v": 2},
+            {"v": True},  # bool is an int subclass and True == 1
+            {"v": "1"},
             {"policy": []},
             {"nonce": "AAAA"},
             {"ct": "not base64!"},
@@ -342,6 +410,46 @@ class TestVectors:
         )
         assert opened == plaintext
         assert policy == vector["policy"]
+
+    @pytest.mark.parametrize("vector", VECTORS["tamper"], ids=lambda v: v["name"])
+    def test_tamper_vector_is_rejected(self, vector: dict[str, Any]) -> None:
+        calls: list[bytes] = []
+        real_unwrap = rsa_oaep_unwrapper(_private_key())
+
+        def counting_unwrap(wrapped: bytes) -> bytes:
+            calls.append(wrapped)
+            return real_unwrap(wrapped)
+
+        def attempt() -> None:
+            envelope = Envelope.from_dict(vector["envelope"])
+            open_with_dek_unwrapper(
+                envelope,
+                counting_unwrap,
+                expected_secret_id=vector["expected_secret_id"],
+                expected_owner_id=vector["expected_owner_id"],
+            )
+
+        if vector["outcome"] == "reject_malformed":
+            with pytest.raises(EnvelopeError) as info:
+                attempt()
+            assert not isinstance(info.value, EnvelopeDecryptionError)
+            assert calls == [], "malformed envelopes must not reach the unwrapper"
+        else:
+            assert vector["outcome"] == "reject_authentication"
+            with pytest.raises(EnvelopeDecryptionError):
+                attempt()
+            assert len(calls) == 1
+
+    def test_tamper_vectors_cover_required_cases(self) -> None:
+        names = {v["name"] for v in VECTORS["tamper"]}
+        required = {
+            "policy-widened-hosts",
+            "relabeled-owner",
+            "relabeled-secret",
+            "truncated-ct",
+            "version-bool",
+        }
+        assert required <= names
 
     @pytest.mark.parametrize("vector", VECTORS["envelopes"], ids=lambda v: v["name"])
     def test_seal_is_deterministic_given_rng(self, vector: dict[str, Any]) -> None:

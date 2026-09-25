@@ -111,6 +111,13 @@ These will be documented in full in `THREAT_MODEL.md`:
   Audit Logs. Self-hosters are their own project owner.
 - Anyone with database write access can mint an API key. That key can only
   use a secret within its policy, and every use is receipted.
+- Anyone with database write access can also replace a stored envelope with
+  one they sealed themselves to the public KMS key, under the victim's
+  `secret_id` and `owner_id` and with a policy of their choosing. The AAD
+  detects *edits* to a stored envelope, not *substitution*, because it is an
+  unkeyed hash. The victim's original secret stays confidential; the agent
+  would use the attacker's credential under the attacker's policy, and every
+  such use is receipted. Owner-signed envelopes are planned for envelope v2.
 - Google's hardware, the Confidential Space launcher, and the KMS HSMs are in
   the trusted computing base.
 

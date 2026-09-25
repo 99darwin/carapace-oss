@@ -14,9 +14,11 @@ Cryptographic primitives shared by the Carapace CLI, server, and enclave.
 ## Test vectors
 
 `tests/vectors/envelope_v1.json` holds deterministic vectors (fixed DEK and
-nonce, fixed RSA test key) for implementers in other languages. The RSA
-private key in that file is a public test key and must never be used for
-anything else. Regenerate with:
+nonce, fixed RSA test key) for implementers in other languages, plus a
+`tamper` list of envelopes that must be rejected (widened policy, relabeled
+owner or secret, truncated or flipped ciphertext, bad version) with the named
+outcome. The RSA private key in that file is a public test key and must never
+be used for anything else. Regenerate with:
 
 ```bash
 uv run python packages/crypto/tests/vectors/generate_envelope_v1.py

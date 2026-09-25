@@ -12,11 +12,24 @@ production, the attested enclave calling KMS ``asymmetricDecrypt``)::
 The policy travels in cleartext next to the ciphertext, but it is bound into
 the AAD. Anyone who edits the stored policy, secret id or owner id makes
 decryption fail. See :mod:`carapace_crypto.canonical` for the exact JSON
-canonicalization.
+canonicalization. The canonical AAD input is capped at
+``MAX_AAD_INPUT_BYTES`` so the enclave never canonicalizes an unbounded
+policy served by the untrusted store.
 
-``kms_key_version`` is *not* authenticated: it is needed before the DEK can be
-unwrapped. Callers must check it against their own key ring before using it
-to build a KMS resource name, and never interpolate it unchecked.
+What the AAD does *not* provide is origin authentication. It is an unkeyed
+hash, and the KMS public key is public, so anyone who can write to the store
+can replace an envelope wholesale with one they sealed themselves (their own
+plaintext, their own policy, the victim's ids). The victim's original secret
+stays confidential, but the agent would then use the attacker's credential
+under the attacker's policy. A store operator already holds that power over
+policy-less designs; here it is at least receipted. Binding envelopes to an
+owner-held signing key is deferred to a future envelope version.
+
+``kms_key_version`` is *not* authenticated. It could be bound into the AAD
+and verified after the unwrap, but that adds nothing: a wrong version already
+fails at the unwrap. What matters is that it is used *before* any check, so
+callers must validate it against their own key ring before building a KMS
+resource name from it, and never interpolate it unchecked.
 
 Zeroization of the DEK is best effort. The ``bytearray`` copies this module
 controls are cleared, but the RNG, the RSA encryption and the unwrapper
@@ -52,6 +65,10 @@ MIN_RSA_BITS = 3072
 MAX_PLAINTEXT_BYTES = 64 * 1024
 GCM_TAG_SIZE = 16
 MAX_RSA_BITS = 8192
+# Bound on canonical_json({v, secret_id, owner_id, policy}); part of the format.
+MAX_AAD_INPUT_BYTES = 64 * 1024
+# Longest base64 text any binary field may carry, checked before decoding.
+_MAX_B64_CHARS = 4 * ((MAX_PLAINTEXT_BYTES + GCM_TAG_SIZE + 2) // 3)
 
 DekUnwrapper = Callable[[bytes], bytes]
 RandomBytes = Callable[[int], bytes]
@@ -92,7 +109,7 @@ class Envelope:
             "v": self.v,
             "secret_id": self.secret_id,
             "owner_id": self.owner_id,
-            "policy": self.policy,
+            "policy": copy.deepcopy(self.policy),
             "kms_key_version": self.kms_key_version,
             "wrapped": _b64e(self.wrapped),
             "nonce": _b64e(self.nonce),
@@ -104,8 +121,10 @@ class Envelope:
         """Parse the output of :meth:`to_dict`. Raises :class:`EnvelopeError`."""
         if not isinstance(data, dict):
             raise EnvelopeError("envelope must be a JSON object")
-        if data.get("v") != ENVELOPE_VERSION:
-            raise EnvelopeError(f"unsupported envelope version: {data.get('v')!r}")
+        # ``bool`` is an ``int`` subclass and ``True == 1``; compare the type.
+        version = data.get("v")
+        if type(version) is not int or version != ENVELOPE_VERSION:
+            raise EnvelopeError(f"unsupported envelope version: {version!r}")
         policy = data.get("policy")
         if not isinstance(policy, dict):
             raise EnvelopeError("policy must be a JSON object")
@@ -137,9 +156,12 @@ def compute_aad(secret_id: str, owner_id: str, policy: dict[str, Any]) -> bytes:
         "policy": policy,
     }
     try:
-        return hashlib.sha256(canonical_json(bound)).digest()
+        encoded = canonical_json(bound)
     except CanonicalJSONError as exc:
         raise EnvelopeError(f"policy cannot be canonicalized: {exc}") from exc
+    if len(encoded) > MAX_AAD_INPUT_BYTES:
+        raise EnvelopeError(f"AAD input exceeds {MAX_AAD_INPUT_BYTES} bytes")
+    return hashlib.sha256(encoded).digest()
 
 
 def load_rsa_public_key(public_key_pem: bytes | str) -> rsa.RSAPublicKey:
@@ -152,8 +174,10 @@ def load_rsa_public_key(public_key_pem: bytes | str) -> rsa.RSAPublicKey:
         raise EnvelopeError("invalid PEM public key") from exc
     if not isinstance(key, rsa.RSAPublicKey):
         raise EnvelopeError("public key must be RSA")
-    if key.key_size < MIN_RSA_BITS:
-        raise EnvelopeError(f"RSA key must be at least {MIN_RSA_BITS} bits")
+    if not MIN_RSA_BITS <= key.key_size <= MAX_RSA_BITS:
+        raise EnvelopeError(
+            f"RSA key must be between {MIN_RSA_BITS} and {MAX_RSA_BITS} bits"
+        )
     return key
 
 
@@ -318,6 +342,8 @@ def _b64e(data: bytes) -> str:
 def _b64d(value: Any, name: str) -> bytes:
     if not isinstance(value, str):
         raise EnvelopeError(f"{name} must be a base64 string")
+    if len(value) > _MAX_B64_CHARS:
+        raise EnvelopeError(f"{name} is too long")
     try:
         return base64.b64decode(value, validate=True)
     except (binascii.Error, ValueError) as exc:

@@ -77,6 +77,65 @@ ENVELOPE_CASES: list[dict[str, Any]] = [
     },
 ]
 
+# Negative vectors: each patches the "github-header" envelope's serialized
+# form (JSON merge patch semantics, one level deep) and names the outcome an
+# implementation must produce. "reject_malformed" must fail before any
+# unwrap; "reject_authentication" fails at AES-GCM.
+TAMPER_CASES: list[dict[str, Any]] = [
+    {
+        "name": "policy-widened-hosts",
+        "patch": {
+            "policy": {
+                **GITHUB_POLICY,
+                "hosts": [
+                    *GITHUB_POLICY["hosts"],
+                    {"match": "suffix", "value": ".attacker.test"},
+                ],
+            }
+        },
+        "outcome": "reject_authentication",
+    },
+    {
+        "name": "policy-widened-limits",
+        "patch": {
+            "policy": {
+                **GITHUB_POLICY,
+                "limits": {**GITHUB_POLICY["limits"], "resp_bytes": 10**9},
+            }
+        },
+        "outcome": "reject_authentication",
+    },
+    {
+        "name": "policy-widened-methods",
+        "patch": {"policy": {**GITHUB_POLICY, "methods": ["GET", "POST", "DELETE"]}},
+        "outcome": "reject_authentication",
+    },
+    {
+        "name": "relabeled-owner",
+        "patch": {"owner_id": "9d3b1c5e-1e5c-4c3a-9a34-a2b8c7d6e5f4"},
+        "expected_owner_id": "9d3b1c5e-1e5c-4c3a-9a34-a2b8c7d6e5f4",
+        "outcome": "reject_authentication",
+    },
+    {
+        "name": "relabeled-secret",
+        "patch": {"secret_id": "7c1e9a2b-3d4f-4a5b-8c6d-0e1f2a3b4c5d"},
+        "expected_secret_id": "7c1e9a2b-3d4f-4a5b-8c6d-0e1f2a3b4c5d",
+        "outcome": "reject_authentication",
+    },
+    {"name": "truncated-ct", "truncate_ct": 1, "outcome": "reject_authentication"},
+    {"name": "flipped-ct-first-byte", "flip_ct": 0, "outcome": "reject_authentication"},
+    {"name": "flipped-ct-tag", "flip_ct": -1, "outcome": "reject_authentication"},
+    {"name": "flipped-nonce", "flip_nonce": 0, "outcome": "reject_authentication"},
+    {"name": "version-2", "patch": {"v": 2}, "outcome": "reject_malformed"},
+    {"name": "version-bool", "patch": {"v": True}, "outcome": "reject_malformed"},
+    {"name": "ct-tag-only", "ct_bytes": b"\x00" * 16, "outcome": "reject_malformed"},
+    {
+        "name": "policy-float",
+        "patch": {"policy": {**GITHUB_POLICY, "limits": {"timeout_s": 30.0}}},
+        "outcome": "reject_malformed",
+    },
+]
+
 CANONICAL_CASES: list[dict[str, Any]] = [
     {"name": "sorted-keys", "value": {"b": 1, "a": 2, "A": 3}},
     {"name": "nested", "value": {"z": {"y": [3, {"b": None, "a": False}]}}},
@@ -155,6 +214,35 @@ def _envelope_vector(case: dict[str, Any], public_pem: bytes) -> dict[str, Any]:
     }
 
 
+def _flip(data: bytes, index: int) -> bytes:
+    index %= len(data)
+    return data[:index] + bytes([data[index] ^ 0x01]) + data[index + 1 :]
+
+
+def _tamper_vector(case: dict[str, Any], base: dict[str, Any]) -> dict[str, Any]:
+    envelope = dict(base["envelope"])
+    envelope.update(case.get("patch", {}))
+    ct = base64.b64decode(envelope["ct"])
+    if "truncate_ct" in case:
+        ct = ct[: -case["truncate_ct"]]
+    if "flip_ct" in case:
+        ct = _flip(ct, case["flip_ct"])
+    if "ct_bytes" in case:
+        ct = case["ct_bytes"]
+    envelope["ct"] = _b64(ct)
+    if "flip_nonce" in case:
+        nonce = base64.b64decode(envelope["nonce"])
+        envelope["nonce"] = _b64(_flip(nonce, case["flip_nonce"]))
+    return {
+        "name": case["name"],
+        "base": base["name"],
+        "expected_secret_id": case.get("expected_secret_id", base["secret_id"]),
+        "expected_owner_id": case.get("expected_owner_id", base["owner_id"]),
+        "envelope": envelope,
+        "outcome": case["outcome"],
+    }
+
+
 def main() -> None:
     private_key = _load_or_create_key()
     private_pem = private_key.private_bytes(
@@ -166,12 +254,16 @@ def main() -> None:
         serialization.Encoding.PEM,
         serialization.PublicFormat.SubjectPublicKeyInfo,
     )
+    envelopes = [_envelope_vector(c, public_pem) for c in ENVELOPE_CASES]
     document = {
         "description": (
             "Carapace envelope v1 test vectors. The RSA key is a PUBLIC TEST "
             "KEY; never use it for real data. RSA-OAEP output is randomized, "
             "so implementations must check that decrypting 'wrapped' yields "
-            "'dek_hex' and that AES-256-GCM with dek/nonce/aad yields 'ct_b64'."
+            "'dek_hex' and that AES-256-GCM with dek/nonce/aad yields 'ct_b64'. "
+            "Every 'tamper' entry must be rejected with the named outcome: "
+            "'reject_malformed' before any unwrap, 'reject_authentication' at "
+            "AES-GCM after a successful unwrap."
         ),
         "algorithms": {
             "aead": "AES-256-GCM, 12-byte nonce, 16-byte tag appended to ct",
@@ -181,7 +273,8 @@ def main() -> None:
         },
         "rsa_public_key_pem": public_pem.decode("ascii"),
         "rsa_private_key_pkcs8_pem": private_pem.decode("ascii"),
-        "envelopes": [_envelope_vector(c, public_pem) for c in ENVELOPE_CASES],
+        "envelopes": envelopes,
+        "tamper": [_tamper_vector(c, envelopes[0]) for c in TAMPER_CASES],
         "canonical_json": [
             {
                 "name": case["name"],

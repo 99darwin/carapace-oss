@@ -1,5 +1,5 @@
 {
-  "description": "Carapace envelope v1 test vectors. The RSA key is a PUBLIC TEST KEY; never use it for real data. RSA-OAEP output is randomized, so implementations must check that decrypting 'wrapped' yields 'dek_hex' and that AES-256-GCM with dek/nonce/aad yields 'ct_b64'.",
+  "description": "Carapace envelope v1 test vectors. The RSA key is a PUBLIC TEST KEY; never use it for real data. RSA-OAEP output is randomized, so implementations must check that decrypting 'wrapped' yields 'dek_hex' and that AES-256-GCM with dek/nonce/aad yields 'ct_b64'. Every 'tamper' entry must be rejected with the named outcome: 'reject_malformed' before any unwrap, 'reject_authentication' at AES-GCM after a successful unwrap.",
   "algorithms": {
     "aead": "AES-256-GCM, 12-byte nonce, 16-byte tag appended to ct",
     "wrap": "RSA-OAEP, SHA-256, MGF1-SHA-256, empty label",
@@ -84,7 +84,7 @@
           }
         },
         "kms_key_version": "1",
-        "wrapped": "N4M+4rF5pap1wNP7AXLrtDG8G4obxypmM967zAM0/optHmqL3+5k5ZHYzN5yWuLse9dy0S4Hcg6wobzNMZNGqARfEqExk2/gZQtqbETHUF6kQuDP4gx6xIqG6JCSJR0VCHsnsPEnyquIs1HtfVcxnhgRztk9x89/qxWcTqX/RUIEXpLJAr9S22njyiyigHRdDcNPgEDzDmP7uzoP32SpLfi13DrxSFEkRLQgSpc2PfZ3nWHgtYSbJNMl0UnatOSiaujZhrKAbVGQgD9JTLXrPCWjKC4NQ+pc96lO/CloYNQjaf1rPtDKjZt7AUwqPlS7IRJHRtv4cHyT/zfCYCh6tDbHzUoT66VxNxWRAb34cBjLeOJUIasMrpi2cLVdaJYZfdl3Fy2DBhsbJumYf1uijX5Ekb6dHmCoSVWBgWjIutZRI2Dd4TPHvBqETlIRe/Kzc7YxIBkV0OJelpiaH9ez27R+yjWlQjxxS6pT04Mz4QjnJAaLfcQXMFikOQQ+1LxFef+cAK3E1+brcg5vOnoME0fMJZHW8l9FpE39sroS4g+xCF6IlIKoYVTxUIZ2qLEauU/qiti6SgVvXI10TaPjyEIijiBVobMsUPDfp4E620HYB/Ti31bLV1qlPdf7rFDgar1HlXlzVa4k5D4wzeYWXAX1o5TcaP508x7b8Jpi7r8=",
+        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
         "nonce": "ZGVmZ2hpamtsbW5v",
         "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
       }
@@ -140,10 +140,612 @@
           "a": []
         },
         "kms_key_version": null,
-        "wrapped": "V2McgxozAk+jY0w/yxtkaGpIK6ypxoFXK7Enbh466ycFfUeKraB7dFafh+ImQaiYWTFHiYU9xUB2WASRVRWr/Xa4Tn6AlUHVve/OiGZcwYXF9P4XDTiE/HPToc3YrIbAi/U82DQgOhl2EToCve8b0FP7jX4k8ipprcvPup10sRhcqMCJTsc6ygSWTBdA3erN7wWVA6fP0qx19zIo86RvUygE+HJpNo/1qNpmRQZXHCvslxikv1xOrmHldi8ezGG6DbNStQ6uCxMcGf0/g9/Lf/1soXn/JKeBK4XYrbgeNG0VqckPuenhePLPfbzFiPeEX5jsx1PxBHePn8G51lDe2rQNUauarMQ+ayJ1yJnFG0SnKD47+p+cuywiAUI2klQZn8letI2XbmwxHgVqSWD+zKBrPiGs8IBTE4i5BJa3x3tTyj5zk4XaFjTRTikQcowCQBq5ZR7V1n0+mT7HwWdMeSsNIt2m6MuapnLXdxrcJyj1FR2qkRHpwMR/e0vH/XOcbxDmrTGPCgHJeNBFkMXljr+2KMCzPQUSjevnbuxQMUNg2j6rgnQLAu9E054vUpdjxREuwxcr2cvB6ZGWn8Y4Q3xUXrk8H3Gwc/90DcSiaGRV88JM3fGfPD5Lhgz3EmLngqRNwMDtBkS8DuN3qURhxTwImsuk6H2Xo1paWuiOI9I=",
+        "wrapped": "ZAIfG5r5x4XUhp9xe8nfyETjl3nOFzbOovqj2Uk01jlROvhb35B3Wkr8Q8h04GT4RzTOSO4IkJx/kGlM3JnwXAn/vDo3ZSBPSAMa9260CwHtN5NISEzMC5DvIMmkDxq1F7fwh8yORYOWxxYjrpZ/Cz2QgqtEmBEE3/AH4zVSo8kjyI1UCunDLroyFt/yukcyIREkTNzcbRAu3JY2r4fBEp7Xv00+Vne+wVh6zKnLPDHood1X5Y0jFpAS2++/sbafHrhQ9t7DkgglEHxPi5scHrtDMDtk27teFb0aWrMzK+Ha8CIDunqL2KNWj5w2AWRQVlMeNpXeymgQVmOgDj5AgqIrrrip+As+IQ3DSp5V0VsLpUlJM1YBcweZ2k9HWCrgD8zcGTN47QTrXjSwlL0QUa5iqgJ7riyrZ2/lOHTXkMccnQUp6M5vHj/zRRTkkffxhY9Yyoz2bHcwR5lSZP1cU1skkh5cryeX0P+3Q0OHnLuWoveuEYa/M8hvWAwW4EcRrKCpBm4v/Fuy5AT06qOfcknjtXNOB3xn8K97yzs7Ur7u8BUV1YcT1afmOS/EJpnTKSrIET94A5K/6HvN5RfvmYGS84qUWPHCwhnn6l7AXsRJNY9cnrrMKwqQNQqz+gi7kWYP1k0qWEvuO9xzIFBhxNpwh5vSmfqavycs82S7kYQ=",
         "nonce": "WlpaWlpaWlpaWlpa",
         "ct": "qIsHEvsiE9A8edH+kVYfDPuRxT+cLPoNiE7Y6xl0DSlobtZt7d8+JXYCdfgqjt2Xs1ZNlQaWGS/mga7Tp9Dnwlqec232EKOOLrlvp7FYMi+t9yjvLbCdpyfi6d9XKtzrua+oqRU47IKzdxhoCZe708g8F0TwsVY9MBn4P4yUN9K3HC0majMMqNvooCtb9YwlmT+xba6SgM7SHejK73aWbuA6/OC2AzocsYBIUFchb6nHLSjDUmvG8TLXWrJvDXbKk3leeKQ3GWRxxNYtiOiJ0ze9y6XGQ9y7+zDFCAaYL1QokbdCkmJQJWFd93Sa5oTG7s3LMzgGD/f1R4+6Rps/qM0LG8Jv8o6UkvnCntxtGSc="
       }
+    }
+  ],
+  "tamper": [
+    {
+      "name": "policy-widened-hosts",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            },
+            {
+              "match": "suffix",
+              "value": ".attacker.test"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
+      },
+      "outcome": "reject_authentication"
+    },
+    {
+      "name": "policy-widened-limits",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 1000000000,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
+      },
+      "outcome": "reject_authentication"
+    },
+    {
+      "name": "policy-widened-methods",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST",
+            "DELETE"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
+      },
+      "outcome": "reject_authentication"
+    },
+    {
+      "name": "relabeled-owner",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_id": "9d3b1c5e-1e5c-4c3a-9a34-a2b8c7d6e5f4",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "9d3b1c5e-1e5c-4c3a-9a34-a2b8c7d6e5f4",
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
+      },
+      "outcome": "reject_authentication"
+    },
+    {
+      "name": "relabeled-secret",
+      "base": "github-header",
+      "expected_secret_id": "7c1e9a2b-3d4f-4a5b-8c6d-0e1f2a3b4c5d",
+      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "envelope": {
+        "v": 1,
+        "secret_id": "7c1e9a2b-3d4f-4a5b-8c6d-0e1f2a3b4c5d",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
+      },
+      "outcome": "reject_authentication"
+    },
+    {
+      "name": "truncated-ct",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9g=="
+      },
+      "outcome": "reject_authentication"
+    },
+    {
+      "name": "flipped-ct-first-byte",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "LnOuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
+      },
+      "outcome": "reject_authentication"
+    },
+    {
+      "name": "flipped-ct-tag",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oY="
+      },
+      "outcome": "reject_authentication"
+    },
+    {
+      "name": "flipped-nonce",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "nonce": "ZWVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
+      },
+      "outcome": "reject_authentication"
+    },
+    {
+      "name": "version-2",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "envelope": {
+        "v": 2,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
+      },
+      "outcome": "reject_malformed"
+    },
+    {
+      "name": "version-bool",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "envelope": {
+        "v": true,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
+      },
+      "outcome": "reject_malformed"
+    },
+    {
+      "name": "ct-tag-only",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "AAAAAAAAAAAAAAAAAAAAAA=="
+      },
+      "outcome": "reject_malformed"
+    },
+    {
+      "name": "policy-float",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "timeout_s": 30.0
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
+      },
+      "outcome": "reject_malformed"
     }
   ],
   "canonical_json": [
