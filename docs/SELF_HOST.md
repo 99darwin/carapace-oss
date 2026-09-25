@@ -7,11 +7,9 @@ risks in [THREAT_MODEL.md](THREAT_MODEL.md) are risks from yourself (and
 anyone you give access to the project).
 
 > **Status: pre-alpha, not yet deployed end to end.** The Pulumi program is
-> tested with mocks only. It has not yet been run against a real project,
-> and several steps below have **known gaps** that stop a working
-> deployment today. They are marked **Gap** where they occur and listed in
-> [Known gaps](#known-gaps). Do not put real secrets into a self-hosted
-> deployment yet.
+> tested with mocks only and has not yet been run against a real project.
+> What is unverified is listed in [Known gaps](#known-gaps). Do not put
+> real secrets into a self-hosted deployment yet.
 
 ## What gets created
 
@@ -52,6 +50,8 @@ The full list, and what is deliberately not created, is in the
   keeps state on your machine. The state contains the generated database
   password and JWT secret as Pulumi secrets, so protect it.
 - Docker with buildx, to build the images.
+- `crane` and `cosign`, only if you deploy published images instead of
+  building your own.
 - `uv` and the `carapace` CLI (`uv sync --all-packages --locked` in this
   repository, then `uv run carapace …`).
 
@@ -121,21 +121,42 @@ The `linux/amd64` manifest digest in the inspect output must equal the
 digest you reproduced. If it does not, do not use it.
 
 To deploy a published release instead, copy the image from
-`ghcr.io/<owner>/<repo>/enclave@<digest>` into your registry by digest
-(for example with `crane copy`). Cloud Run and the VM pull from
-`image_registry`, not from ghcr.io. **Unverified:** that the copy keeps the
-platform manifest digest unchanged; check it with `imagetools inspect` as
-above.
+`ghcr.io/<owner>/<repo>/enclave@<digest>` into your registry by digest.
+Cloud Run and the VM pull from `image_registry`, not from ghcr.io. See
+[Copying a published image](#copying-a-published-image) below.
 
 ### Server
 
-**Gap:** the repository has no server Dockerfile and no workflow that
-builds a server image. You need to build your own image that installs the
-`carapace-server` package and runs
-`uvicorn carapace_server.app:create_app --factory --host 0.0.0.0 --port 8080
---proxy-headers`, then push it to `<image_registry>/server` and note its
-digest. The server is outside the trusted computing base, so this image
-does not need to be reproducible, but it holds your database credentials.
+Build the server image from the repository root with
+[`server/Dockerfile`](../server/Dockerfile) and push it:
+
+```bash
+docker buildx build -f server/Dockerfile --platform linux/amd64 \
+  --output type=registry,name=<image_registry>/server:<version> .
+docker buildx imagetools inspect <image_registry>/server:<version>
+```
+
+Note the `linux/amd64` manifest digest from the inspect output. The image
+installs the hash-locked `server/requirements.lock`, runs as uid 65532 and
+serves on `$PORT` (Cloud Run sets it). The server is outside the trusted
+computing base, so this image does not need to be reproducible. It never
+contains credentials: the database URL and JWT secret reach it only as
+Secret Manager references at run time. The same image also runs the
+database migrations (step 5).
+
+On a `v*` tag on the default branch, CI publishes the server image to
+`ghcr.io/<owner>/<repo>/server` and signs it with cosign, as it does for the
+enclave.
+
+### Copying a published image
+
+Copy each published image into `image_registry` by its `linux/amd64`
+manifest digest (the enclave's is in `releases/<tag>.json`), after checking
+its cosign signature on ghcr.io; signatures are not copied. The commands
+are in the [infra README](../infra/pulumi/README.md#images). `crane copy`
+keeps the manifest bytes, so the digest you pin is the published one, and
+the final `crane digest` checks fail if the registry serves anything else.
+**Unverified:** this has not been run against Artifact Registry.
 
 ## 4. Deploy the workloads
 
@@ -153,12 +174,24 @@ pulumi up
 
 ## 5. Finish the server
 
-**Gap: database migrations.** Nothing runs the Alembic migrations against
-Cloud SQL. Run them once before first use, and after every server upgrade,
-with `alembic -c server/alembic.ini upgrade head` and
-`CARAPACE_DATABASE_URL` pointing at the instance through the Cloud SQL Auth
-Proxy. The instance accepts no direct connections (no authorized networks),
-so the proxy is required. This path has not been tried.
+**Database migrations.** The stack creates a Cloud Run job,
+`<prefix>-migrate` (the `migration_job` output), that runs
+`alembic upgrade head` from the server image with exactly the server's
+environment, so it reads the database URL from the same Secret Manager
+secret. Whenever `server_image_digest` changes, `pulumi up` runs the job,
+waits for it to succeed, and only then updates the Cloud Run service; a
+failed migration fails the deploy and leaves the old revision serving. To
+run it by hand:
+
+```bash
+gcloud run jobs execute <prefix>-migrate --region <region> --wait
+```
+
+Migrations run before the new revision takes traffic, so the old revision
+serves against the new schema for a while. Keep each migration compatible
+with the previous server release (expand, then contract in a later release).
+**Unverified:** that Cloud Run runs the job and waits for it as described
+has been tested only with Pulumi mocks.
 
 **KMS public key.** `pulumi up` reads the public key of key version 1 at
 deploy time and sets `CARAPACE_KMS_PUBLIC_KEY_PEM` and
@@ -280,12 +313,8 @@ Things to know:
 
 ## Known gaps
 
-Blocking a working deployment today:
-
-- No server container image or Dockerfile (step 3).
-- No automated database migrations (step 5).
-- CI publishes the enclave to ghcr.io, while the stack pulls both images
-  from one `image_registry`; copying by digest is untested (step 3).
+No gap is known to block a deployment, but the stack has not been run end
+to end.
 
 Not yet verified on real hardware, and fail closed if wrong unless noted
 (details in [THREAT_MODEL.md](THREAT_MODEL.md#unverified-assumptions)):
@@ -294,6 +323,9 @@ Not yet verified on real hardware, and fail closed if wrong unless noted
   as the WIF condition expects. If not, nothing can decrypt.
 - That the `image_digest` claim is the platform manifest digest.
 - That the default Cloud Run URL format matches the one the stack computes.
+- That `crane copy` into Artifact Registry keeps the published digest
+  (step 3), and that the migration job runs and is waited for on each
+  image change (step 5).
 - The `principalSubject` format of federated principals in KMS Data Access
   logs. If it differs, every enclave decrypt alerts (noisy, safe).
 - That the KMS Data Access `methodName` is `AsymmetricDecrypt`. If it
