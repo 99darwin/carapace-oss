@@ -147,17 +147,6 @@ async def _api_key_row(stack, key_id: str) -> ApiKey:
         return row
 
 
-def test_key_renew(verified) -> None:
-    stack = verified
-    add_github_secret(stack)
-    create_key(stack, "github")
-    _, out, _ = stack.cli("key", "list")
-    key_id = out.split()[0]
-    code, out, err = stack.cli("key", "renew", key_id, "--ttl-days", "7")
-    assert code == 0, err
-    assert "renewed" in out
-
-
 def test_unknown_secret_for_key_is_refused(verified) -> None:
     code, _, err = verified.cli("key", "create", "agent", "--secret", "nope")
     assert code == 1

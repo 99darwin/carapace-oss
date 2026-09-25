@@ -245,6 +245,26 @@ def test_tampered_receipts_fail_audit(verified, receipts_file, tamper) -> None:
     assert "FAILED" in out
 
 
+def _list_boot_id(page: dict[str, Any]) -> None:
+    page["receipts"][1]["boot_id"] = [page["receipts"][1]["boot_id"]]
+
+
+def _string_seq(page: dict[str, Any]) -> None:
+    page["receipts"][1]["seq"] = str(page["receipts"][1]["seq"])
+
+
+def _bool_seq(page: dict[str, Any]) -> None:
+    page["receipts"][1]["seq"] = True
+
+
+@pytest.mark.parametrize("tamper", [_list_boot_id, _string_seq, _bool_seq])
+def test_malformed_receipt_key_is_refused(verified, receipts_file, tamper) -> None:
+    _edit(receipts_file, tamper)
+    code, out = _audit(verified, receipts_file)
+    assert code != 0, out
+    assert "malformed receipt" in out
+
+
 def test_withheld_receipt_is_reported_as_a_gap(verified, receipts_file) -> None:
     _edit(receipts_file, lambda page: page["receipts"].pop(1))
     code, out = _audit(verified, receipts_file)

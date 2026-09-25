@@ -1,15 +1,21 @@
-"""API keys for agents: mint, list, renew and revoke.
+"""API keys for agents: mint, list and revoke.
 
 The raw key is generated here and shown once; the server stores only its
-lookup hash and the owner-signed grant. Renewals and revocations re-sign
-the grant from the stored one (:func:`carapace_crypto.reissue_grant`),
-which checks that grant's signature under our owner key first.
+lookup hash and the owner-signed grant.
 
-Revocation: the server marks the key revoked *and* holds a tombstone grant
-(same key, no secrets, newer ``iat``) so that an enclave boot which already
-cached the old grant stops honouring it. Neither stops a server that is
-itself malicious before the old grant expires; only rotating the credential
-at the provider is a hard cutoff. See :data:`REVOKE_WARNING`.
+Revocation re-signs a tombstone from the stored grant
+(:func:`carapace_crypto.reissue_grant`, which checks that grant's signature
+under our owner key first): same key, no secrets, newer ``iat``. The server
+marks the key revoked *and* holds the tombstone so that an enclave boot
+which already cached the old grant stops honouring it. Neither stops a
+server that is itself malicious before the old grant expires; only rotating
+the credential at the provider is a hard cutoff. See :data:`REVOKE_WARNING`.
+
+There is no ``key renew``. The CLI cannot tell which key a server-supplied
+grant belongs to (a grant carries ``key_bind``, not the key id), so
+re-signing one with a fresh lifetime would let a lying server get a
+revoked key's last live grant re-signed under another key's id. Renewal
+is ``key revoke`` plus ``key create`` until grants name their key.
 """
 
 from __future__ import annotations
@@ -104,44 +110,21 @@ def find_api_key(server: ServerClient, owner_key: OwnerKey, key_id: str) -> ApiK
 def revoke_api_key(server: ServerClient, owner_key: OwnerKey, key_id: str) -> None:
     """Push a tombstone grant and revoke the key server-side, in one call."""
     info = find_api_key(server, owner_key, key_id)
-    tombstone = _reissue(owner_key, info, {})
+    if info.revoked or not info.grant.secrets:
+        raise CarapaceError("the key is already revoked")
+    tombstone = _tombstone(owner_key, info)
     server.post(f"/v1/api-keys/{key_id}/revoke", json={"grant": tombstone.to_dict()})
 
 
-def renew_api_key(
-    server: ServerClient,
-    owner_key: OwnerKey,
-    key_id: str,
-    *,
-    ttl_seconds: int = DEFAULT_GRANT_TTL_SECONDS,
-) -> ApiKeyInfo:
-    """Re-sign the same scope with a fresh lifetime."""
-    info = find_api_key(server, owner_key, key_id)
-    if info.revoked:
-        raise CarapaceError("the key is revoked")
-    renewed = _reissue(owner_key, info, info.grant.secrets, ttl_seconds=ttl_seconds)
-    body = server.call(
-        "PUT", f"/v1/api-keys/{key_id}/grant", json={"grant": renewed.to_dict()}
-    )
-    return _key_info(body, owner_key)
-
-
-def _reissue(
-    owner_key: OwnerKey,
-    info: ApiKeyInfo,
-    secrets: dict[str, int],
-    *,
-    ttl_seconds: int = DEFAULT_GRANT_TTL_SECONDS,
-) -> Grant:
+def _tombstone(owner_key: OwnerKey, info: ApiKeyInfo) -> Grant:
+    """The stored grant re-signed with no secrets and a newer ``iat``."""
     if not info.grant_valid:
         raise VerificationError(
             "the server's stored grant is not signed by your owner key; "
             "refusing to re-sign it"
         )
     try:
-        return reissue_grant(
-            owner_key, info.grant, secrets, now=now_seconds(), ttl_seconds=ttl_seconds
-        )
+        return reissue_grant(owner_key, info.grant, {}, now=now_seconds())
     except GrantError as exc:
         raise VerificationError(f"cannot re-sign grant: {exc}") from None
 

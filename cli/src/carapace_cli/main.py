@@ -33,7 +33,6 @@ from carapace_cli.keys import (
     REVOKE_WARNING,
     create_api_key,
     list_api_keys,
-    renew_api_key,
     revoke_api_key,
 )
 from carapace_cli.owner import register_owner_key
@@ -292,16 +291,6 @@ def cmd_key_revoke(args: argparse.Namespace, ctx: Context) -> int:
     return 0
 
 
-def cmd_key_renew(args: argparse.Namespace, ctx: Context) -> int:
-    owner_key = ctx.owner_key()
-    with ctx.server() as server:
-        info = renew_api_key(
-            server, owner_key, args.key_id, ttl_seconds=_ttl(args.ttl_days)
-        )
-    print(f"{info.id} renewed until {info.grant_exp}", file=ctx.out)
-    return 0
-
-
 def cmd_request(args: argparse.Namespace, ctx: Context) -> int:
     api_key = _read_api_key(args.api_key_file)
     secret_id = args.secret
@@ -472,10 +461,6 @@ def build_parser() -> argparse.ArgumentParser:
     revoke = key.add_parser("revoke")
     revoke.add_argument("key_id")
     revoke.set_defaults(handler=cmd_key_revoke)
-    renew = key.add_parser("renew")
-    renew.add_argument("key_id")
-    renew.add_argument("--ttl-days", type=int)
-    renew.set_defaults(handler=cmd_key_renew)
 
     request = sub.add_parser(
         "request", help=f"call through the enclave (API key: ${API_KEY_ENV})"

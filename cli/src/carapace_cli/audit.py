@@ -110,14 +110,16 @@ def verify_receipts(
         for receipt in page.get("receipts") or []:
             if not isinstance(receipt, dict):
                 raise VerificationError("malformed receipt")
-            key = (receipt.get("boot_id"), receipt.get("seq"))
-            if key in receipts:
+            boot_id, seq = receipt.get("boot_id"), receipt.get("seq")
+            if not isinstance(boot_id, str) or type(seq) is not int:
+                raise VerificationError("malformed receipt")
+            if (boot_id, seq) in receipts:
                 raise VerificationError("duplicate receipt")
-            receipts[key] = receipt  # type: ignore[index]
+            receipts[boot_id, seq] = receipt
 
     report = AuditReport()
     boot_keys: dict[str, bytes] = {}
-    for boot_id in sorted({str(b) for b, _ in receipts}):
+    for boot_id in sorted({b for b, _ in receipts}):
         boot = boots.get(boot_id)
         if boot is None:
             report.failures.append(f"boot {boot_id[:16]}: not provided")
@@ -129,10 +131,10 @@ def verify_receipts(
             report.failures.append(f"boot {boot_id[:16]}: {exc}")
 
     previous: dict[str, tuple[int, str]] = {}
-    for boot_id, seq in sorted(receipts, key=lambda k: (str(k[0]), _int(k[1]))):
-        receipt = receipts[(boot_id, seq)]
-        label = f"receipt {str(boot_id)[:16]}#{seq}"
-        pubkey = boot_keys.get(str(boot_id))
+    for boot_id, seq in sorted(receipts):
+        receipt = receipts[boot_id, seq]
+        label = f"receipt {boot_id[:16]}#{seq}"
+        pubkey = boot_keys.get(boot_id)
         if pubkey is None:
             report.failures.append(f"{label}: boot not verified")
             continue
@@ -211,7 +213,3 @@ def _verify_receipt(
     if payload.get("owner_fp") != owner_fingerprint:
         raise VerificationError("receipt is for another owner")
     return computed
-
-
-def _int(value: Any) -> int:
-    return value if type(value) is int else -1

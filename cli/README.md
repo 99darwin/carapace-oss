@@ -91,12 +91,17 @@ no `verify=False` path.
 `key create` signs a grant with your owner key. The grant binds the key to
 the envelope versions you name, and those versions are checked against your
 own signatures first. `key revoke` re-signs a tombstone grant (no secrets)
-and asks the server to revoke the key. `key renew` re-signs with a new
-expiry. Neither needs the raw API key.
+and asks the server to revoke the key. Neither needs the raw API key.
 
 Revocation does not cut access off immediately. A malicious server could
 withhold the tombstone until the old grant expires (default TTL 30 days,
 `--ttl-days`). If a key leaks, also rotate the secret at the provider.
+
+There is no `key renew` in v0.1. A grant names the key only by `key_bind`,
+a hash the CLI cannot tie to the key id the server lists, so re-signing a
+server-supplied grant with a fresh expiry would let a lying server get a
+revoked key's old grant re-signed under another key's id. To extend a key,
+revoke it and create a new one; renewal returns once grants name their key.
 
 ## Audit
 
