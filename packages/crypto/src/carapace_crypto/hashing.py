@@ -44,6 +44,22 @@ def sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def tagged_sha256(tag: bytes, data: bytes) -> bytes:
+    """Domain-separated SHA-256: ``sha256(tag || 0x0A || data)``.
+
+    ``tag`` is an ASCII context string such as ``b"carapace-key-bind-v1"``
+    and must not contain a newline, so the framing is unambiguous. Every hash
+    that a signature or lookup depends on uses a distinct tag; two different
+    tags never share a preimage in practice.
+
+    Raises:
+        ValueError: If ``tag`` is empty or contains a newline.
+    """
+    if not tag or b"\n" in tag:
+        raise ValueError("tag must be a non-empty string without newlines")
+    return hashlib.sha256(tag + b"\n" + data).digest()
+
+
 def hmac_sha256(key: bytes, message: bytes) -> bytes:
     """Compute HMAC-SHA256.
 

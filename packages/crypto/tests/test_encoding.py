@@ -2,7 +2,14 @@
 
 import pytest
 
-from carapace_crypto.encoding import b64_decode, b64_encode, hex_decode, hex_encode
+from carapace_crypto.encoding import (
+    b64_decode,
+    b64_decode_strict,
+    b64_encode,
+    b64_encode_std,
+    hex_decode,
+    hex_encode,
+)
 
 
 class TestBase64:
@@ -25,12 +32,29 @@ class TestBase64:
             assert b64_decode(b64_encode(data)) == data
 
     def test_decode_with_padding(self):
-        """Should handle input with or without padding."""
-        # Without padding
+        """Should accept correct padding or none, and nothing else."""
         assert b64_decode("aGVsbG8") == b"hello"
-        # With padding
         assert b64_decode("aGVsbG8=") == b"hello"
-        assert b64_decode("aGVsbG8==") == b"hello"
+        with pytest.raises(ValueError):
+            b64_decode("aGVsbG8==")
+
+    @pytest.mark.parametrize(
+        "encoded",
+        [
+            "aGVsbG9",  # non-canonical trailing bits
+            "YWJj=",  # padding where none is due
+            "aGVsbG8==",  # too much padding
+            "aGVsb",  # length 1 mod 4
+            "aGV!sbG8",  # non-alphabet character
+            "aGVsbG8\n",
+            "+/8",  # standard alphabet
+            "aGVs bG8",
+            "=",
+        ],
+    )
+    def test_decode_rejects_non_canonical(self, encoded: str):
+        with pytest.raises(ValueError):
+            b64_decode(encoded)
 
     def test_url_safe_characters(self):
         """Should use URL-safe alphabet (- and _ instead of + and /)."""
@@ -98,3 +122,38 @@ class TestHex:
         data = bytes(range(256))
         encoded = hex_encode(data)
         assert encoded == encoded.lower()
+
+
+class TestStandardBase64:
+    """Tests for the padded standard-alphabet decoder used by signed objects."""
+
+    def test_round_trip(self):
+        for data in [b"", b"a", b"ab", b"abc", b"\xfb\xff\xfe", bytes(range(256))]:
+            encoded = b64_encode_std(data)
+            assert b64_decode_strict(encoded) == data
+
+    def test_known_values(self):
+        assert b64_encode_std(b"\xfb\xff\xfe") == "+//+"
+        assert b64_decode_strict("aGVsbG8=") == b"hello"
+
+    @pytest.mark.parametrize(
+        "encoded",
+        [
+            "aGVsbG8",  # unpadded
+            "aGVsbG8==",
+            "aGVsbG9=",  # non-canonical trailing bits
+            "-__-",  # URL-safe alphabet
+            "aGVs\nbG8=",
+            "aGV!sbG8=",
+            " aGVsbG8=",
+            "aGVsbG8= ",
+        ],
+    )
+    def test_rejects_non_canonical(self, encoded: str):
+        with pytest.raises(ValueError):
+            b64_decode_strict(encoded)
+
+    @pytest.mark.parametrize("value", [None, 5, b"aGVsbG8=", ["aGVsbG8="]])
+    def test_rejects_non_strings(self, value: object):
+        with pytest.raises(ValueError, match="field"):
+            b64_decode_strict(value, name="field")

@@ -11,9 +11,11 @@ import pytest
 
 from carapace_crypto.canonical import (
     MAX_DEPTH,
+    MAX_JSON_BYTES,
     MAX_SAFE_INTEGER,
     CanonicalJSONError,
     canonical_json,
+    load_json_object,
 )
 
 VECTORS = json.loads(
@@ -110,3 +112,39 @@ def test_depth_limit() -> None:
 def test_safe_integer_bounds_accepted() -> None:
     value = {"hi": MAX_SAFE_INTEGER, "lo": -MAX_SAFE_INTEGER}
     assert canonical_json(value) == b'{"hi":9007199254740991,"lo":-9007199254740991}'
+
+
+class TestLoadJsonObject:
+    def test_parses_text_and_bytes(self) -> None:
+        assert load_json_object('{"a": [1, {"b": null}]}') == {"a": [1, {"b": None}]}
+        assert load_json_object(b'{"caf\xc3\xa9": true}') == {"café": True}
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            '{"a": 1, "a": 2}',
+            '{"a": {"b": 1, "b": 2}}',
+            '{"a": [{"b": 1, "b": 1}]}',
+            '{"a": 1, "a": 1}',
+        ],
+    )
+    def test_rejects_duplicate_keys(self, text: str) -> None:
+        with pytest.raises(CanonicalJSONError, match="duplicate"):
+            load_json_object(text)
+
+    @pytest.mark.parametrize("text", ["[]", "1", '"s"', "null", "", "{", "{} {}"])
+    def test_rejects_non_objects_and_invalid(self, text: str) -> None:
+        with pytest.raises(CanonicalJSONError):
+            load_json_object(text)
+
+    def test_size_cap(self) -> None:
+        padding = "x" * (MAX_JSON_BYTES - len('{"k":""}'))
+        assert load_json_object('{"k":"' + padding + '"}') == {"k": padding}
+        with pytest.raises(CanonicalJSONError, match="exceeds"):
+            load_json_object('{"k":"' + padding + 'x"}')
+        with pytest.raises(CanonicalJSONError, match="exceeds"):
+            load_json_object("{}", max_bytes=1)
+
+    def test_deep_nesting_is_an_error_not_a_crash(self) -> None:
+        with pytest.raises(CanonicalJSONError):
+            load_json_object("[" * 100_000 + "]" * 100_000)

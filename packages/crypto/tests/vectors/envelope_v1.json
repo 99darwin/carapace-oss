@@ -1,13 +1,25 @@
 {
-  "description": "Carapace envelope v1 test vectors. The RSA key is a PUBLIC TEST KEY; never use it for real data. RSA-OAEP output is randomized, so implementations must check that decrypting 'wrapped' yields 'dek_hex' and that AES-256-GCM with dek/nonce/aad yields 'ct_b64'. Every 'tamper' entry must be rejected with the named outcome: 'reject_malformed' before any unwrap, 'reject_authentication' at AES-GCM after a successful unwrap.",
+  "description": "Carapace envelope v1 test vectors. The RSA key and the owner seeds are PUBLIC TEST KEYS; never use them for real data. RSA-OAEP output is randomized, so implementations must check that decrypting 'wrapped' yields 'dek_hex', that AES-256-GCM with dek/nonce/aad yields 'ct_b64', and that 'sig' verifies over 'signing_input_b64' under the owner public key. Every 'tamper' entry must be rejected with the named outcome, checked in this order: 'reject_malformed' at parse, 'reject_signature' at the identity/owner-signature check, 'reject_stale' at the version floor ('min_version'), all before any unwrap; 'reject_authentication' at AES-GCM after a successful unwrap. Entries with 'envelope_json' are raw JSON text the parser must reject (duplicate keys).",
   "algorithms": {
     "aead": "AES-256-GCM, 12-byte nonce, 16-byte tag appended to ct",
     "wrap": "RSA-OAEP, SHA-256, MGF1-SHA-256, empty label",
-    "aad": "sha256(canonical_json({v, secret_id, owner_id, policy}))",
-    "binary_encoding": "RFC 4648 base64 with padding"
+    "aad": "sha256(canonical_json({v, secret_id, owner_id, owner_pk, version, policy}))",
+    "signature": "Ed25519 over 'carapace-envelope-v1' || 0x0A || canonical_json(envelope without sig)",
+    "fingerprint": "sha256('carapace-owner-fp-v1' || 0x0A || public_key)[:16]",
+    "binary_encoding": "RFC 4648 base64 with padding, canonical"
   },
   "rsa_public_key_pem": "-----BEGIN PUBLIC KEY-----\nMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAwR8N4L2pdQHCFTxuPs/q\nnKNZCm4qXiiY2rw5D7jOKN3xFLSQOqUCBgMVXxenWKOBfeM44lJozQOFTgxThSE6\nXxj4LQUVEj9B6yrfB+lpm6o7b27JVPR03h2qeN230tD5yV3yiYMXRaWmZ/e44Tas\n8n5EtNirj9mMzCoYhFEm4NAf+DrDSzaTIa8wK79glZm/xQvSOqvYPvgjwC5BM35G\nQ7Ll3COHcmsY0OlzpWaRMuNu7zDHgwBpmgILkKVHcHvwa50rK7bJ5BlBhRdl8Q+q\nlEni3t4gJoeOgQAZ+SzK2dHkSuS8rMIDAgyhKjP6qyEaKXE3drPFwTxZhN5wTf7D\nIQJIZUU01/WWim7aUS7umycuT1O9qm4DxXCF+NDo39rp93qiDC2emFl4V4lSI0FT\nlLSnkt6pSf0hyglEBJxUXreI8z68DYx1adzsESOPAf4Fo1verJ2LOLOUtGU5vZGa\nuvCMrwqbh8iNN710EoFXTHWQ5pVulkSwPXAe6NCrTebOAmVogMYRMgtCTVPrgdKF\nkwDtTF0VnFFonOZenwpYeVCfL7kF30cCxXj5GWOOEXexBYnME8glbgsgsFsew2FH\nqx2eNzB30u02xbWn58/9C39UlUGEDyyHSuNEeFGNlkWUbaxslUpotao9efw9CqHC\nx9g74E/W/6wbXgTUa3aE0dUCAwEAAQ==\n-----END PUBLIC KEY-----\n",
   "rsa_private_key_pkcs8_pem": "-----BEGIN PRIVATE KEY-----\nMIIJQgIBADANBgkqhkiG9w0BAQEFAASCCSwwggkoAgEAAoICAQDBHw3gval1AcIV\nPG4+z+qco1kKbipeKJjavDkPuM4o3fEUtJA6pQIGAxVfF6dYo4F94zjiUmjNA4VO\nDFOFITpfGPgtBRUSP0HrKt8H6WmbqjtvbslU9HTeHap43bfS0PnJXfKJgxdFpaZn\n97jhNqzyfkS02KuP2YzMKhiEUSbg0B/4OsNLNpMhrzArv2CVmb/FC9I6q9g++CPA\nLkEzfkZDsuXcI4dyaxjQ6XOlZpEy427vMMeDAGmaAguQpUdwe/BrnSsrtsnkGUGF\nF2XxD6qUSeLe3iAmh46BABn5LMrZ0eRK5LyswgMCDKEqM/qrIRopcTd2s8XBPFmE\n3nBN/sMhAkhlRTTX9ZaKbtpRLu6bJy5PU72qbgPFcIX40Ojf2un3eqIMLZ6YWXhX\niVIjQVOUtKeS3qlJ/SHKCUQEnFRet4jzPrwNjHVp3OwRI48B/gWjW96snYs4s5S0\nZTm9kZq68IyvCpuHyI03vXQSgVdMdZDmlW6WRLA9cB7o0KtN5s4CZWiAxhEyC0JN\nU+uB0oWTAO1MXRWcUWic5l6fClh5UJ8vuQXfRwLFePkZY44Rd7EFicwTyCVuCyCw\nWx7DYUerHZ43MHfS7TbFtafnz/0Lf1SVQYQPLIdK40R4UY2WRZRtrGyVSmi1qj15\n/D0KocLH2DvgT9b/rBteBNRrdoTR1QIDAQABAoICAAoGjO+jIPo2TGdSUw3XOOCH\nWV7Bf9kSBfdrCJJQn4E/Hl4bDpbAzLVXsSMV5QXkvRr2MhSLvy2PdnrqCGbzpeZc\nczvRFPo0xv0IpXnxa95dLMc46uJKa4vBYgFyzzF2UFVcF3R8lfdzZUtl8JbeggV3\nuSTjT6rA2j6aG9o4pUpL+7DlChDsRSCdSeSng4HYsLwvxCrwE2KXerGmJRPhhQ/M\nKIMwY/50YV4tFGgchkKsTGzF7UGXgqPwYb3RWr9T69QGXYCgNWRuTDi20X+9drdK\ni6jSwrwFUwhO40pMgT5kF1QtAj98te/EDJTWjHeYWRWYL08t/4Dr22DatF1UMbh8\njNOSwZBfeVvnLQsq9XPfc3sRfbvqkzIsJQAlFvWV8ilJJSS2O7JWmGoa0XC5IV7Y\n2x8SeFZY+J4aB0IL1LfjXdScbydbWRMym5WBtHgxisbabOqpnzjvGgcjY8fKZbFx\nVIG5VF2MfpUbTvVub/lfwN2YtoTJ322H2E2niUI18nXRuZYCNRarSb3gO0gJW/dy\nhLG0P00aKyrNXInyZORqm/8xMJoclv+rexqLy4qrNvUhfmGrDGqjR3byTNCXNNdU\n4yG93neUOtJWuBN76mjUFAzQ0BTKop5EKYgEAhNR6JKBojD6dNygrXQ4TL09cdFc\nvYNF3XXedv+NjJ2F/I4JAoIBAQDyAfeOlCv+Bx8SYDtD2l+IFiLSSG9fTevh8ekc\nm+JRnsdaP7PfnZOaAZph0dNyleKSfXHZyWBTkIcE+uYaYgfaytKFnA40Qu7Jx6JB\nPPhYJHZwtzajnXtHPDQo7T4KLLNKHFTxZ8aEiZO7iruy7IJPwS1PFCsSzX7dScNg\ngf/pC/9gdcVdb2HDwLLqD2RS4m0RV/B5CQLwQnioWhPwmGlqe5JlVFzgRKUgEegN\nYDrXS33PVLeaQGTZtFhOHa818DPLXZCJDJlBp72ISzTUktBPWNohrsX4iyc7mxIC\nhNiXJjz1ZXbO550jbPK3TGrhFhB3ZBG3Xen+vykkCg/aGFw5AoIBAQDMSYEZ9Wfs\nq4N5czGW1X3mb+NyEQfxfQDAnyNa5xPadrfc7tY8QNIC4e2c6qXOeHkGWGje2HCN\nX0tIWsvFEEBR+ceJ6HbLdTNCVkFNSDUGg6xnpPY1YV4QdNmYKNGbci4sakpsHVwv\ne0Cxc5nunCoCusK7GtshA8PgZzbeiFHVAAysnlP2nF4fyLJcriO7uDssukSzf1bY\n0tkqQl75jsqUfJscquvvlcHN5//j0eR9ZgMYWfcJkGjezBgcXzyJShHbH+3HU1bQ\nANV1nzMpUm+FUcy0R3Ybjl1/KGrgeX0aqJ+481JG66d85R2M/Uy5uqHaoqVaImK2\n1Qde2YOdUhp9AoIBAQDxjL8P45rpSShdSgm9VwhFJ3sIEl5/bKIE+lTnRjwlpWpr\nDOw3ROufKvxxqGH5m9ryxhzN+O6ZWcc6VEc5jCE0434u961BwpDee9DadsWWDIbf\nSC9ULYpvdorFUs66jxVA4nhyH1eI0FzRMs7X7rK+ch0MMiAv+0YmD0rgV8EbVetG\n1yXwdYzKOtsZPdWv2OpuBi0yUalKL76IoqgGW8nUC5T6aLLu8fUyxkyslSEF5Qak\n23UKlD1VAmmlRoGsP50i3be24wlQ++D0WcRYbFVY7WGDfxOAWTwGhWf7dadNblAn\ny2dDavBv/H1iMPb4xPIYiJwaPrWgnCKvIw/harEZAoIBAHL/Pal7N9FGi3AmpFeg\nPoslmQdxBuOt1mqYKrLVOZvVEJNR709jvdTZkYSvoj6kGpyzz/UCKfmrFxnX4rU/\n/LUowmajcZv+kahaHdB/QTo1jSua9O3/rY/d909sSvISSGPAQbyyml4wJ668wH5N\ncmiu8UeaSpg/IliEQaLrYgVhTcEuL123kFScCauaa4sUnlsDUAErQZw0tQLQ8d3R\nv7/ulPKCVOY9iyd53dZFJTZh4oQmwKWloSMqCLiP8+fkxkBvrM5z336fuYnI4Gf2\ne8i0z2L8h0Pj1EXsXp2WRhJnseHPNxWtOk9YOlZPkI1MvifxPtuKV79MFCYUk75P\npZECggEAY3V7F7yHJheCKh4SV0vM0A9y9uOiykVC/ZdkGC4Y4TE9IINtMOPKJ8ip\nEDDpHEb8Tbt1PEUiZDbd5afGFq/EG5/D2SQOnX7wJ/W/utBmVrwwkGlVSVILiCuC\nOtEFA4o7+qsa7rXiJ42oCehGKx4pKkkfEw4+2MmxQefc0mJhEOMjtVJBJ/RoDLeY\n549bWcTp/zH8TuIMi7AX+JhVftMLrB/39ARmZ8tzExgTuHmYOBjJS+B9Il0//oHk\nzGTReVY23POiSEUni3CebvicVudTklgbSeu2DpaLEkB6nwYDgbJwA+T/UDKTEPch\nUy8A0GWuQYDq0CiIwRWQd/istNgWfw==\n-----END PRIVATE KEY-----\n",
+  "owner": {
+    "seed_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+    "public_key_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+    "fingerprint_hex": "12b2c7f690a7f7e19047b554661987f3"
+  },
+  "attacker": {
+    "seed_hex": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef",
+    "public_key_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
+    "fingerprint_hex": "34a3e32c064620fdb5f3ee2348fc3792"
+  },
   "envelopes": [
     {
       "name": "github-header",
@@ -43,16 +55,20 @@
           "timeout_s": 30
         }
       },
+      "version": 1800000000,
       "plaintext_b64": "Z2hwX3Rlc3R2ZWN0b3JOT1RBUkVBTFRPS0VOMDAwMDAwMDAwMA==",
       "dek_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
       "nonce_hex": "6465666768696a6b6c6d6e6f",
-      "aad_input_b64": "eyJvd25lcl9pZCI6IjBlNmYwZDBjLThmNWMtNGQ4ZS1hM2I4LTBjMWYyZDNlNGY1MCIsInBvbGljeSI6eyJob3N0cyI6W3sibWF0Y2giOiJleGFjdCIsInZhbHVlIjoiYXBpLmdpdGh1Yi5jb20ifV0sImluamVjdCI6eyJraW5kIjoiaGVhZGVyIiwibmFtZSI6IkF1dGhvcml6YXRpb24iLCJ0ZW1wbGF0ZSI6IkJlYXJlciB7c2VjcmV0fSJ9LCJsaW1pdHMiOnsicmVxX2J5dGVzIjoxMDQ4NTc2LCJyZXNwX2J5dGVzIjo1MjQyODgwLCJycG0iOjYwLCJ0aW1lb3V0X3MiOjMwfSwibWV0aG9kcyI6WyJHRVQiLCJQT1NUIl0sInBvcnRzIjpbNDQzXSwic2NoZW1lcyI6WyJodHRwcyJdLCJ2IjoxfSwic2VjcmV0X2lkIjoiNWIwYzdjMmUtMmY3Yi00YzU1LTlkMWUtN2QxZjNmMGE5YjExIiwidiI6MX0=",
-      "aad_hex": "3e63401eebc7db8eb99d2d1846e473f294d581fe04ac4373ecb6537a10425bc5",
-      "ct_b64": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc=",
+      "aad_input_b64": "eyJvd25lcl9pZCI6IjBlNmYwZDBjLThmNWMtNGQ4ZS1hM2I4LTBjMWYyZDNlNGY1MCIsIm93bmVyX3BrIjoiZDNib2NMa3pWUEtnc2t3ajhxTnN4T2dPSWpJWXdibDVKdjNRR0RscUs1cz0iLCJwb2xpY3kiOnsiaG9zdHMiOlt7Im1hdGNoIjoiZXhhY3QiLCJ2YWx1ZSI6ImFwaS5naXRodWIuY29tIn1dLCJpbmplY3QiOnsia2luZCI6ImhlYWRlciIsIm5hbWUiOiJBdXRob3JpemF0aW9uIiwidGVtcGxhdGUiOiJCZWFyZXIge3NlY3JldH0ifSwibGltaXRzIjp7InJlcV9ieXRlcyI6MTA0ODU3NiwicmVzcF9ieXRlcyI6NTI0Mjg4MCwicnBtIjo2MCwidGltZW91dF9zIjozMH0sIm1ldGhvZHMiOlsiR0VUIiwiUE9TVCJdLCJwb3J0cyI6WzQ0M10sInNjaGVtZXMiOlsiaHR0cHMiXSwidiI6MX0sInNlY3JldF9pZCI6IjViMGM3YzJlLTJmN2ItNGM1NS05ZDFlLTdkMWYzZjBhOWIxMSIsInYiOjEsInZlcnNpb24iOjE4MDAwMDAwMDB9",
+      "aad_hex": "f107b10e53201f21c596f92b8ad376151c3306c23e5a54d155709d98e0dcb1d6",
+      "ct_b64": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+      "signing_input_b64": "Y2FyYXBhY2UtZW52ZWxvcGUtdjEKeyJjdCI6IkwzT3VPUTJNSmVwSUJ6eWN0UmNrc2hhRFZFL0tJS2M5N0pUaWVNdVRsWGlrMlhEd2ZERW9GTHJNY3U2MDZVZTE0WWRCY1I4PSIsImttc19rZXlfdmVyc2lvbiI6IjEiLCJub25jZSI6IlpHVm1aMmhwYW10c2JXNXYiLCJvd25lcl9pZCI6IjBlNmYwZDBjLThmNWMtNGQ4ZS1hM2I4LTBjMWYyZDNlNGY1MCIsIm93bmVyX3BrIjoiZDNib2NMa3pWUEtnc2t3ajhxTnN4T2dPSWpJWXdibDVKdjNRR0RscUs1cz0iLCJwb2xpY3kiOnsiaG9zdHMiOlt7Im1hdGNoIjoiZXhhY3QiLCJ2YWx1ZSI6ImFwaS5naXRodWIuY29tIn1dLCJpbmplY3QiOnsia2luZCI6ImhlYWRlciIsIm5hbWUiOiJBdXRob3JpemF0aW9uIiwidGVtcGxhdGUiOiJCZWFyZXIge3NlY3JldH0ifSwibGltaXRzIjp7InJlcV9ieXRlcyI6MTA0ODU3NiwicmVzcF9ieXRlcyI6NTI0Mjg4MCwicnBtIjo2MCwidGltZW91dF9zIjozMH0sIm1ldGhvZHMiOlsiR0VUIiwiUE9TVCJdLCJwb3J0cyI6WzQ0M10sInNjaGVtZXMiOlsiaHR0cHMiXSwidiI6MX0sInNlY3JldF9pZCI6IjViMGM3YzJlLTJmN2ItNGM1NS05ZDFlLTdkMWYzZjBhOWIxMSIsInYiOjEsInZlcnNpb24iOjE4MDAwMDAwMDAsIndyYXBwZWQiOiJXZ09YMFZhem0rc0xsLzdsZDhSM3F0YUp6SDdUSjBCMUdUViswcWY1T0ZvdlpONEVTdk9WZlFvVFFiUHdqRlQ5VGVlK1ZkNEEzbi9QeGpZcENVQ2s3MWR5b25xb0dWQktLYkpGUEQvTUdSYWNZajZobHpWczFiTVdmc2cwRDNrQWFyaDVmQlI4UStOZWtrUHpSRmViVmlZaE9kakk0cldNL09JeFFSRFI4ZWozV3VYSUpFU3Y5S3lCc3pjbG9tSDgzQ2xrQjZGemx2YXMzTlhLaUthUHdEemxzTnJNRTJmNUZMTXNicm96cm1FUGxzWlhQU0VHNFZ6OWZteEdqNjdZRG9TbWlleWFBSS9mNk83eDJnTnVEM0RSVTZpRElyd3pSRnlwZDFZeWNIQ1lQdE42ZWNGeVJZZGJ5V1RpK3VpMEJ4V1k5NVByRVl4Rkh2TWFoc2RBQ1cySlczT05jYmhISU1IbVlrY1A1RWMzTUpvaHpLbE9MNW5TenhYWkp2eTRPVjdWMHZsUHNEV0tGT0l2UFNsYUVnd0VoYzVuTitxTC9nemZiTERGdERWSDRoMENLZHRRME5qaGZwY3NHVDl3aG9HTmc4SXB1eWdaRG1obmJoT0pVU2xMcEdlREJyT2tDaVJOTXNpUlB2eDY4SUsyY01PcHJLdjBmN3JQd2VKZFEvWlc1VlBxRHFQQ2YvWVpWSEFZOHdGV2JMc2NPVU16ak92eEsyRWovVVNsZkRXQm1OMHpGY1JtaXZyZUR4cjJERHhGb0loUmFDSVVERDl2b0JmTUN3VW9kdjZPMUlobUNidEgwbFlhaFM1U0V1NlYyUEVBMjRhUnFqaklvSEliRkt1TW1oY0ZZQUg2N0tlZUF6ZHZPOVMrbm9jTVFEYS9HR2ZWOXZsUy91cz0ifQ==",
       "envelope": {
         "v": 1,
         "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
         "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
         "policy": {
           "v": 1,
           "hosts": [
@@ -84,9 +100,10 @@
           }
         },
         "kms_key_version": "1",
-        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
         "nonce": "ZGVmZ2hpamtsbW5v",
-        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
       }
     },
     {
@@ -111,16 +128,20 @@
         "Z": null,
         "a": []
       },
+      "version": 7,
       "plaintext_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6PkJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v8PHy8/T19vf4+fr7/P3+/w==",
       "dek_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
       "nonce_hex": "5a5a5a5a5a5a5a5a5a5a5a5a",
-      "aad_input_b64": "eyJvd25lcl9pZCI6Im93bmVyLTIiLCJwb2xpY3kiOnsiWiI6bnVsbCwiYSI6W10sImhvc3RzIjpbeyJtYXRjaCI6InN1ZmZpeCIsInZhbHVlIjoiLmV4YW1wbGUuY29tIn1dLCJpbmplY3QiOnsia2luZCI6InF1ZXJ5IiwibmFtZSI6ImFwaV9rZXkiLCJ0ZW1wbGF0ZSI6IntzZWNyZXR9In0sIm5vdGUiOiJjYWbDqSDimIMg8J+UkSBcInF1b3RlZFwiIGJhY2tcXHNsYXNoIFxuXHRcdTAwMDEiLCJ2IjoxLCLDqSI6dHJ1ZX0sInNlY3JldF9pZCI6InNlY1/DvCIsInYiOjF9",
-      "aad_hex": "134af5905d5fc43992415e2c9aa0c257b626687adeb89e8ec046302d9dadb133",
-      "ct_b64": "qIsHEvsiE9A8edH+kVYfDPuRxT+cLPoNiE7Y6xl0DSlobtZt7d8+JXYCdfgqjt2Xs1ZNlQaWGS/mga7Tp9Dnwlqec232EKOOLrlvp7FYMi+t9yjvLbCdpyfi6d9XKtzrua+oqRU47IKzdxhoCZe708g8F0TwsVY9MBn4P4yUN9K3HC0majMMqNvooCtb9YwlmT+xba6SgM7SHejK73aWbuA6/OC2AzocsYBIUFchb6nHLSjDUmvG8TLXWrJvDXbKk3leeKQ3GWRxxNYtiOiJ0ze9y6XGQ9y7+zDFCAaYL1QokbdCkmJQJWFd93Sa5oTG7s3LMzgGD/f1R4+6Rps/qM0LG8Jv8o6UkvnCntxtGSc=",
+      "aad_input_b64": "eyJvd25lcl9pZCI6Im93bmVyLTIiLCJvd25lcl9wayI6ImQzYm9jTGt6VlBLZ3Nrd2o4cU5zeE9nT0lqSVl3Ymw1SnYzUUdEbHFLNXM9IiwicG9saWN5Ijp7IloiOm51bGwsImEiOltdLCJob3N0cyI6W3sibWF0Y2giOiJzdWZmaXgiLCJ2YWx1ZSI6Ii5leGFtcGxlLmNvbSJ9XSwiaW5qZWN0Ijp7ImtpbmQiOiJxdWVyeSIsIm5hbWUiOiJhcGlfa2V5IiwidGVtcGxhdGUiOiJ7c2VjcmV0fSJ9LCJub3RlIjoiY2Fmw6kg4piDIPCflJEgXCJxdW90ZWRcIiBiYWNrXFxzbGFzaCBcblx0XHUwMDAxIiwidiI6MSwiw6kiOnRydWV9LCJzZWNyZXRfaWQiOiJzZWNfw7wiLCJ2IjoxLCJ2ZXJzaW9uIjo3fQ==",
+      "aad_hex": "32290a34047a6f04449d6b0029553ad1fdb01f76b19d97b56d868715d6b8504b",
+      "ct_b64": "qIsHEvsiE9A8edH+kVYfDPuRxT+cLPoNiE7Y6xl0DSlobtZt7d8+JXYCdfgqjt2Xs1ZNlQaWGS/mga7Tp9Dnwlqec232EKOOLrlvp7FYMi+t9yjvLbCdpyfi6d9XKtzrua+oqRU47IKzdxhoCZe708g8F0TwsVY9MBn4P4yUN9K3HC0majMMqNvooCtb9YwlmT+xba6SgM7SHejK73aWbuA6/OC2AzocsYBIUFchb6nHLSjDUmvG8TLXWrJvDXbKk3leeKQ3GWRxxNYtiOiJ0ze9y6XGQ9y7+zDFCAaYL1QokbdCkmJQJWFd93Sa5oTG7s3LMzgGD/f1R4+6Rps/qCqN9LHk6kbKedtjUVHg04g=",
+      "signing_input_b64": "Y2FyYXBhY2UtZW52ZWxvcGUtdjEKeyJjdCI6InFJc0hFdnNpRTlBOGVkSCtrVllmRFB1UnhUK2NMUG9OaUU3WTZ4bDBEU2xvYnRadDdkOCtKWFlDZGZncWp0MlhzMVpObFFhV0dTL21nYTdUcDlEbndscWVjMjMyRUtPT0xybHZwN0ZZTWkrdDl5anZMYkNkcHlmaTZkOVhLdHpydWErb3FSVTQ3SUt6ZHhob0NaZTcwOGc4RjBUd3NWWTlNQm40UDR5VU45SzNIQzBtYWpNTXFOdm9vQ3RiOVl3bG1UK3hiYTZTZ003U0hlaks3M2FXYnVBNi9PQzJBem9jc1lCSVVGY2hiNm5ITFNqRFVtdkc4VExYV3JKdkRYYktrM2xlZUtRM0dXUnh4Tll0aU9pSjB6ZTl5NlhHUTl5Nyt6REZDQWFZTDFRb2tiZENrbUpRSldGZDkzU2E1b1RHN3MzTE16Z0dEL2YxUjQrNlJwcy9xQ3FOOUxIazZrYktlZHRqVVZIZzA0Zz0iLCJrbXNfa2V5X3ZlcnNpb24iOm51bGwsIm5vbmNlIjoiV2xwYVdscGFXbHBhV2xwYSIsIm93bmVyX2lkIjoib3duZXItMiIsIm93bmVyX3BrIjoiZDNib2NMa3pWUEtnc2t3ajhxTnN4T2dPSWpJWXdibDVKdjNRR0RscUs1cz0iLCJwb2xpY3kiOnsiWiI6bnVsbCwiYSI6W10sImhvc3RzIjpbeyJtYXRjaCI6InN1ZmZpeCIsInZhbHVlIjoiLmV4YW1wbGUuY29tIn1dLCJpbmplY3QiOnsia2luZCI6InF1ZXJ5IiwibmFtZSI6ImFwaV9rZXkiLCJ0ZW1wbGF0ZSI6IntzZWNyZXR9In0sIm5vdGUiOiJjYWbDqSDimIMg8J+UkSBcInF1b3RlZFwiIGJhY2tcXHNsYXNoIFxuXHRcdTAwMDEiLCJ2IjoxLCLDqSI6dHJ1ZX0sInNlY3JldF9pZCI6InNlY1/DvCIsInYiOjEsInZlcnNpb24iOjcsIndyYXBwZWQiOiJuS2ExcEh6QmRCaHY4c0lGbi9vRSt5NS9hY0hkNmp4NzhxM1ZjYXkxTlJQdTV0K1dqT0Rrd1k1NllGUXBJeVJPSUpXbWRxa0xHZjQ5OFVXZ2lEUm1IVlV6SlRiU204eFcwbGRmRzdZR0dDSjZmVzBmcGZVNFpCTW8vNjlVWWVSWk1pcmdlK0JscEV4eURqd2hyYTh4OWJBaDNmdFBpdVZMQkpjME5acnoyaU4vYXBLeXFGZWQydElsM255aTVRYmZGS3NjYUE3am1vcnVwWTYvekkrdElCMVl2ZmE1cDkrU1o4NG5pQVF4VTBUZFg3OUtiK2M3ZmYrWnBZejFXUFlQWTBkTFdPZDFCVUd5TGhHVkE2a2lwZG1pcjZjMFB1eTZqcjVmT1hUeUFSTEh0ZUs4Q1ZyeWxZai9iZ2k1am0rM3YyNmV5V25lbE92cEU0MU9MUDlOYVVRY2xaSFd0Y0tPa29BU2phSnFUUDJ6M3o3Yi9XZUpqa3BWWmVneVljZVQvSkJqdlFQbnV2QU1uNVFjYXlxeE9pbVc5ZytzTFI4YjJBOEQ3dndLZndmS3Zmay9XaSt5eE0wUEM0ZHQwSzJQK013YlJFWWRWMktiMFR6ZHBpUTNEYXRPN2dMVnY3SEE0eDRYRmcrS0hlc1FCcFlCNHRobTVNNDMvU3JpdjRYRzVqMTFObVFtalJ4RkthdGh1MUZhYWZKTi9XOFppbm4yY0g3WHZxVHZMUzUzNktQaVUwa2hUN0JnbnVScDlvQkdNZHAvUExxcWtITWNBQzd2UFMyVVM4TUZXNWx3VG5kUUllbjBhbGdqaFVxQjU5M2xhZkFScm9yMlpqQzJkYllaRTB3OXN5TUJBY1h4OW5wS3c0OW1tbFhIVEdaUjM0a1RuNzRRenRXVGV2RT0ifQ==",
       "envelope": {
         "v": 1,
         "secret_id": "sec_\u00fc",
         "owner_id": "owner-2",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 7,
         "policy": {
           "v": 1,
           "hosts": [
@@ -140,22 +161,27 @@
           "a": []
         },
         "kms_key_version": null,
-        "wrapped": "ZAIfG5r5x4XUhp9xe8nfyETjl3nOFzbOovqj2Uk01jlROvhb35B3Wkr8Q8h04GT4RzTOSO4IkJx/kGlM3JnwXAn/vDo3ZSBPSAMa9260CwHtN5NISEzMC5DvIMmkDxq1F7fwh8yORYOWxxYjrpZ/Cz2QgqtEmBEE3/AH4zVSo8kjyI1UCunDLroyFt/yukcyIREkTNzcbRAu3JY2r4fBEp7Xv00+Vne+wVh6zKnLPDHood1X5Y0jFpAS2++/sbafHrhQ9t7DkgglEHxPi5scHrtDMDtk27teFb0aWrMzK+Ha8CIDunqL2KNWj5w2AWRQVlMeNpXeymgQVmOgDj5AgqIrrrip+As+IQ3DSp5V0VsLpUlJM1YBcweZ2k9HWCrgD8zcGTN47QTrXjSwlL0QUa5iqgJ7riyrZ2/lOHTXkMccnQUp6M5vHj/zRRTkkffxhY9Yyoz2bHcwR5lSZP1cU1skkh5cryeX0P+3Q0OHnLuWoveuEYa/M8hvWAwW4EcRrKCpBm4v/Fuy5AT06qOfcknjtXNOB3xn8K97yzs7Ur7u8BUV1YcT1afmOS/EJpnTKSrIET94A5K/6HvN5RfvmYGS84qUWPHCwhnn6l7AXsRJNY9cnrrMKwqQNQqz+gi7kWYP1k0qWEvuO9xzIFBhxNpwh5vSmfqavycs82S7kYQ=",
+        "wrapped": "nKa1pHzBdBhv8sIFn/oE+y5/acHd6jx78q3Vcay1NRPu5t+WjODkwY56YFQpIyROIJWmdqkLGf498UWgiDRmHVUzJTbSm8xW0ldfG7YGGCJ6fW0fpfU4ZBMo/69UYeRZMirge+BlpExyDjwhra8x9bAh3ftPiuVLBJc0NZrz2iN/apKyqFed2tIl3nyi5QbfFKscaA7jmorupY6/zI+tIB1Yvfa5p9+SZ84niAQxU0TdX79Kb+c7ff+ZpYz1WPYPY0dLWOd1BUGyLhGVA6kipdmir6c0Puy6jr5fOXTyARLHteK8CVrylYj/bgi5jm+3v26eyWnelOvpE41OLP9NaUQclZHWtcKOkoASjaJqTP2z3z7b/WeJjkpVZegyYceT/JBjvQPnuvAMn5QcayqxOimW9g+sLR8b2A8D7vwKfwfKvfk/Wi+yxM0PC4dt0K2P+MwbREYdV2Kb0TzdpiQ3DatO7gLVv7HA4x4XFg+KHesQBpYB4thm5M43/Sriv4XG5j11NmQmjRxFKathu1FaafJN/W8Zinn2cH7XvqTvLS536KPiU0khT7BgnuRp9oBGMdp/PLqqkHMcAC7vPS2US8MFW5lwTndQIen0algjhUqB593lafARror2ZjC2dbYZE0w9syMBAcXx9npKw49mmlXHTGZR34kTn74QztWTevE=",
         "nonce": "WlpaWlpaWlpaWlpa",
-        "ct": "qIsHEvsiE9A8edH+kVYfDPuRxT+cLPoNiE7Y6xl0DSlobtZt7d8+JXYCdfgqjt2Xs1ZNlQaWGS/mga7Tp9Dnwlqec232EKOOLrlvp7FYMi+t9yjvLbCdpyfi6d9XKtzrua+oqRU47IKzdxhoCZe708g8F0TwsVY9MBn4P4yUN9K3HC0majMMqNvooCtb9YwlmT+xba6SgM7SHejK73aWbuA6/OC2AzocsYBIUFchb6nHLSjDUmvG8TLXWrJvDXbKk3leeKQ3GWRxxNYtiOiJ0ze9y6XGQ9y7+zDFCAaYL1QokbdCkmJQJWFd93Sa5oTG7s3LMzgGD/f1R4+6Rps/qM0LG8Jv8o6UkvnCntxtGSc="
+        "ct": "qIsHEvsiE9A8edH+kVYfDPuRxT+cLPoNiE7Y6xl0DSlobtZt7d8+JXYCdfgqjt2Xs1ZNlQaWGS/mga7Tp9Dnwlqec232EKOOLrlvp7FYMi+t9yjvLbCdpyfi6d9XKtzrua+oqRU47IKzdxhoCZe708g8F0TwsVY9MBn4P4yUN9K3HC0majMMqNvooCtb9YwlmT+xba6SgM7SHejK73aWbuA6/OC2AzocsYBIUFchb6nHLSjDUmvG8TLXWrJvDXbKk3leeKQ3GWRxxNYtiOiJ0ze9y6XGQ9y7+zDFCAaYL1QokbdCkmJQJWFd93Sa5oTG7s3LMzgGD/f1R4+6Rps/qCqN9LHk6kbKedtjUVHg04g=",
+        "sig": "pB+dgAia/bqfnDmiC9YUWAli66mn3ylTLVjwtlh4cfGkNN8FL/Oo39ND8ek8CLLSIXJLhOlOCk3NCLYRXCsdCQ=="
       }
     }
   ],
   "tamper": [
     {
-      "name": "policy-widened-hosts",
+      "name": "policy-widened",
       "base": "github-header",
       "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
-      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_signature",
       "envelope": {
         "v": 1,
         "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
         "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
         "policy": {
           "v": 1,
           "hosts": [
@@ -165,7 +191,7 @@
             },
             {
               "match": "suffix",
-              "value": ".attacker.test"
+              "value": ".evil.test"
             }
           ],
           "schemes": [
@@ -191,21 +217,25 @@
           }
         },
         "kms_key_version": "1",
-        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
         "nonce": "ZGVmZ2hpamtsbW5v",
-        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
-      },
-      "outcome": "reject_authentication"
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
     },
     {
       "name": "policy-widened-limits",
       "base": "github-header",
       "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
-      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_signature",
       "envelope": {
         "v": 1,
         "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
         "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
         "policy": {
           "v": 1,
           "hosts": [
@@ -237,68 +267,25 @@
           }
         },
         "kms_key_version": "1",
-        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
         "nonce": "ZGVmZ2hpamtsbW5v",
-        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
-      },
-      "outcome": "reject_authentication"
-    },
-    {
-      "name": "policy-widened-methods",
-      "base": "github-header",
-      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
-      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
-      "envelope": {
-        "v": 1,
-        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
-        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
-        "policy": {
-          "v": 1,
-          "hosts": [
-            {
-              "match": "exact",
-              "value": "api.github.com"
-            }
-          ],
-          "schemes": [
-            "https"
-          ],
-          "methods": [
-            "GET",
-            "POST",
-            "DELETE"
-          ],
-          "ports": [
-            443
-          ],
-          "inject": {
-            "kind": "header",
-            "name": "Authorization",
-            "template": "Bearer {secret}"
-          },
-          "limits": {
-            "req_bytes": 1048576,
-            "resp_bytes": 5242880,
-            "rpm": 60,
-            "timeout_s": 30
-          }
-        },
-        "kms_key_version": "1",
-        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
-        "nonce": "ZGVmZ2hpamtsbW5v",
-        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
-      },
-      "outcome": "reject_authentication"
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
     },
     {
       "name": "relabeled-owner",
       "base": "github-header",
       "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
-      "expected_owner_id": "9d3b1c5e-1e5c-4c3a-9a34-a2b8c7d6e5f4",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_signature",
       "envelope": {
         "v": 1,
         "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
         "owner_id": "9d3b1c5e-1e5c-4c3a-9a34-a2b8c7d6e5f4",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
         "policy": {
           "v": 1,
           "hosts": [
@@ -330,21 +317,25 @@
           }
         },
         "kms_key_version": "1",
-        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
         "nonce": "ZGVmZ2hpamtsbW5v",
-        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
-      },
-      "outcome": "reject_authentication"
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
     },
     {
       "name": "relabeled-secret",
       "base": "github-header",
       "expected_secret_id": "7c1e9a2b-3d4f-4a5b-8c6d-0e1f2a3b4c5d",
-      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_signature",
       "envelope": {
         "v": 1,
         "secret_id": "7c1e9a2b-3d4f-4a5b-8c6d-0e1f2a3b4c5d",
         "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
         "policy": {
           "v": 1,
           "hosts": [
@@ -376,21 +367,25 @@
           }
         },
         "kms_key_version": "1",
-        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
         "nonce": "ZGVmZ2hpamtsbW5v",
-        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
-      },
-      "outcome": "reject_authentication"
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
     },
     {
-      "name": "truncated-ct",
+      "name": "version-bumped",
       "base": "github-header",
       "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
-      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_signature",
       "envelope": {
         "v": 1,
         "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
         "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1900000000,
         "policy": {
           "v": 1,
           "hosts": [
@@ -422,21 +417,75 @@
           }
         },
         "kms_key_version": "1",
-        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
         "nonce": "ZGVmZ2hpamtsbW5v",
-        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9g=="
-      },
-      "outcome": "reject_authentication"
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
+    },
+    {
+      "name": "kms-key-version-edited",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_signature",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "2",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
     },
     {
       "name": "flipped-ct-first-byte",
       "base": "github-header",
       "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
-      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_signature",
       "envelope": {
         "v": 1,
         "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
         "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
         "policy": {
           "v": 1,
           "hosts": [
@@ -468,21 +517,25 @@
           }
         },
         "kms_key_version": "1",
-        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
         "nonce": "ZGVmZ2hpamtsbW5v",
-        "ct": "LnOuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
-      },
-      "outcome": "reject_authentication"
+        "ct": "LnOuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
     },
     {
       "name": "flipped-ct-tag",
       "base": "github-header",
       "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
-      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_signature",
       "envelope": {
         "v": 1,
         "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
         "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
         "policy": {
           "v": 1,
           "hosts": [
@@ -514,21 +567,25 @@
           }
         },
         "kms_key_version": "1",
-        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
         "nonce": "ZGVmZ2hpamtsbW5v",
-        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oY="
-      },
-      "outcome": "reject_authentication"
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR4=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
     },
     {
       "name": "flipped-nonce",
       "base": "github-header",
       "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
-      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_signature",
       "envelope": {
         "v": 1,
         "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
         "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
         "policy": {
           "v": 1,
           "hosts": [
@@ -560,21 +617,529 @@
           }
         },
         "kms_key_version": "1",
-        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
         "nonce": "ZWVmZ2hpamtsbW5v",
-        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
-      },
-      "outcome": "reject_authentication"
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
+    },
+    {
+      "name": "flipped-wrapped",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_signature",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WgOX0Vazm+oLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
+    },
+    {
+      "name": "flipped-sig",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_signature",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "i/CGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
+    },
+    {
+      "name": "owner-pk-swapped",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_signature",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "bw8O6z+/+SXGbQPhnc5I1e3J/+5RzSaucd055W9/3aI=",
+        "version": 1800000000,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
+    },
+    {
+      "name": "substituted-by-other-owner",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_signature",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "bw8O6z+/+SXGbQPhnc5I1e3J/+5RzSaucd055W9/3aI=",
+        "version": 1800000000,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "KLk0sJ5L5Wl21o44VtRH3veb2qtiokuqFnT6zf3KqlpiZXhvAav0vti0CTFJwiNTIcC33XBnGEKeMY5tt9hRCWFeg+7KKxK13GZyyjP/TNQYOCX5saZCNwefTYrrIGi31ImWFqlh/qXKhE54TpjJQb4kIlSOVOLbpkzdv9jHkejOZyQV7r2DlCJmzCtDjjBe4st7XVGtWX9a/HNZuX0oFPoK/EROV5Z7b4FuYXC1RpQOkzJX3Kh+6tDYZ1qeEGsRfnyKiIBOTgRENJ+sbRqof2N8ws/s/+S3SUwgfNlnHtVNOo8Xz4xoQnrOPM0MlHQ1rao+c8nlHHkeMHdGp6A7qrcW7Q4Spizu0f+5OXNq/2/CB2SlsuVvUwjJYbdWYjGTVKPWnaidYkoWv9JfF1MBE1qj6MAMPWo4NcQT3uW29nCw/t8FJR1ncb3hyU9ugc9ynwcZMAQapMeqQoAyPS3JQvlroFVFISm84L2WKU2VoZYX4d+4OUYIrebqlvkvng+avbkXnIG5OiuXCRjC+x7bNUoY95xsk8jNdR+Y9C1EieXoWr+8AIi7XZNlOkRDRrfrWxb/ht7tm9OwZUJC197xiECorZ1US2Yi5OFFgPDOXI4VFADAGNP6tTs0thZy+BssGi5Y6vnx0ItlLgjzqMvyJtc62Ee2wC08ofpI34BSuEs=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfHo3KR90vWXTmM0kEFIRvwY=",
+        "sig": "NFFMOZhYDvOcU56EsCA3e1fhBlkGW3dxbb5R9Aao0R7L+KDGdcqWl1VEaBOQYFcRkNz8lNlFgQf3ETkJekcxAg=="
+      }
+    },
+    {
+      "name": "signed-under-grant-context",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_signature",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "wePO/E2dZxh4qAVOLfVCC2UUhP/IeORg69NX04QQfzJZ8X/mjDuIz/gpfDOI5yWZFOT/tGvG4f1qBJA8FZgNDQ=="
+      }
+    },
+    {
+      "name": "signed-without-context",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_signature",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "WwgsM0SU/EOSkoaPeLqaDqavpjjte5BLBZzIPzcdR3oauCNnQQK72IUKh0qatnjWjpMkKTnIACeAmcTxscrJCg=="
+      }
+    },
+    {
+      "name": "version-rollback",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1800000001,
+      "outcome": "reject_stale",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
+    },
+    {
+      "name": "resigned-policy-widened",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_authentication",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            },
+            {
+              "match": "suffix",
+              "value": ".evil.test"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "XSNdTdffXKsRU14RQzcb0QkFDOWcJt+tcLEvDupbrm7druorvhbTELmPAu2NbuDECsyzM38jNaMeX1oy+U/YCg=="
+      }
+    },
+    {
+      "name": "resigned-relabeled-secret",
+      "base": "github-header",
+      "expected_secret_id": "7c1e9a2b-3d4f-4a5b-8c6d-0e1f2a3b4c5d",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_authentication",
+      "envelope": {
+        "v": 1,
+        "secret_id": "7c1e9a2b-3d4f-4a5b-8c6d-0e1f2a3b4c5d",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ioLOi4c7YUSPI0XSyX74sVWHlzLSExF0fJaspRNEpaPGJeOB3nqd00Bv+CGwiHiSG/zUX9QpteEhb7v0oKPMAw=="
+      }
+    },
+    {
+      "name": "resigned-truncated-ct",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_authentication",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcQ==",
+        "sig": "h8ISXpmIQKztjxWmmVCnZf5v+RjxcVTqva7Zg2yrUyD2VDbtgawmKA1UJ/AxOMHODC83wE7o78GWK364XCIiCg=="
+      }
     },
     {
       "name": "version-2",
       "base": "github-header",
       "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
-      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_malformed",
       "envelope": {
         "v": 2,
         "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
         "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
         "policy": {
           "v": 1,
           "hosts": [
@@ -606,21 +1171,25 @@
           }
         },
         "kms_key_version": "1",
-        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
         "nonce": "ZGVmZ2hpamtsbW5v",
-        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
-      },
-      "outcome": "reject_malformed"
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
     },
     {
       "name": "version-bool",
       "base": "github-header",
       "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
-      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_malformed",
       "envelope": {
         "v": true,
         "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
         "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
         "policy": {
           "v": 1,
           "hosts": [
@@ -652,21 +1221,325 @@
           }
         },
         "kms_key_version": "1",
-        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
         "nonce": "ZGVmZ2hpamtsbW5v",
-        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
-      },
-      "outcome": "reject_malformed"
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
+    },
+    {
+      "name": "version-zero",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_malformed",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 0,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
+    },
+    {
+      "name": "version-bool-field",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_malformed",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": true,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
+    },
+    {
+      "name": "sig-missing",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_malformed",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": null
+      }
+    },
+    {
+      "name": "sig-truncated",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_malformed",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2"
+      }
+    },
+    {
+      "name": "sig-unpadded-base64",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_malformed",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ"
+      }
+    },
+    {
+      "name": "owner-pk-short",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_malformed",
+      "envelope": {
+        "v": 1,
+        "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+        "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ==",
+        "version": 1800000000,
+        "policy": {
+          "v": 1,
+          "hosts": [
+            {
+              "match": "exact",
+              "value": "api.github.com"
+            }
+          ],
+          "schemes": [
+            "https"
+          ],
+          "methods": [
+            "GET",
+            "POST"
+          ],
+          "ports": [
+            443
+          ],
+          "inject": {
+            "kind": "header",
+            "name": "Authorization",
+            "template": "Bearer {secret}"
+          },
+          "limits": {
+            "req_bytes": 1048576,
+            "resp_bytes": 5242880,
+            "rpm": 60,
+            "timeout_s": 30
+          }
+        },
+        "kms_key_version": "1",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
+        "nonce": "ZGVmZ2hpamtsbW5v",
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
     },
     {
       "name": "ct-tag-only",
       "base": "github-header",
       "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
-      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_malformed",
       "envelope": {
         "v": 1,
         "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
         "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
         "policy": {
           "v": 1,
           "hosts": [
@@ -698,21 +1571,25 @@
           }
         },
         "kms_key_version": "1",
-        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
         "nonce": "ZGVmZ2hpamtsbW5v",
-        "ct": "AAAAAAAAAAAAAAAAAAAAAA=="
-      },
-      "outcome": "reject_malformed"
+        "ct": "AAAAAAAAAAAAAAAAAAAAAA==",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
     },
     {
       "name": "policy-float",
       "base": "github-header",
       "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
-      "expected_owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_malformed",
       "envelope": {
         "v": 1,
         "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
         "owner_id": "0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50",
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "version": 1800000000,
         "policy": {
           "v": 1,
           "hosts": [
@@ -741,11 +1618,20 @@
           }
         },
         "kms_key_version": "1",
-        "wrapped": "WeUo4NQGJ3Sgd/0S3Rhkml7MIGDgOTjok+pZxJ2ZY51RBdqTRXjQFGOK3gT3XUHX0WG3Q0+Rgt+KuC8JNp8hb/TkCF2Hsvtv4kpWocVtaKbnm8lMJpwGfqkGUcWB9Zm9xE5jRve4bIJZUHOCvY61DIFGA6cJYdg3/UviMviHLWUHY8wgqsj2116TTay+nSVgOoJBCYaU0KTne1YMLCY4/rrKYAbska4HczxxZoYihuho26jgAlz7nSsO86XW++7MQWKmEG5xuAW08/PTApIPF0pcmDUpFMJmB0yy6IBnMB6edAdmi8UtL24b8/PP2xWTTcGuPY6nW4oqmOlbkb8d5THGFLJJlKwfHxDEt0PH1hNwrm/ZAhooHsokdP4u4fafHeOAipwT/LF2Xf0tsi8NgstKBkCo98YZWZL4Utv2QtRO7L3kkyuNNUkk7SZBoKq7FFB7AuYb23FIzeHRU6hP/VVZhtePUdfvIZOgmn4s3te6ewOa5OXfSClWNL3Ky2quBWUv8G/GteC1f0iJyLLYco4P+C7OTCpumbDSoDgNyxnQhjpcn09TAQgvTW2GYR+g1F8sncq8488Z5ZRIwJZMOawQNunXFWt1FVsCdmcVIPPcTVMat8QbSpfo1p5arZnPwvunwKLrtRIkU2Hd6vTqfuq97hcUwVWYtjm4eqNv0+Y=",
+        "wrapped": "WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=",
         "nonce": "ZGVmZ2hpamtsbW5v",
-        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfIZJlGMzqdWIY8NvNh8K9oc="
-      },
-      "outcome": "reject_malformed"
+        "ct": "L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=",
+        "sig": "ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ=="
+      }
+    },
+    {
+      "name": "duplicate-json-key",
+      "base": "github-header",
+      "expected_secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "expected_owner_pk_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+      "min_version": 1,
+      "outcome": "reject_malformed",
+      "envelope_json": "{\"policy\":{},\"v\": 1, \"secret_id\": \"5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11\", \"owner_id\": \"0e6f0d0c-8f5c-4d8e-a3b8-0c1f2d3e4f50\", \"owner_pk\": \"d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=\", \"version\": 1800000000, \"policy\": {\"v\": 1, \"hosts\": [{\"match\": \"exact\", \"value\": \"api.github.com\"}], \"schemes\": [\"https\"], \"methods\": [\"GET\", \"POST\"], \"ports\": [443], \"inject\": {\"kind\": \"header\", \"name\": \"Authorization\", \"template\": \"Bearer {secret}\"}, \"limits\": {\"req_bytes\": 1048576, \"resp_bytes\": 5242880, \"rpm\": 60, \"timeout_s\": 30}}, \"kms_key_version\": \"1\", \"wrapped\": \"WgOX0Vazm+sLl/7ld8R3qtaJzH7TJ0B1GTV+0qf5OFovZN4ESvOVfQoTQbPwjFT9Tee+Vd4A3n/PxjYpCUCk71dyonqoGVBKKbJFPD/MGRacYj6hlzVs1bMWfsg0D3kAarh5fBR8Q+NekkPzRFebViYhOdjI4rWM/OIxQRDR8ej3WuXIJESv9KyBszclomH83ClkB6Fzlvas3NXKiKaPwDzlsNrME2f5FLMsbrozrmEPlsZXPSEG4Vz9fmxGj67YDoSmieyaAI/f6O7x2gNuD3DRU6iDIrwzRFypd1YycHCYPtN6ecFyRYdbyWTi+ui0BxWY95PrEYxFHvMahsdACW2JW3ONcbhHIMHmYkcP5Ec3MJohzKlOL5nSzxXZJvy4OV7V0vlPsDWKFOIvPSlaEgwEhc5nN+qL/gzfbLDFtDVH4h0CKdtQ0NjhfpcsGT9whoGNg8IpuygZDmhnbhOJUSlLpGeDBrOkCiRNMsiRPvx68IK2cMOprKv0f7rPweJdQ/ZW5VPqDqPCf/YZVHAY8wFWbLscOUMzjOvxK2Ej/USlfDWBmN0zFcRmivreDxr2DDxFoIhRaCIUDD9voBfMCwUodv6O1IhmCbtH0lYahS5SEu6V2PEA24aRqjjIoHIbFKuMmhcFYAH67KeeAzdvO9S+nocMQDa/GGfV9vlS/us=\", \"nonce\": \"ZGVmZ2hpamtsbW5v\", \"ct\": \"L3OuOQ2MJepIBzyctRckshaDVE/KIKc97JTieMuTlXik2XDwfDEoFLrMcu606Ue14YdBcR8=\", \"sig\": \"ivCGoJeSbr/dkgDcpH1vLKdvW/0v7JVZFbxDUfROP9sBX79WfekRD1/V5IRIWGtbfhsKstVnNbUCQTIld8H2AQ==\"}"
     }
   ],
   "canonical_json": [

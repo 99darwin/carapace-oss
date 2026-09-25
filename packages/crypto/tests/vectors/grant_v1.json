@@ -1,0 +1,435 @@
+{
+  "description": "Carapace API key and grant v1 test vectors. Owner seeds are PUBLIC TEST KEYS. 'api_keys' give the hashes an implementation must derive from each raw key. Every 'tamper' entry names the api key presented, the verification time 'now', the 'secret_id' requested, and the outcome: 'reject_malformed' at parse, 'reject_key_mismatch' when the owner fingerprint or key binding does not match the presented key, 'reject_signature', 'reject_expired' (outside [iat - clock_skew_seconds, exp)), 'reject_scope' when 'secret_id' is not covered, or 'accept'.",
+  "algorithms": {
+    "api_key": "'cpk_' || hex(fingerprint) || '_' || hex(random(32))",
+    "lookup_hash": "sha256('carapace-key-lookup-v1' || 0x0A || key)",
+    "bind_hash": "sha256('carapace-key-bind-v1' || 0x0A || key)",
+    "signature": "Ed25519 over 'carapace-grant-v1' || 0x0A || canonical_json(grant without sig)",
+    "max_ttl_seconds": 7776000,
+    "clock_skew_seconds": 300
+  },
+  "owner": {
+    "seed_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+    "public_key_hex": "7776e870b93354f2a0b24c23f2a36cc4e80e223218c1b97926fdd018396a2b9b",
+    "fingerprint_hex": "12b2c7f690a7f7e19047b554661987f3"
+  },
+  "attacker": {
+    "seed_hex": "d0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeef",
+    "public_key_hex": "6f0f0eeb3fbff925c66d03e19dce48d5edc9ffee51cd26ae71dd39e56f7fdda2",
+    "fingerprint_hex": "34a3e32c064620fdb5f3ee2348fc3792"
+  },
+  "api_keys": [
+    {
+      "name": "owner-key-1",
+      "raw": "cpk_12b2c7f690a7f7e19047b554661987f3_404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+      "fingerprint_hex": "12b2c7f690a7f7e19047b554661987f3",
+      "lookup_hash_hex": "650a8d2e73cf2492276afc8b1a0a899c5207bc731d7c8da8d9682a1417bdfee5",
+      "bind_hash_hex": "ed5c6987e6246e4c30d0fcbcaca7775e59963254d2860a6db9ad29b1cb76ecc4"
+    },
+    {
+      "name": "owner-key-2",
+      "raw": "cpk_12b2c7f690a7f7e19047b554661987f3_7777777777777777777777777777777777777777777777777777777777777777",
+      "fingerprint_hex": "12b2c7f690a7f7e19047b554661987f3",
+      "lookup_hash_hex": "6270d5c3fd18d77c9889f4a2b106869714418986a3d47be1f8b1448fb4222840",
+      "bind_hash_hex": "1fd85b1798bce6007b695f1f279d425414e6b91de2db97c300e0738c27138b0b"
+    },
+    {
+      "name": "attacker-key",
+      "raw": "cpk_34a3e32c064620fdb5f3ee2348fc3792_9999999999999999999999999999999999999999999999999999999999999999",
+      "fingerprint_hex": "34a3e32c064620fdb5f3ee2348fc3792",
+      "lookup_hash_hex": "c6d066d7625d6562fe28f7e0a15697012a325e64bbdde1dc475b5ff9f39568fb",
+      "bind_hash_hex": "6777db1eeb6d82bedbf9035b60b4063b12e1f255eeb462c6c744515fcf3a70a0"
+    }
+  ],
+  "grants": [
+    {
+      "name": "owner-key-1-two-secrets",
+      "api_key": "owner-key-1",
+      "now": 1800000000,
+      "signing_input_b64": "Y2FyYXBhY2UtZ3JhbnQtdjEKeyJleHAiOjE4MDI1OTIwMDAsImlhdCI6MTgwMDAwMDAwMCwia2V5X2JpbmQiOiI3VnhwaCtZa2Jrd3cwUHk4cktkM1hsbVdNbFRTaGdwdHVhMHBzY3QyN01RPSIsIm93bmVyX3BrIjoiZDNib2NMa3pWUEtnc2t3ajhxTnN4T2dPSWpJWXdibDVKdjNRR0RscUs1cz0iLCJzZWNyZXRzIjp7IjViMGM3YzJlLTJmN2ItNGM1NS05ZDFlLTdkMWYzZjBhOWIxMSI6MTgwMDAwMDAwMCwic2VjX8O8Ijo3fSwidiI6MX0=",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "XqNWw4iXGhK3wXJ1WWnorMgKpY2fkhl3HUeCb1ZZr2tP4nxooo1oXaLOIH8TwAUeZmxu6nIlP4fy2FkNlPOvAg=="
+      }
+    }
+  ],
+  "tamper": [
+    {
+      "name": "presented-with-other-key",
+      "api_key": "owner-key-2",
+      "now": 1800000000,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_key_mismatch",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "XqNWw4iXGhK3wXJ1WWnorMgKpY2fkhl3HUeCb1ZZr2tP4nxooo1oXaLOIH8TwAUeZmxu6nIlP4fy2FkNlPOvAg=="
+      }
+    },
+    {
+      "name": "presented-with-attacker-key",
+      "api_key": "attacker-key",
+      "now": 1800000000,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_key_mismatch",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "XqNWw4iXGhK3wXJ1WWnorMgKpY2fkhl3HUeCb1ZZr2tP4nxooo1oXaLOIH8TwAUeZmxu6nIlP4fy2FkNlPOvAg=="
+      }
+    },
+    {
+      "name": "key-bind-edited",
+      "api_key": "owner-key-1",
+      "now": 1800000000,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_signature",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "H9hbF5i85gB7aV8fJ51CVBTmuR3i25fDAOBzjCcTiws=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "XqNWw4iXGhK3wXJ1WWnorMgKpY2fkhl3HUeCb1ZZr2tP4nxooo1oXaLOIH8TwAUeZmxu6nIlP4fy2FkNlPOvAg=="
+      }
+    },
+    {
+      "name": "secrets-widened",
+      "api_key": "owner-key-1",
+      "now": 1800000000,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_signature",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7,
+          "x": 1
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "XqNWw4iXGhK3wXJ1WWnorMgKpY2fkhl3HUeCb1ZZr2tP4nxooo1oXaLOIH8TwAUeZmxu6nIlP4fy2FkNlPOvAg=="
+      }
+    },
+    {
+      "name": "floor-lowered",
+      "api_key": "owner-key-1",
+      "now": 1800000000,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_signature",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "XqNWw4iXGhK3wXJ1WWnorMgKpY2fkhl3HUeCb1ZZr2tP4nxooo1oXaLOIH8TwAUeZmxu6nIlP4fy2FkNlPOvAg=="
+      }
+    },
+    {
+      "name": "exp-extended",
+      "api_key": "owner-key-1",
+      "now": 1800000000,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_signature",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1803456000,
+        "sig": "XqNWw4iXGhK3wXJ1WWnorMgKpY2fkhl3HUeCb1ZZr2tP4nxooo1oXaLOIH8TwAUeZmxu6nIlP4fy2FkNlPOvAg=="
+      }
+    },
+    {
+      "name": "flipped-sig",
+      "api_key": "owner-key-1",
+      "now": 1800000000,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_signature",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "X6NWw4iXGhK3wXJ1WWnorMgKpY2fkhl3HUeCb1ZZr2tP4nxooo1oXaLOIH8TwAUeZmxu6nIlP4fy2FkNlPOvAg=="
+      }
+    },
+    {
+      "name": "signed-by-attacker",
+      "api_key": "owner-key-1",
+      "now": 1800000000,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_signature",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "2EFsQdYO1ypgaVt2JUqY+RehJpeRuAWAcZb+ff16DQ5ekTKQv43rWA7u6m+cdCH2UgQfPy2lfN5a/v5aVs+jBg=="
+      }
+    },
+    {
+      "name": "owner-pk-swapped-and-resigned",
+      "api_key": "owner-key-1",
+      "now": 1800000000,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_key_mismatch",
+      "grant": {
+        "v": 1,
+        "owner_pk": "bw8O6z+/+SXGbQPhnc5I1e3J/+5RzSaucd055W9/3aI=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "94PGwtzgISaLIb6iElUeY6TGyoTcEp9cz5iHmiZbQCdJUEY6rdqp8fHffjuHuBr5ZN9VLWL7GkXhRJ50YcCoBA=="
+      }
+    },
+    {
+      "name": "signed-under-envelope-context",
+      "api_key": "owner-key-1",
+      "now": 1800000000,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_signature",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "vLhcoUvRGcz3dUN+wr8KwEZGn1jnzMAjWA7wM+0FBoBDNo6KL5nz615ohZRjGx2T9g6SqL3MDT5kWIEAvtkrAQ=="
+      }
+    },
+    {
+      "name": "resigned-for-other-key",
+      "api_key": "owner-key-1",
+      "now": 1800000000,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_key_mismatch",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "H9hbF5i85gB7aV8fJ51CVBTmuR3i25fDAOBzjCcTiws=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "TckZpxT0IUG5pAe3if6iIt0JkIIYdXGwnnTiB950wWroS75udqoVWB2dEEl6+Z/vfyvT6X9smxZDcMbiLSl+Aw=="
+      }
+    },
+    {
+      "name": "expired",
+      "api_key": "owner-key-1",
+      "now": 1802592000,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_expired",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "XqNWw4iXGhK3wXJ1WWnorMgKpY2fkhl3HUeCb1ZZr2tP4nxooo1oXaLOIH8TwAUeZmxu6nIlP4fy2FkNlPOvAg=="
+      }
+    },
+    {
+      "name": "not-yet-valid",
+      "api_key": "owner-key-1",
+      "now": 1799999699,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_expired",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "XqNWw4iXGhK3wXJ1WWnorMgKpY2fkhl3HUeCb1ZZr2tP4nxooo1oXaLOIH8TwAUeZmxu6nIlP4fy2FkNlPOvAg=="
+      }
+    },
+    {
+      "name": "within-skew",
+      "api_key": "owner-key-1",
+      "now": 1799999700,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "accept",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "XqNWw4iXGhK3wXJ1WWnorMgKpY2fkhl3HUeCb1ZZr2tP4nxooo1oXaLOIH8TwAUeZmxu6nIlP4fy2FkNlPOvAg=="
+      }
+    },
+    {
+      "name": "last-valid-second",
+      "api_key": "owner-key-1",
+      "now": 1802591999,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "accept",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "XqNWw4iXGhK3wXJ1WWnorMgKpY2fkhl3HUeCb1ZZr2tP4nxooo1oXaLOIH8TwAUeZmxu6nIlP4fy2FkNlPOvAg=="
+      }
+    },
+    {
+      "name": "secret-not-covered",
+      "api_key": "owner-key-1",
+      "now": 1800000000,
+      "secret_id": "7c1e9a2b-3d4f-4a5b-8c6d-0e1f2a3b4c5d",
+      "outcome": "reject_scope",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "XqNWw4iXGhK3wXJ1WWnorMgKpY2fkhl3HUeCb1ZZr2tP4nxooo1oXaLOIH8TwAUeZmxu6nIlP4fy2FkNlPOvAg=="
+      }
+    },
+    {
+      "name": "ttl-over-cap",
+      "api_key": "owner-key-1",
+      "now": 1800000000,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_malformed",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1807776001,
+        "sig": "5yVvf6IuDBtEeFIGISeec8sxEjiVgbn1qDbLzIpOBFYp4mcvXmzi3woDvotAQ+SxIR1quzUM4zUTov0CFOGyAQ=="
+      }
+    },
+    {
+      "name": "floor-bool",
+      "api_key": "owner-key-1",
+      "now": 1800000000,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_malformed",
+      "grant": {
+        "v": 1,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": true
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "gwYSkDDhiVLvpTlcOTU5pVwECY2aIj81RxDPwNwu26bfDRjmKpFY8BokOGM4rxbZwdU5JHF3NnZpAA2bZeSHCw=="
+      }
+    },
+    {
+      "name": "version-2",
+      "api_key": "owner-key-1",
+      "now": 1800000000,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_malformed",
+      "grant": {
+        "v": 2,
+        "owner_pk": "d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=",
+        "key_bind": "7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=",
+        "secrets": {
+          "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11": 1800000000,
+          "sec_\u00fc": 7
+        },
+        "iat": 1800000000,
+        "exp": 1802592000,
+        "sig": "XqNWw4iXGhK3wXJ1WWnorMgKpY2fkhl3HUeCb1ZZr2tP4nxooo1oXaLOIH8TwAUeZmxu6nIlP4fy2FkNlPOvAg=="
+      }
+    },
+    {
+      "name": "duplicate-json-key",
+      "api_key": "owner-key-1",
+      "now": 1800000000,
+      "secret_id": "5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11",
+      "outcome": "reject_malformed",
+      "grant_json": "{\"secrets\":{},\"v\": 1, \"owner_pk\": \"d3bocLkzVPKgskwj8qNsxOgOIjIYwbl5Jv3QGDlqK5s=\", \"key_bind\": \"7Vxph+Ykbkww0Py8rKd3XlmWMlTShgptua0psct27MQ=\", \"secrets\": {\"5b0c7c2e-2f7b-4c55-9d1e-7d1f3f0a9b11\": 1800000000, \"sec_\\u00fc\": 7}, \"iat\": 1800000000, \"exp\": 1802592000, \"sig\": \"XqNWw4iXGhK3wXJ1WWnorMgKpY2fkhl3HUeCb1ZZr2tP4nxooo1oXaLOIH8TwAUeZmxu6nIlP4fy2FkNlPOvAg==\"}"
+    }
+  ]
+}

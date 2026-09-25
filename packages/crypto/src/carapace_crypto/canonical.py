@@ -31,6 +31,8 @@ from typing import Any
 
 MAX_SAFE_INTEGER = 2**53 - 1
 MAX_DEPTH = 32
+# Largest JSON document ``load_json_object`` will parse.
+MAX_JSON_BYTES = 256 * 1024
 
 
 class CanonicalJSONError(ValueError):
@@ -59,6 +61,44 @@ def canonical_json(value: dict[str, Any]) -> bytes:
         return text.encode("utf-8")
     except UnicodeEncodeError as exc:
         raise CanonicalJSONError("strings must not contain lone surrogates") from exc
+
+
+def load_json_object(
+    data: bytes | str, *, max_bytes: int = MAX_JSON_BYTES
+) -> dict[str, Any]:
+    """Parse a JSON object from untrusted input, rejecting duplicate keys.
+
+    ``json.loads`` silently keeps the last of two equal keys, so a stored
+    document could carry one ``policy`` for a validator and another for the
+    consumer. Everything that verifies a signature or hash over a parsed
+    object must parse it through this function.
+
+    Raises:
+        CanonicalJSONError: If the input is too large, is not valid JSON, is
+            not an object, or repeats a key in any object.
+    """
+    if isinstance(data, str):
+        data = data.encode("utf-8", errors="surrogatepass")
+    if len(data) > max_bytes:
+        raise CanonicalJSONError(f"JSON document exceeds {max_bytes} bytes")
+    try:
+        value = json.loads(data, object_pairs_hook=_reject_duplicate_keys)
+    except (ValueError, RecursionError) as exc:
+        # ``json.JSONDecodeError`` is a ``ValueError``; the message from a
+        # duplicate key is our own and worth keeping.
+        raise CanonicalJSONError(f"invalid JSON: {exc}") from None
+    if not isinstance(value, dict):
+        raise CanonicalJSONError("top-level value must be a JSON object")
+    return value
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate key: {key!r}")
+        result[key] = value
+    return result
 
 
 def _utf16_key(key: str) -> bytes:
