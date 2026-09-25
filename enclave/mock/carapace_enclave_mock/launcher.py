@@ -36,9 +36,8 @@ MAX_NONCE_LENGTH = 74
 class MockLauncher:
     """Mints Confidential Space-shaped tokens with a local RSA key.
 
-    ``overrides`` replaces claims in every token and ``audience_override``
-    replaces the requested audience; tests use them to play a tampering
-    launcher. ``requests`` records each request body.
+    ``overrides`` replaces claims in every token; tests use it to play a
+    tampering launcher. ``requests`` records each request body.
     """
 
     signing_key: rsa.RSAPrivateKey
