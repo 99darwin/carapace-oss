@@ -29,7 +29,7 @@ ENCLAVE     ──attestation-gated asymmetricDecrypt──▶ Cloud KMS (HSM)
 - **Tamper-evident policy.** A secret's allowlist is bound into the
   ciphertext's authenticated data. Widening it breaks decryption.
 - **Verifiable.** `carapace verify` checks the enclave's attestation, the
-  image digest against signed release manifests, and pins the enclave's TLS
+  image digest against the digests you allow, and pins the enclave's TLS
   key.
 - **Auditable.** Every use produces a receipt signed by a key bound to the
   attestation, verifiable offline.

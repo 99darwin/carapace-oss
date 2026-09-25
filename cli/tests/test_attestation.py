@@ -1,10 +1,9 @@
-"""Attestation token rules: issuer, signature, claims, digest, manifests."""
+"""Attestation token rules: issuer, signature, claims, digest."""
 
 from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 from typing import Any
 
 import jwt
@@ -16,7 +15,6 @@ from carapace_cli.attestation import (
     ATTESTATION_AUDIENCE,
     GOOGLE_ISSUER,
     TrustPolicy,
-    load_release_manifest,
     verify_attestation_token,
 )
 from carapace_enclave_mock import MockLauncher
@@ -182,28 +180,3 @@ def test_empty_allowlist_is_refused() -> None:
 def test_malformed_digest_is_refused() -> None:
     with pytest.raises(VerificationError, match="sha256"):
         TrustPolicy(allowed_digests=frozenset({"latest"}))
-
-
-def _manifest(tmp_path: Path, **fields: Any) -> str:
-    data = {"tag": "v1.0.0", "digest": OTHER_DIGEST, "commit": "abc", "epoch": 1}
-    path = tmp_path / "v1.0.0.json"
-    path.write_text(json.dumps(data | fields))
-    return str(path)
-
-
-def test_release_manifest_is_loaded(tmp_path) -> None:
-    manifest = load_release_manifest(_manifest(tmp_path))
-    assert (manifest.tag, manifest.digest) == ("v1.0.0", OTHER_DIGEST)
-
-
-@pytest.mark.parametrize(
-    "fields", [{"digest": "sha256:xyz"}, {"epoch": "1"}, {"extra": 1}]
-)
-def test_bad_release_manifest_is_refused(tmp_path, fields) -> None:
-    with pytest.raises(VerificationError):
-        load_release_manifest(_manifest(tmp_path, **fields))
-
-
-def test_release_manifest_over_http_is_refused() -> None:
-    with pytest.raises(VerificationError, match="https"):
-        load_release_manifest("http://example.com/v1.json")

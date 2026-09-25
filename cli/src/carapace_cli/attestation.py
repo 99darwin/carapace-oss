@@ -13,9 +13,9 @@ A token is accepted only if all of these hold:
   image carries the ``STABLE`` support attribute.
 - ``submods.container.image_digest`` is in the user's allowlist.
 
-What is *not* checked: the Sigstore/cosign signature and Rekor entry of a
-release manifest. Digests come only from ``--allow-digest`` or a manifest
-the user chose to trust; with neither, verification refuses to run.
+What is *not* checked: any release signature (Sigstore/cosign, Rekor).
+Digests come only from ``--allow-digest``; the user compares them against
+the CI build output themselves. Without one, verification refuses to run.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ import json
 import re
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -46,12 +45,12 @@ LEEWAY_SECONDS = 60
 IMAGE_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 FETCH_TIMEOUT_SECONDS = 15.0
 MAX_FETCH_BYTES = 256 * 1024
-MANIFEST_FIELDS = frozenset({"tag", "digest", "commit", "epoch"})
 
 COSIGN_NOT_VERIFIED_NOTICE = (
-    "NOTE: release manifest signatures (cosign/Rekor) are NOT verified by this "
-    "version of the CLI. Only digests you pass or a manifest you trust are "
-    "accepted; verify the manifest's bundle with cosign yourself."
+    "NOTE: this version of the CLI does not verify release signatures "
+    "(cosign/Rekor). Only the digests you pass with --allow-digest are "
+    "trusted: compare each one against the digest printed by the release "
+    "build in CI before passing it."
 )
 INSECURE_MOCK_BANNER = (
     "!!! INSECURE MOCK MODE: trusting a locally supplied attestation key for "
@@ -259,45 +258,3 @@ def _read_limited(response: httpx.Response) -> bytes:
             raise VerificationError("response too large")
         chunks.append(chunk)
     return b"".join(chunks)
-
-
-# -- release manifests -------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ReleaseManifest:
-    tag: str
-    digest: str
-    commit: str
-    epoch: int
-
-
-def load_release_manifest(source: str) -> ReleaseManifest:
-    """Read ``releases/<tag>.json`` from a path or an ``https://`` URL.
-
-    The manifest's cosign bundle is NOT verified here; see
-    :data:`COSIGN_NOT_VERIFIED_NOTICE`.
-    """
-    if source.startswith("https://"):
-        data = _fetch_json(source)
-    elif "://" in source:
-        raise VerificationError("release manifest URLs must use https")
-    else:
-        try:
-            raw = Path(source).expanduser().read_bytes()[: MAX_FETCH_BYTES + 1]
-        except OSError as exc:
-            raise VerificationError(f"cannot read {source}: {exc.strerror}") from None
-        if len(raw) > MAX_FETCH_BYTES:
-            raise VerificationError("release manifest too large")
-        try:
-            data = json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            raise VerificationError("release manifest is not JSON") from None
-    if not isinstance(data, dict) or set(data) != MANIFEST_FIELDS:
-        raise VerificationError("release manifest must have tag, digest, commit, epoch")
-    tag, digest, commit, epoch = (data[k] for k in ("tag", "digest", "commit", "epoch"))
-    if not (isinstance(tag, str) and isinstance(commit, str)) or type(epoch) is not int:
-        raise VerificationError("release manifest has invalid field types")
-    if not isinstance(digest, str):
-        raise VerificationError("release manifest digest must be a string")
-    return ReleaseManifest(tag, validate_digest(digest), commit, epoch)
