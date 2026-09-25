@@ -496,6 +496,36 @@ async def test_receipt_for_deleted_secret_reaches_owner(
     assert [r["payload"] for r in page["receipts"]] == [payload]
 
 
+async def test_recreated_secret_id_does_not_capture_receipts(
+    client, enclave, alice, bob, envelope_factory
+) -> None:
+    """Secret ids are client-chosen: Bob re-creating Alice's deleted id must
+    not receive receipts the enclave signed for Alice."""
+    await _register(client, enclave)
+    secret_id = str(uuid.uuid4())
+    created = await client.post(
+        "/v1/secrets",
+        json={"name": "x", "envelope": envelope_factory(alice.user_id, secret_id)},
+        headers=alice.headers,
+    )
+    assert created.status_code == 201
+    await client.delete(f"/v1/secrets/{secret_id}", headers=alice.headers)
+    squatted = await client.post(
+        "/v1/secrets",
+        json={"name": "x", "envelope": envelope_factory(bob.user_id, secret_id)},
+        headers=bob.headers,
+    )
+    assert squatted.status_code == 201
+
+    payload = {"secret_id": secret_id, "owner_id": alice.user_id, "host": "a"}
+    await _upload(client, enclave, enclave.receipt(payload))
+
+    alices = (await client.get("/v1/receipts", headers=alice.headers)).json()
+    bobs = (await client.get("/v1/receipts", headers=bob.headers)).json()
+    assert [r["payload"] for r in alices["receipts"]] == [payload]
+    assert bobs["receipts"] == []
+
+
 async def test_owner_receipts_are_verbatim(client, enclave, alice, new_secret) -> None:
     await _register(client, enclave)
     secret = await new_secret(client, alice)

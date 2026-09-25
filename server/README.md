@@ -150,9 +150,11 @@ are safe.
 
 `GET /v1/receipts?secret_id=&cursor=&limit=` returns an owner's receipts
 verbatim, with the boots (attestation token, TLS cert, receipt key) needed to
-verify them offline. A receipt belongs to the owner of `payload.secret_id`;
-if that secret has been deleted, the signed `payload.owner_id` is used.
-Payloads are capped at 16 KiB of canonical JSON.
+verify them offline. A receipt belongs to the signed `payload.owner_id`,
+which the enclave reads from the AAD-bound envelope; this stays correct
+after the secret is deleted, or its id re-created by another account. Only
+a receipt without `owner_id` falls back to the current owner of
+`payload.secret_id`. Payloads are capped at 16 KiB of canonical JSON.
 
 ## Known limitations
 

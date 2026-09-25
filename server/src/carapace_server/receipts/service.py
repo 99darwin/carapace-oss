@@ -99,15 +99,22 @@ async def _owner_of(
 ) -> tuple[uuid.UUID | None, uuid.UUID | None]:
     """The secret and owner a receipt belongs to.
 
-    The stored secret decides the owner. For a deleted secret, fall back to
-    the ``owner_id`` the enclave signed, which it read from the AAD-bound
-    envelope, so receipts for last uses still reach their owner.
+    The ``owner_id`` the enclave signed wins. It comes from the AAD-bound
+    envelope the enclave actually used, so it is authoritative even when the
+    secret has since been deleted or its client-chosen id has been re-created
+    by another account; consulting the table first would hand the previous
+    owner's receipts to the squatter. The stored secret is only a fallback
+    for receipts that carry no ``owner_id``.
     """
     secret_id = _uuid_or_none(payload.get("secret_id"))
     if secret_id is None:
         return None, None
-    owner_id = await db.scalar(select(Secret.owner_id).where(Secret.id == secret_id))
-    return secret_id, owner_id or _uuid_or_none(payload.get("owner_id"))
+    owner_id = _uuid_or_none(payload.get("owner_id"))
+    if owner_id is None:
+        owner_id = await db.scalar(
+            select(Secret.owner_id).where(Secret.id == secret_id)
+        )
+    return secret_id, owner_id
 
 
 async def _chain_tip(db: AsyncSession, boot_id: str) -> tuple[int, str]:
