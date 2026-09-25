@@ -160,7 +160,9 @@ For each request, the enclave executor:
 - Rate-limits per API key.
 - Throttles a peer address after repeated refused authorizations, so an
   unauthenticated flood cannot spend the control-plane budget of every owner.
-- Emits one signed receipt per request.
+- Emits one signed receipt per authorized request (outcome `ok`, `denied`
+  by policy, or `error`). Requests refused before authorization leave no
+  receipt; see [THREAT_MODEL.md](THREAT_MODEL.md#r6-refused-requests-leave-no-receipt).
 
 ## Receipts
 
@@ -171,7 +173,8 @@ offline. Unsigned receipts never verify.
 
 ## Residual risks
 
-These will be documented in full in `THREAT_MODEL.md`:
+Summarized here; [THREAT_MODEL.md](THREAT_MODEL.md#residual-risks) has the
+full list:
 
 - A GCP project owner can change KMS IAM. That change is visible in Cloud
   Audit Logs. Self-hosters are their own project owner.
