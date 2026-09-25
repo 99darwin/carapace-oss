@@ -15,11 +15,13 @@ from __future__ import annotations
 
 import json as jsonlib
 import os
+import warnings
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from carapace_cli.attestation import INSECURE_MOCK_BANNER
 from carapace_cli.errors import CarapaceError, EnclaveError
 from carapace_cli.files import default_config_dir
 from carapace_cli.pin import (
@@ -34,6 +36,10 @@ API_KEY_ENV = "CARAPACE_API_KEY"
 MAX_ENCLAVE_RESPONSE_BYTES = 40 * 1024 * 1024
 
 HeadersInput = Mapping[str, str] | Iterable[tuple[str, str]]
+
+
+class InsecureMockWarning(UserWarning):
+    """The pin trusts a mock issuer: the enclave was never attested."""
 
 
 @dataclass(frozen=True)
@@ -60,7 +66,12 @@ class Response:
 
 
 class Client:
-    """Requests through the pinned enclave with one API key."""
+    """Requests through the pinned enclave with one API key.
+
+    A pin loaded from the config dir that trusts a mock issuer raises
+    :class:`InsecureMockWarning`: that enclave was never attested. A ``pin``
+    passed in is the caller's responsibility and does not warn.
+    """
 
     def __init__(
         self,
@@ -77,7 +88,11 @@ class Client:
             self._api_key = ApiKey.parse(raw.strip())
         except ApiKeyError:
             raise CarapaceError("the API key is malformed") from None
-        self._pin = pin or load_pin(config_dir or default_config_dir())
+        if pin is None:
+            pin = load_pin(config_dir or default_config_dir())
+            if pin.insecure_mock:
+                warnings.warn(INSECURE_MOCK_BANNER, InsecureMockWarning, stacklevel=2)
+        self._pin = pin
         self._timeout = timeout
 
     def __repr__(self) -> str:

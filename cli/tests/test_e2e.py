@@ -6,6 +6,7 @@ import datetime
 import json
 import stat
 import uuid
+import warnings
 
 import pytest
 from cli_support import SECRET_VALUE, UPSTREAM_URL, add_github_secret, create_key
@@ -14,12 +15,16 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-from carapace_cli import Client, EnclaveError, PinError
+from carapace_cli import Client, EnclaveError, InsecureMockWarning, PinError
 from carapace_cli.files import write_private_json
 from carapace_cli.pin import load_pin, pin_path
 from carapace_enclave_mock.launcher import MOCK_IMAGE_DIGEST
 from carapace_server.apikeys.models import ApiKey
 from carapace_server.apikeys.service import is_tombstone
+
+# The test stack's pin is a mock pin by construction; the SDK's warning about
+# it is asserted once, in test_sdk_warns_when_it_loads_an_insecure_mock_pin.
+pytestmark = pytest.mark.filterwarnings("ignore::carapace_cli.InsecureMockWarning")
 
 
 def test_full_flow(verified) -> None:
@@ -58,6 +63,25 @@ def test_secret_value_never_printed(verified) -> None:
     assert code == 0, err
     for text in (out, err):
         assert SECRET_VALUE.decode() not in text
+
+
+def test_secret_add_prints_the_insecure_mock_banner(verified) -> None:
+    code, _, err = verified.cli(
+        "secret", "add", "gh", "--host", "api.github.com", stdin=SECRET_VALUE
+    )
+    assert code == 0, err
+    assert "INSECURE" in err
+
+
+def test_sdk_warns_when_it_loads_an_insecure_mock_pin(verified) -> None:
+    stack = verified
+    add_github_secret(stack)
+    api_key = create_key(stack, "github")
+    with pytest.warns(InsecureMockWarning):
+        Client(api_key, config_dir=stack.config_dir)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        Client(api_key, pin=load_pin(stack.config_dir))
     for path in stack.config_dir.iterdir():
         assert SECRET_VALUE not in path.read_bytes()
 
@@ -78,6 +102,7 @@ def test_cli_request_command(verified, tmp_path) -> None:
     assert code == 0, err
     assert '"octocat"' in out
     assert "HTTP 200" in err
+    assert "INSECURE" in err
 
 
 def test_host_outside_policy_is_refused(verified) -> None:

@@ -35,6 +35,9 @@ from carapace_crypto import canonical_json
 from carapace_enclave_mock.launcher import MOCK_IMAGE_DIGEST
 from carapace_server.store.models import Secret
 
+# The test stack's pin is a mock pin by construction (see test_e2e).
+pytestmark = pytest.mark.filterwarnings("ignore::carapace_cli.InsecureMockWarning")
+
 
 def _other_kms_pem() -> str:
     key = rsa.generate_private_key(public_exponent=65537, key_size=3072)

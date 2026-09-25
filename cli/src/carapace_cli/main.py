@@ -44,7 +44,7 @@ from carapace_cli.ownerkey_store import (
     owner_key_path,
     save_owner_key,
 )
-from carapace_cli.pin import load_pin, pin_path, save_pin
+from carapace_cli.pin import EnclavePin, load_pin, pin_path, save_pin
 from carapace_cli.prompts import prompt_hidden, read_password, read_secret_value, zero
 from carapace_cli.sdk import API_KEY_ENV, Client
 from carapace_cli.secrets_ops import (
@@ -87,6 +87,17 @@ class Context:
 
     def server(self) -> ServerClient:
         return ServerClient(self.config_dir)
+
+    def pin(self) -> EnclavePin:
+        """The pinned enclave, with the mock banner if it was never attested.
+
+        Every command that seals to, calls or audits the enclave loads the
+        pin here, so an ``--insecure-mock`` pin is never used silently.
+        """
+        pin = load_pin(self.config_dir)
+        if pin.insecure_mock:
+            self.say(INSECURE_MOCK_BANNER)
+        return pin
 
 
 # -- commands ---------------------------------------------------------------------
@@ -198,7 +209,7 @@ def cmd_secret_add(args: argparse.Namespace, ctx: Context) -> int:
         template=args.template,
         ports=args.port,
     )
-    pin = load_pin(ctx.config_dir)
+    pin = ctx.pin()
     owner_key = ctx.owner_key()
     with ctx.server() as server:
         plaintext = read_secret_value()
@@ -304,7 +315,7 @@ def cmd_request(args: argparse.Namespace, ctx: Context) -> int:
             secret_id = resolve_secret_id(server, secret_id)
     headers = [_parse_header(h) for h in args.header]
     body = _read_body(args.data_file)
-    client = Client(api_key, config_dir=ctx.config_dir)
+    client = Client(api_key, pin=ctx.pin())
     response = client.request(
         secret_id, args.method, args.url, headers=headers, body=body
     )
@@ -364,10 +375,8 @@ def cmd_audit_fetch(args: argparse.Namespace, ctx: Context) -> int:
 
 
 def cmd_audit_verify(args: argparse.Namespace, ctx: Context) -> int:
-    pin = load_pin(ctx.config_dir)
+    pin = ctx.pin()
     owner_key = ctx.owner_key()
-    if pin.insecure_mock:
-        ctx.say(INSECURE_MOCK_BANNER)
     with ctx.server() as server:
         server_url = server.server_url
         if args.file:

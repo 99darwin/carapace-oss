@@ -11,12 +11,13 @@ from carapace_cli.errors import (
     ServerError,
     VerificationError,
 )
-from carapace_cli.sdk import Client, Response
+from carapace_cli.sdk import Client, InsecureMockWarning, Response
 
 __all__ = [
     "CarapaceError",
     "Client",
     "EnclaveError",
+    "InsecureMockWarning",
     "NetworkError",
     "PinError",
     "Response",
