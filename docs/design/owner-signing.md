@@ -1,7 +1,34 @@
 # Owner-signed envelopes and client-minted API keys
 
-Status: implemented in `packages/crypto` (this PR). Server and enclave
-changes are listed under [Migration](#migration) and land in their own PRs.
+Status: implemented in `packages/crypto`, the server, the enclave broker and
+the CLI, with the exceptions listed under [Deferred in
+v0.1](#deferred-in-v01). The [Migration](#migration) section is kept as the
+original plan; where it differs from the code, the code and this note win.
+See [THREAT_MODEL.md](../THREAT_MODEL.md) for the resulting residual risks.
+
+## Deferred in v0.1
+
+- **`carapace key renew` (and any automatic renewal).** Deferred. A grant
+  names the API key it authorizes only by `key_bind`, a hash of the raw key
+  that the CLI does not keep and cannot link to the key id the server lists.
+  Renewing would mean fetching a grant from the server and re-signing it
+  with a fresh `exp`. A lying server could then hand the CLI a *revoked*
+  key's last live grant under another key's id and get it re-signed, undoing
+  the revocation. Until grants carry an identifier the CLI can check (or
+  the CLI keeps its own record of every grant it signed), renewal is
+  `key revoke` plus `key create`.
+- **`carapace key revoke --hard`** and **in-place secret rotation with
+  grant reissue.** Not implemented. `key revoke` uploads a tombstone grant
+  and prints a warning that the only hard cutoff is rotating the credential
+  at its provider. There is no CLI command that re-seals a secret and
+  raises version floors.
+- **The 60 s grant and envelope cache** described under the broker PR was
+  not built. The enclave fetches the grant and envelope from the server on
+  every request, so an honest server's changes apply on the next request.
+  Only unwrapped DEKs are cached (60 s).
+- **Owner key storage** is a 0600 `owner-key.json` in the CLI config
+  directory, with the seed optionally sealed under a passphrase (scrypt +
+  AES-256-GCM). There is no OS keychain integration and no recovery phrase.
 
 ## Problem
 
@@ -236,12 +263,14 @@ Three mechanisms:
 
 1. **Grant expiry.** A grant is valid for at most 90 days (default 30). A
    revoked key, a narrowed grant, or a raised version floor that the server
-   withholds takes effect no later than the old grant's `exp`. The CLI can
-   renew grants automatically while the owner key is available; short TTLs
-   are the owner's knob for tighter revocation.
+   withholds takes effect no later than the old grant's `exp`. Short TTLs
+   are the owner's knob for tighter revocation. (Renewal, manual or
+   automatic, is [deferred](#deferred-in-v01); for now a key is extended by
+   creating a new one.)
 2. **Per-secret version floors.** When the owner re-seals a secret with
    version `N` (rotation), the CLI reissues grants for every key that uses it
-   with floor `N`. Once an agent's grant carries the new floor, the server can
+   with floor `N` (not yet implemented in the CLI; see
+   [Deferred](#deferred-in-v01)). Once an agent's grant carries the new floor, the server can
    no longer serve the old envelope to it. Rollback is possible only for
    agents still holding an older grant, and only until that grant expires.
 3. **Per-boot monotonic cache.** Within a boot the enclave records the
@@ -268,7 +297,7 @@ second still reads as newer to the cache.
 **Clock.** The VM operator controls the guest clock, so an enclave that
 trusted it alone could be held at a time when an expired grant was valid.
 The enclave takes `now = max(vm_clock, iat of its latest attestation
-token)`, refreshes the token at boot and at least every hour, and never lets
+token)`, refreshes the token at boot and every 15 minutes, and never lets
 `now` decrease within a boot. The attestation token is issued by Google's
 attestation service against a trusted clock, so the operator cannot turn
 the enclave's view of time back. The operator *can* hold it still by
@@ -291,20 +320,22 @@ Revocation semantics, from the owner's point of view:
 | Retire `secret_id`, re-create under a new id | Next fetch (≤ 60 s) | New value never; old value until the old grant's `exp` |
 | Rotate the credential at its provider | Immediate | Immediate |
 
-"Next fetch" is bounded by the enclave's 60 s object cache (below). Two
+"Next fetch" was to be bounded by a 60 s object cache (below). That cache
+was not built: the enclave fetches on every request, so an honest server's
+change applies on the next request. Two
 consequences for the malicious-server column:
 
 - Rotating a secret *in place* does not cut off a revoked key. Floors are
   minimums, so a withheld tombstone plus the new envelope (version `N ≥`
   the old floor) hands the new value to the revoked key. To keep a new
   value away from a revoked key, seal it under a fresh `secret_id` and
-  reissue grants only for the keys that should keep access. `carapace key
-  revoke --hard` should do exactly that.
+  reissue grants only for the keys that should keep access. A `carapace key
+  revoke --hard` that does exactly that is [deferred](#deferred-in-v01).
 - Nothing in this design takes the *old* value away from a revoked key
   before the old grant's `exp`, because a database writer can keep serving
   the old envelope and old grant. The only hard cutoff is to rotate the
-  credential at its provider so the old value stops working. The CLI should
-  say so on every revoke.
+  credential at its provider so the old value stops working. The CLI says
+  so on every revoke.
 
 What is *not* provided: a bound tighter than `exp` against a malicious
 server without owner action, and detection of a withheld object (the enclave
@@ -314,15 +345,16 @@ and is deferred to a later version.
 
 ## Owner key lifecycle
 
-**Storage.** The CLI generates the key at `carapace init`, stores the seed
-in the OS keychain when available and otherwise in
-`~/.config/carapace/owner.key` with mode 0600, and registers the public key
+**Storage.** The CLI generates the key at `carapace init`, stores it in
+`owner-key.json` (mode 0600) in its config directory, with the seed sealed
+under a passphrase unless `--no-passphrase` is given, and registers the public key
 with the server (`POST /v1/owner-keys`). The server keeps one or more public
 keys per user so the UI can show fingerprints and reject envelopes signed by
 unknown keys; it never sees a seed.
 
 **Adding an API key or renewing a grant** never requires re-entering a
-secret. Both are grant operations.
+secret. Both are grant operations. (Renewal is [deferred](#deferred-in-v01);
+revoke and re-create instead.)
 
 **Rotating an API key** is: mint a new key, issue its grant, revoke the old
 one. No re-sealing.
@@ -519,6 +551,7 @@ resource name.
 - Cache verified grants and envelopes in memory for at most 60 s to avoid
   one server round trip per request; the monotonic cache still applies on
   refresh. This is the "next fetch" latency in the revocation table.
+  (Not built: the broker fetches on every request.)
 - Cache unwrapped DEKs keyed by `(owner_pk, secret_id, version, sig)` for
   the same 60 s, so repeated requests for one envelope cost one KMS call.
   The key includes `sig`, so a different envelope can never hit.
@@ -531,10 +564,10 @@ resource name.
 
 ### CLI
 
-`carapace init` (owner key, register public key), `carapace secret put`
+`carapace init` (owner key, register public key), `carapace secret add`
 (seal with `version = now`), `carapace key create` (mint key, issue grant,
-register lookup hash), `carapace key renew`, `carapace key revoke
-[--hard]`.
+register lookup hash), `carapace key revoke` (tombstone grant). `carapace
+key renew` and `key revoke --hard` are [deferred](#deferred-in-v01).
 
 ## Guarantees
 
