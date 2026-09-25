@@ -35,3 +35,6 @@ infra/pulumi/Pulumi.*.yaml
 .DS_Store
 .idea/
 .vscode/
+
+# Local dev database
+carapace-local.db

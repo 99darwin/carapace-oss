@@ -13,11 +13,13 @@ dev = [
 package = false
 
 [tool.uv.workspace]
-members = ["packages/*"]
+members = ["packages/*", "server"]
 
 [tool.ruff]
 line-length = 88
 target-version = "py312"
+# Lets isort classify workspace packages as first-party.
+src = [".", "server/src", "packages/*/src"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "S", "SIM"]
@@ -26,6 +28,7 @@ select = ["E", "F", "I", "B", "UP", "S", "SIM"]
 known-first-party = ["carapace_*"]
 
 [tool.ruff.lint.per-file-ignores]
+# Tests assert freely and use fixed fake credentials.
 "**/tests/**" = ["S101", "S105", "S106"]
 
 [tool.pytest.ini_options]

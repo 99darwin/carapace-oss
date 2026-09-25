@@ -1,0 +1,338 @@
+"""Account registration, login (password or passkey) and session rotation.
+
+Security notes:
+- Passwords: bcrypt over base64(sha256(password)), so long passwords keep
+  their full entropy instead of being truncated at 72 bytes. Hashing runs in
+  a worker thread to keep the event loop responsive.
+- User enumeration: unknown accounts still pay for a bcrypt check, and
+  passkey login options for unknown accounts return a deterministic decoy
+  credential ID, so neither timing nor response shape reveals existence.
+- Passkey registration verifies the full attestation response with
+  py_webauthn; client-supplied public keys are never trusted directly.
+- Refresh tokens are random, stored as SHA-256 hashes, single use.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import hashlib
+import hmac
+import logging
+import secrets
+import uuid
+from dataclasses import dataclass
+from datetime import timedelta
+from functools import lru_cache
+from typing import Any
+
+import bcrypt
+import webauthn
+from sqlalchemy import delete, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+from webauthn.helpers import options_to_json_dict, parse_authentication_credential_json
+from webauthn.helpers.structs import PublicKeyCredentialDescriptor
+
+from carapace_server.auth.models import (
+    ChallengeType,
+    RefreshToken,
+    User,
+    WebAuthnChallenge,
+)
+from carapace_server.auth.tokens import create_access_token
+from carapace_server.config import Settings
+from carapace_server.db import utcnow
+
+logger = logging.getLogger(__name__)
+
+CHALLENGE_TTL = timedelta(minutes=2)
+CHALLENGE_TIMEOUT_MS = 120_000
+REFRESH_TOKEN_BYTES = 32
+USER_AGENT_MAX_LENGTH = 512
+DECOY_CREDENTIAL_ID_BYTES = 32
+
+
+class AuthError(Exception):
+    """Generic authentication failure. Messages are safe to show clients."""
+
+
+@dataclass(frozen=True)
+class ClientInfo:
+    user_agent: str | None
+    ip_address: str | None
+
+
+@dataclass(frozen=True)
+class Session:
+    user_id: uuid.UUID
+    access_token: str
+    refresh_token: str
+
+
+def normalize_email(email: str) -> str:
+    return email.strip().lower()
+
+
+def hash_refresh_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _prehash(password: str) -> bytes:
+    return base64.b64encode(hashlib.sha256(password.encode()).digest())
+
+
+def _hash_password(password: str, rounds: int) -> bytes:
+    return bcrypt.hashpw(_prehash(password), bcrypt.gensalt(rounds=rounds))
+
+
+def _check_password(password: str, hashed: bytes) -> bool:
+    return bcrypt.checkpw(_prehash(password), hashed)
+
+
+@lru_cache
+def dummy_password_hash(rounds: int) -> bytes:
+    """A real bcrypt hash at the configured cost, for timing equalization."""
+    return _hash_password(secrets.token_urlsafe(16), rounds)
+
+
+class AuthService:
+    def __init__(self, db: AsyncSession, settings: Settings) -> None:
+        self.db = db
+        self.settings = settings
+
+    # -- lookups ------------------------------------------------------------
+
+    async def _user_by_email(self, email: str) -> User | None:
+        return await self.db.scalar(select(User).where(User.email == email))
+
+    # -- password -----------------------------------------------------------
+
+    async def register_with_password(
+        self,
+        email: str,
+        password: str,
+        display_name: str | None,
+        client: ClientInfo,
+    ) -> Session:
+        email = normalize_email(email)
+        if await self._user_by_email(email) is not None:
+            raise AuthError("Registration failed")
+        password_hash = await asyncio.to_thread(
+            _hash_password, password, self.settings.bcrypt_rounds
+        )
+        user = User(email=email, display_name=display_name, password_hash=password_hash)
+        self.db.add(user)
+        await self.db.flush()
+        return await self._start_session(user, client)
+
+    async def login_with_password(
+        self, email: str, password: str, client: ClientInfo
+    ) -> Session:
+        user = await self._user_by_email(normalize_email(email))
+        stored = user.password_hash if user else None
+        candidate = stored or dummy_password_hash(self.settings.bcrypt_rounds)
+        ok = await asyncio.to_thread(_check_password, password, candidate)
+        if user is None or stored is None or not ok:
+            raise AuthError("Invalid credentials")
+        return await self._start_session(user, client)
+
+    # -- passkeys -----------------------------------------------------------
+
+    async def registration_options(self, email: str) -> dict[str, Any]:
+        email = normalize_email(email)
+        if await self._user_by_email(email) is not None:
+            raise AuthError("Unable to process request")
+        challenge = await self._store_challenge(email, ChallengeType.REGISTER)
+        options = webauthn.generate_registration_options(
+            rp_id=self.settings.webauthn_rp_id,
+            rp_name=self.settings.webauthn_rp_name,
+            user_name=email,
+            challenge=challenge,
+            timeout=CHALLENGE_TIMEOUT_MS,
+        )
+        return options_to_json_dict(options)
+
+    async def register_with_passkey(
+        self,
+        email: str,
+        display_name: str | None,
+        credential: dict[str, Any],
+        client: ClientInfo,
+    ) -> Session:
+        email = normalize_email(email)
+        challenge = await self._consume_challenge(email, ChallengeType.REGISTER)
+        if await self._user_by_email(email) is not None:
+            raise AuthError("Registration failed")
+        try:
+            verified = webauthn.verify_registration_response(
+                credential=credential,
+                expected_challenge=challenge,
+                expected_rp_id=self.settings.webauthn_rp_id,
+                expected_origin=self.settings.webauthn_origin,
+            )
+        except Exception as exc:
+            logger.info("passkey registration rejected: %s", type(exc).__name__)
+            raise AuthError("Registration failed") from exc
+        user = User(
+            email=email,
+            display_name=display_name,
+            passkey_credential_id=verified.credential_id,
+            passkey_public_key=verified.credential_public_key,
+            passkey_sign_count=verified.sign_count,
+            passkey_transports=credential.get("response", {}).get("transports"),
+        )
+        self.db.add(user)
+        await self.db.flush()
+        return await self._start_session(user, client)
+
+    async def authentication_options(self, email: str) -> dict[str, Any]:
+        email = normalize_email(email)
+        user = await self._user_by_email(email)
+        credential_id = (
+            user.passkey_credential_id
+            if user and user.passkey_credential_id
+            else self._decoy_credential_id(email)
+        )
+        challenge = await self._store_challenge(email, ChallengeType.AUTHENTICATE)
+        options = webauthn.generate_authentication_options(
+            rp_id=self.settings.webauthn_rp_id,
+            challenge=challenge,
+            timeout=CHALLENGE_TIMEOUT_MS,
+            allow_credentials=[PublicKeyCredentialDescriptor(id=credential_id)],
+        )
+        return options_to_json_dict(options)
+
+    async def login_with_passkey(
+        self, email: str, credential: dict[str, Any], client: ClientInfo
+    ) -> Session:
+        email = normalize_email(email)
+        challenge = await self._consume_challenge(email, ChallengeType.AUTHENTICATE)
+        user = await self._user_by_email(email)
+        if user is None or user.passkey_public_key is None:
+            raise AuthError("Invalid credentials")
+        try:
+            parsed = parse_authentication_credential_json(credential)
+            if not hmac.compare_digest(parsed.raw_id, user.passkey_credential_id):
+                raise AuthError("credential mismatch")
+            verified = webauthn.verify_authentication_response(
+                credential=parsed,
+                expected_challenge=challenge,
+                expected_rp_id=self.settings.webauthn_rp_id,
+                expected_origin=self.settings.webauthn_origin,
+                credential_public_key=user.passkey_public_key,
+                credential_current_sign_count=user.passkey_sign_count,
+            )
+        except Exception as exc:
+            logger.info("passkey login rejected: %s", type(exc).__name__)
+            raise AuthError("Invalid credentials") from exc
+        user.passkey_sign_count = verified.new_sign_count
+        return await self._start_session(user, client)
+
+    def _decoy_credential_id(self, email: str) -> bytes:
+        key = self.settings.jwt_key.encode()
+        digest = hmac.new(key, b"passkey-decoy:" + email.encode(), hashlib.sha256)
+        return digest.digest()[:DECOY_CREDENTIAL_ID_BYTES]
+
+    async def _store_challenge(self, email: str, kind: ChallengeType) -> bytes:
+        await self.db.execute(
+            delete(WebAuthnChallenge).where(WebAuthnChallenge.email == email)
+        )
+        challenge = secrets.token_bytes(32)
+        self.db.add(
+            WebAuthnChallenge(
+                email=email,
+                challenge_type=kind,
+                challenge=challenge,
+                expires_at=utcnow() + CHALLENGE_TTL,
+            )
+        )
+        await self.db.commit()
+        return challenge
+
+    async def _consume_challenge(self, email: str, kind: ChallengeType) -> bytes:
+        """Fetch and delete the pending challenge (single use)."""
+        record = await self.db.scalar(
+            select(WebAuthnChallenge).where(
+                WebAuthnChallenge.email == email,
+                WebAuthnChallenge.challenge_type == kind,
+            )
+        )
+        if record is None:
+            raise AuthError("Invalid credentials")
+        await self.db.delete(record)
+        await self.db.commit()
+        if record.expires_at <= utcnow():
+            raise AuthError("Invalid credentials")
+        return record.challenge
+
+    # -- sessions -----------------------------------------------------------
+
+    async def _start_session(self, user: User, client: ClientInfo) -> Session:
+        user.last_login_at = utcnow()
+        refresh = self._new_refresh_token(user.id, client)
+        await self.db.commit()
+        access = create_access_token(self.settings, user.id)
+        return Session(user_id=user.id, access_token=access, refresh_token=refresh)
+
+    def _new_refresh_token(self, user_id: uuid.UUID, client: ClientInfo) -> str:
+        token = secrets.token_urlsafe(REFRESH_TOKEN_BYTES)
+        user_agent = client.user_agent
+        self.db.add(
+            RefreshToken(
+                user_id=user_id,
+                token_hash=hash_refresh_token(token),
+                expires_at=utcnow() + timedelta(days=self.settings.refresh_token_days),
+                user_agent=user_agent[:USER_AGENT_MAX_LENGTH] if user_agent else None,
+                ip_address=client.ip_address,
+            )
+        )
+        return token
+
+    async def refresh(self, refresh_token: str, client: ClientInfo) -> Session:
+        """Rotate: the presented token is revoked and a new pair issued.
+
+        The revoke is a conditional UPDATE so two concurrent refreshes with
+        the same token cannot both succeed.
+        """
+        now = utcnow()
+        result = await self.db.execute(
+            update(RefreshToken)
+            .where(
+                RefreshToken.token_hash == hash_refresh_token(refresh_token),
+                RefreshToken.revoked_at.is_(None),
+                RefreshToken.expires_at > now,
+            )
+            .values(revoked_at=now)
+            .returning(RefreshToken.user_id)
+        )
+        user_id = result.scalar_one_or_none()
+        if user_id is None:
+            await self.db.rollback()
+            raise AuthError("Invalid or expired refresh token")
+        new_refresh = self._new_refresh_token(user_id, client)
+        await self.db.commit()
+        access = create_access_token(self.settings, user_id)
+        return Session(user_id=user_id, access_token=access, refresh_token=new_refresh)
+
+    async def revoke_refresh_token(self, refresh_token: str) -> None:
+        await self.db.execute(
+            update(RefreshToken)
+            .where(
+                RefreshToken.token_hash == hash_refresh_token(refresh_token),
+                RefreshToken.revoked_at.is_(None),
+            )
+            .values(revoked_at=utcnow())
+        )
+
+
+async def purge_expired_auth_rows(db: AsyncSession) -> None:
+    """Delete expired refresh tokens and passkey challenges."""
+    now = utcnow()
+    await db.execute(
+        delete(RefreshToken).where(
+            or_(RefreshToken.expires_at <= now, RefreshToken.revoked_at.is_not(None))
+        )
+    )
+    await db.execute(
+        delete(WebAuthnChallenge).where(WebAuthnChallenge.expires_at <= now)
+    )
