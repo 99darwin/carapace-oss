@@ -29,6 +29,8 @@ SERVER_PROJECT_ROLES: tuple[str, ...] = ("roles/cloudsql.client",)
 class ServiceIdentities:
     enclave: gcp.serviceaccount.Account
     server: gcp.serviceaccount.Account
+    enclave_grants: dict[str, gcp.projects.IAMMember]
+    server_grants: dict[str, gcp.projects.IAMMember]
 
     @property
     def enclave_member(self) -> pulumi.Output[str]:
@@ -45,14 +47,16 @@ def _grant_project_roles(
     project: str,
     account: gcp.serviceaccount.Account,
     roles: Sequence[str],
-) -> None:
-    for role in roles:
-        gcp.projects.IAMMember(
+) -> dict[str, gcp.projects.IAMMember]:
+    return {
+        role: gcp.projects.IAMMember(
             f"{name}-{role.split('/')[-1].replace('.', '-')}",
             project=project,
             role=role,
             member=account.email.apply(lambda email: f"serviceAccount:{email}"),
         )
+        for role in roles
+    }
 
 
 def create_service_identities(
@@ -71,16 +75,21 @@ def create_service_identities(
         display_name="Carapace server (public key only)",
         opts=opts,
     )
-    _grant_project_roles(
+    enclave_grants = _grant_project_roles(
         name=f"{prefix}-enclave",
         project=project,
         account=enclave,
         roles=ENCLAVE_PROJECT_ROLES,
     )
-    _grant_project_roles(
+    server_grants = _grant_project_roles(
         name=f"{prefix}-server",
         project=project,
         account=server,
         roles=SERVER_PROJECT_ROLES,
     )
-    return ServiceIdentities(enclave=enclave, server=server)
+    return ServiceIdentities(
+        enclave=enclave,
+        server=server,
+        enclave_grants=enclave_grants,
+        server_grants=server_grants,
+    )

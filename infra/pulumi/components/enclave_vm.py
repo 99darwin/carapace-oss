@@ -8,6 +8,7 @@ rule, and the Confidential Space production image has no SSH access anyway.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import pulumi
@@ -15,17 +16,21 @@ import pulumi_gcp as gcp
 
 from components.config import build_image_reference
 
-CONFIDENTIAL_SPACE_IMAGE = (
-    "projects/confidential-space-images/global/images/family/confidential-space"
-)
+# Production family only; the debug family reports dbgstat=enabled and could
+# never pass the WIF condition anyway.
+CONFIDENTIAL_SPACE_IMAGE_PROJECT = "confidential-space-images"
+CONFIDENTIAL_SPACE_IMAGE_FAMILY = "confidential-space"
 CONFIDENTIAL_INSTANCE_TYPE = "SEV"
 INGRESS_PORT = "443"
 ANY_IPV4 = "0.0.0.0/0"
 SUBNET_CIDR = "10.10.0.0/24"
 BOOT_DISK_GB = 20
 # The launcher only honours overrides the image's launch policy allows; keep
-# this list identical to the policy baked into the enclave image.
-ALLOWED_ENV_OVERRIDES: frozenset[str] = frozenset({"CONTROL_PLANE_URL", "KMS_KEY_NAME"})
+# this list identical to the policy baked into the enclave image. A wrong value
+# for any of them can only make decryption fail, never widen access.
+ALLOWED_ENV_OVERRIDES: frozenset[str] = frozenset(
+    {"CONTROL_PLANE_URL", "KMS_KEY_NAME", "WIF_AUDIENCE"}
+)
 
 
 @dataclass(frozen=True)
@@ -57,6 +62,9 @@ def build_enclave_metadata(
         raise ValueError(f"env overrides not allowed: {sorted(unexpected)}")
     metadata = {
         "tee-image-reference": image_reference,
+        # Forwards container stdout/stderr to Cloud Logging (the reason the VM
+        # SA has logging.logWriter). The image's launch policy must permit it,
+        # and the enclave must never log secret material.
         "tee-container-log-redirect": "true",
     }
     metadata.update({f"tee-env-{key}": value for key, value in env.items()})
@@ -112,15 +120,27 @@ def create_enclave_vm(
     network: EnclaveNetwork,
     control_plane_url: pulumi.Input[str],
     kms_key_name: pulumi.Input[str],
+    wif_audience: pulumi.Input[str],
+    depends_on: Sequence[pulumi.Resource] = (),
 ) -> EnclaveVm:
     # Validated eagerly: a tag-only reference fails before any resource exists.
     image_reference = build_image_reference(image_repository, image_digest)
-    metadata = pulumi.Output.all(control_plane_url, kms_key_name).apply(
+    metadata = pulumi.Output.all(control_plane_url, kms_key_name, wif_audience).apply(
         lambda args: build_enclave_metadata(
             image_reference=image_reference,
-            env={"CONTROL_PLANE_URL": args[0], "KMS_KEY_NAME": args[1]},
+            env={
+                "CONTROL_PLANE_URL": args[0],
+                "KMS_KEY_NAME": args[1],
+                "WIF_AUDIENCE": args[2],
+            },
         )
     )
+    # Resolved to a concrete image so a new Confidential Space release shows up
+    # as a diff (and a VM replacement) instead of silently aging in place.
+    boot_image = gcp.compute.get_image_output(
+        family=CONFIDENTIAL_SPACE_IMAGE_FAMILY,
+        project=CONFIDENTIAL_SPACE_IMAGE_PROJECT,
+    ).self_link
     instance = gcp.compute.Instance(
         f"{prefix}-enclave",
         name=f"{prefix}-enclave",
@@ -129,7 +149,7 @@ def create_enclave_vm(
         tags=[enclave_network_tag(prefix)],
         boot_disk={
             "initialize_params": {
-                "image": CONFIDENTIAL_SPACE_IMAGE,
+                "image": boot_image,
                 "size": BOOT_DISK_GB,
             }
         },
@@ -157,7 +177,7 @@ def create_enclave_vm(
         # The launcher reads metadata only at boot, so an image or env change
         # must recreate the VM. Delete first: the static IP and name are fixed.
         opts=pulumi.ResourceOptions(
-            depends_on=[network.firewall],
+            depends_on=[network.firewall, *depends_on],
             replace_on_changes=["metadata"],
             delete_before_replace=True,
         ),

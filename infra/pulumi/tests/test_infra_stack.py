@@ -8,8 +8,10 @@ pytest.importorskip("pulumi_gcp")
 
 from components.wif import build_principal_set  # noqa: E402
 from harness import (  # noqa: E402
+    CONFIDENTIAL_SPACE_IMAGE,
     DIGEST_A,
     DIGEST_B,
+    ENCLAVE_SA_UNIQUE_ID,
     PROJECT_ID,
     PROJECT_NUMBER,
     Recorded,
@@ -25,6 +27,11 @@ FIREWALL = "gcp:compute/firewall:Firewall"
 PROVIDER = "gcp:iam/workloadIdentityPoolProvider:WorkloadIdentityPoolProvider"
 ENCLAVE_MEMBER = f"serviceAccount:cptest-enclave@{PROJECT_ID}.iam.gserviceaccount.com"
 SERVER_MEMBER = f"serviceAccount:cptest-server@{PROJECT_ID}.iam.gserviceaccount.com"
+STS_AUDIENCE = (
+    "//iam.googleapis.com/projects/123456789012/locations/global"
+    "/workloadIdentityPools/cptest-attest/providers/confidential-space"
+)
+KEY_RING_ID = "projects/example-project/locations/us-central1/keyRings/cptest-keyring"
 
 
 @pytest.fixture(scope="module")
@@ -67,6 +74,11 @@ def test_decrypter_is_only_the_digest_principal_sets(stack) -> None:
         )
         for digest in (DIGEST_A, DIGEST_B)
     )
+    literal_a = (
+        "principalSet://iam.googleapis.com/projects/123456789012/locations/global"
+        "/workloadIdentityPools/cptest-attest/attribute.image_digest/sha256:" + "a" * 64
+    )
+    assert literal_a in expected
     bindings = _key_bindings(mocks)
     assert bindings["roles/cloudkms.cryptoKeyDecrypter"] == expected
     assert sorted(outputs["wif_principal_sets"]) == expected
@@ -125,6 +137,21 @@ def test_no_impersonation_grants(stack) -> None:
     assert not mocks.of_type("gcp:serviceaccount/iAMBinding:IAMBinding")
 
 
+def test_no_authoritative_project_iam(stack) -> None:
+    mocks, _ = stack
+    assert not mocks.of_type("gcp:projects/iAMBinding:IAMBinding")
+    assert not mocks.of_type("gcp:projects/iAMPolicy:IAMPolicy")
+
+
+def test_key_ring_policy_is_authoritative_and_empty(stack) -> None:
+    mocks, _ = stack
+    ring_policy = mocks.one("gcp:kms/keyRingIAMPolicy:KeyRingIAMPolicy").inputs
+    assert json.loads(ring_policy["policyData"]) == {"bindings": []}
+    assert ring_policy["keyRingId"] == KEY_RING_ID
+    assert not mocks.of_type("gcp:kms/keyRingIAMMember:KeyRingIAMMember")
+    assert not mocks.of_type("gcp:kms/keyRingIAMBinding:KeyRingIAMBinding")
+
+
 def test_wif_condition_requires_every_attestation_clause(stack) -> None:
     mocks, _ = stack
     provider = mocks.one(PROVIDER).inputs
@@ -141,6 +168,7 @@ def test_wif_condition_requires_every_attestation_clause(stack) -> None:
         " in assertion.google_service_accounts",
     ):
         assert clause in condition
+    assert condition.startswith(f"assertion.aud == '{STS_AUDIENCE}' && ")
     assert "||" not in condition
     assert provider["oidc"]["issuerUri"] == (
         "https://confidentialcomputing.googleapis.com"
@@ -148,6 +176,23 @@ def test_wif_condition_requires_every_attestation_clause(stack) -> None:
     assert provider["attributeMapping"]["attribute.image_digest"] == (
         "assertion.submods.container.image_digest"
     )
+
+
+def test_wif_accepts_only_the_stack_audience(stack) -> None:
+    mocks, outputs = stack
+    allowed = mocks.one(PROVIDER).inputs["oidc"]["allowedAudiences"]
+    assert allowed == [STS_AUDIENCE]
+    assert "https://sts.googleapis.com" not in allowed
+    assert "carapace-attestation" not in allowed
+    assert outputs["wif_audience"] == STS_AUDIENCE
+
+
+def test_wif_audience_override_is_used_verbatim() -> None:
+    mocks, outputs = run_stack(make_config(wif_audience="carapace-sts-selfhost"))
+    provider = mocks.one(PROVIDER).inputs
+    assert provider["oidc"]["allowedAudiences"] == ["carapace-sts-selfhost"]
+    assert "assertion.aud == 'carapace-sts-selfhost'" in provider["attributeCondition"]
+    assert outputs["wif_audience"] == "carapace-sts-selfhost"
 
 
 def test_firewall_allows_only_443(stack) -> None:
@@ -166,14 +211,17 @@ def test_vm_is_confidential_space_with_digest_pinned_image(stack) -> None:
     assert instance["confidentialInstanceConfig"] == {"confidentialInstanceType": "SEV"}
     assert instance["shieldedInstanceConfig"]["enableSecureBoot"] is True
     image = instance["bootDisk"]["initializeParams"]["image"]
-    assert image.endswith(
-        "confidential-space-images/global/images/family/confidential-space"
-    )
+    assert image == CONFIDENTIAL_SPACE_IMAGE
     metadata = instance["metadata"]
     assert metadata["tee-image-reference"].endswith(f"/enclave@{DIGEST_A}")
     env_keys = {k for k in metadata if k.startswith("tee-env-")}
-    assert env_keys == {"tee-env-CONTROL_PLANE_URL", "tee-env-KMS_KEY_NAME"}
+    assert env_keys == {
+        "tee-env-CONTROL_PLANE_URL",
+        "tee-env-KMS_KEY_NAME",
+        "tee-env-WIF_AUDIENCE",
+    }
     assert metadata["tee-env-KMS_KEY_NAME"].endswith("/cryptoKeyVersions/1")
+    assert metadata["tee-env-WIF_AUDIENCE"] == STS_AUDIENCE
 
 
 def test_database_password_never_in_outputs(stack) -> None:
@@ -204,12 +252,18 @@ def test_cloud_sql_is_small_and_zonal(stack) -> None:
     assert settings["ipConfiguration"].get("authorizedNetworks") in (None, [])
 
 
-def test_iam_change_alert_watches_key_policy(stack) -> None:
+def test_iam_change_alert_watches_decrypt_path(stack) -> None:
     mocks, outputs = stack
     policy = mocks.one("gcp:monitoring/alertPolicy:AlertPolicy").inputs
     log_filter = policy["conditions"][0]["conditionMatchedLog"]["filter"]
     assert '"SetIamPolicy"' in log_filter
-    assert outputs["kms_key_name"] in log_filter
+    # The key ring path is a prefix of the key path, so both are matched.
+    assert f'protoPayload.resourceName:"{KEY_RING_ID}"' in log_filter
+    assert outputs["kms_key_name"].startswith(KEY_RING_ID + "/")
+    assert 'resourceName:"workloadIdentityPools/cptest-attest"' in log_filter
+    enclave_email = ENCLAVE_MEMBER.removeprefix("serviceAccount:")
+    assert f'resourceName:"serviceAccounts/{enclave_email}"' in log_filter
+    assert f'resourceName:"serviceAccounts/{ENCLAVE_SA_UNIQUE_ID}"' in log_filter
 
 
 def _resources(**overrides: object) -> list[Recorded]:
@@ -256,3 +310,46 @@ def test_kms_key_protect_option_follows_config(monkeypatch, protect: bool) -> No
     run_stack(make_config(protect_kms_key=protect))
     assert seen == [protect]
     assert make_config().protect_kms_key is True
+
+
+def _record_depends_on(monkeypatch, module, cls_name: str) -> list[list]:
+    seen: list[list] = []
+    original = getattr(module, cls_name)
+
+    def recording(*args, opts=None, **kwargs):
+        seen.append(list(opts.depends_on or []) if opts else [])
+        return original(*args, opts=opts, **kwargs)
+
+    monkeypatch.setattr(module, cls_name, recording)
+    return seen
+
+
+def test_workloads_wait_for_their_iam(monkeypatch) -> None:
+    import pulumi_gcp as gcp
+
+    grants: list = []
+    key_policies: list = []
+    original_member = gcp.projects.IAMMember
+    original_policy = gcp.kms.CryptoKeyIAMPolicy
+
+    def recording_member(name, *args, **kwargs):
+        resource = original_member(name, *args, **kwargs)
+        grants.append((kwargs.get("role"), resource))
+        return resource
+
+    def recording_policy(*args, **kwargs):
+        resource = original_policy(*args, **kwargs)
+        key_policies.append(resource)
+        return resource
+
+    monkeypatch.setattr(gcp.projects, "IAMMember", recording_member)
+    monkeypatch.setattr(gcp.kms, "CryptoKeyIAMPolicy", recording_policy)
+    vm_deps = _record_depends_on(monkeypatch, gcp.compute, "Instance")
+    run_deps = _record_depends_on(monkeypatch, gcp.cloudrunv2, "Service")
+    run_stack(make_config())
+
+    by_role = {role: resource for role, resource in grants}
+    assert len(vm_deps) == 1 and len(run_deps) == 1
+    assert by_role["roles/confidentialcomputing.workloadUser"] in vm_deps[0]
+    assert key_policies[0] in vm_deps[0]
+    assert by_role["roles/cloudsql.client"] in run_deps[0]

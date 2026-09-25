@@ -38,7 +38,7 @@ def deploy(cfg: StackConfig) -> dict[str, pulumi.Input[object]]:
         audience=cfg.wif_audience,
         depends_on=apis,
     )
-    bind_key_policy(
+    key_policy = bind_key_policy(
         prefix=cfg.prefix,
         kms_key=kms_key,
         decrypter_members=workload_identity.principal_sets,
@@ -65,6 +65,7 @@ def deploy(cfg: StackConfig) -> dict[str, pulumi.Input[object]]:
         "kms_key_version_name": kms_key.key_version_name,
         "wif_provider_name": workload_identity.provider_name,
         "wif_principal_sets": workload_identity.principal_sets,
+        "wif_audience": workload_identity.sts_audience,
         "enclave_service_account": identities.enclave.email,
         "server_service_account": identities.server.email,
         "enclave_ip": network.address.address,
@@ -77,8 +78,10 @@ def deploy(cfg: StackConfig) -> dict[str, pulumi.Input[object]]:
     if cfg.enable_iam_alerts:
         create_iam_change_alert(
             prefix=cfg.prefix,
-            key_name=kms_key.key_name,
-            pool_name=workload_identity.pool.name,
+            key_ring_name=kms_key.key_ring.id,
+            pool_id=workload_identity.pool.workload_identity_pool_id,
+            enclave_sa_email=identities.enclave.email,
+            enclave_sa_unique_id=identities.enclave.unique_id,
             emails=cfg.alert_emails,
         )
 
@@ -101,6 +104,7 @@ def deploy(cfg: StackConfig) -> dict[str, pulumi.Input[object]]:
         allowed_digests=cfg.allowed_digests,
         min_instances=cfg.server_min_instances,
         max_instances=cfg.server_max_instances,
+        depends_on=[identities.server_grants["roles/cloudsql.client"]],
     )
     control_plane_url = cfg.control_plane_url or server.uri
     enclave = create_enclave_vm(
@@ -113,6 +117,13 @@ def deploy(cfg: StackConfig) -> dict[str, pulumi.Input[object]]:
         network=network,
         control_plane_url=control_plane_url,
         kms_key_name=kms_key.key_version_name,
+        wif_audience=workload_identity.sts_audience,
+        # Boot only once the VM can attest and the key can be released.
+        depends_on=[
+            *identities.enclave_grants.values(),
+            workload_identity.provider,
+            key_policy,
+        ],
     )
     outputs.update(
         {

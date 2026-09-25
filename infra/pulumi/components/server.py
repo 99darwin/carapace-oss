@@ -156,6 +156,7 @@ def create_server_service(
     allowed_digests: Sequence[str],
     min_instances: int,
     max_instances: int,
+    depends_on: Sequence[pulumi.Resource] = (),
 ) -> gcp.cloudrunv2.Service:
     image = build_image_reference(image_repository, image_digest)
     plain_env = build_server_env(
@@ -206,6 +207,6 @@ def create_server_service(
             ],
         },
         opts=pulumi.ResourceOptions(
-            depends_on=[database.password_access, database.user]
+            depends_on=[database.password_access, database.user, *depends_on]
         ),
     )

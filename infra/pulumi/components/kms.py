@@ -18,6 +18,7 @@ PUBLIC_KEY_VIEWER_ROLE = "roles/cloudkms.publicKeyViewer"
 # have no automatic rotation, so version 1 stays in use until an operator
 # rotates the key by hand.
 INITIAL_KEY_VERSION = 1
+EMPTY_POLICY = json.dumps({"bindings": []})
 
 
 @dataclass(frozen=True)
@@ -26,6 +27,7 @@ class KmsKey:
     crypto_key: gcp.kms.CryptoKey
     key_name: pulumi.Output[str]
     key_version_name: pulumi.Output[str]
+    key_ring_policy: gcp.kms.KeyRingIAMPolicy
 
 
 def create_kms_key(
@@ -54,6 +56,13 @@ def create_kms_key(
         },
         opts=opts,
     )
+    # Ring-level grants are inherited by the key, so the ring's own policy is
+    # pinned to empty; every key-level grant lives in ``bind_key_policy``.
+    key_ring_policy = gcp.kms.KeyRingIAMPolicy(
+        f"{prefix}-keyring-policy",
+        key_ring_id=key_ring.id,
+        policy_data=EMPTY_POLICY,
+    )
     key_version_name = crypto_key.id.apply(
         lambda key_id: f"{key_id}/cryptoKeyVersions/{INITIAL_KEY_VERSION}"
     )
@@ -62,6 +71,7 @@ def create_kms_key(
         crypto_key=crypto_key,
         key_name=crypto_key.id,
         key_version_name=key_version_name,
+        key_ring_policy=key_ring_policy,
     )
 
 

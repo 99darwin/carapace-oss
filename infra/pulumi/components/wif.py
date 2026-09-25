@@ -1,9 +1,14 @@
 """Workload Identity Federation gate for Confidential Space attestation tokens.
 
-The enclave presents its Confidential Space attestation token to STS through
-this pool. Only tokens meeting every clause of ``build_attribute_condition``
-are exchanged, and KMS decrypt is granted to the resulting ``principalSet`` for
-specific image digests. No service account is impersonated.
+The enclave requests a Confidential Space token whose audience is this
+stack's STS audience (by default the provider's full resource name) and
+presents it to STS through this pool. That audience is the only one the
+provider accepts. Tokens with the launcher's default audience or the
+client-facing ``carapace-attestation`` audience are published by the enclave
+and must never be exchangeable. Only tokens meeting every clause of
+``build_attribute_condition`` are exchanged, and KMS decrypt is granted to the
+resulting ``principalSet`` for specific image digests. No service account is
+impersonated.
 
 Claim names follow Google's Confidential Space token claims reference.
 """
@@ -16,11 +21,14 @@ from dataclasses import dataclass
 import pulumi
 import pulumi_gcp as gcp
 
+from components.config import FORBIDDEN_WIF_AUDIENCES
+
 CONFIDENTIAL_SPACE_ISSUER = "https://confidentialcomputing.googleapis.com"
 REQUIRED_HWMODEL = "GCP_AMD_SEV"
 REQUIRED_SWNAME = "CONFIDENTIAL_SPACE"
 REQUIRED_DBGSTAT = "disabled-since-boot"
 REQUIRED_SUPPORT_ATTRIBUTE = "STABLE"
+PROVIDER_ID = "confidential-space"
 
 # google.subject is limited to 127 bytes; the raw ``sub`` claim (a full GCE
 # instance URL) can exceed that, so use Google's documented compact form.
@@ -40,6 +48,7 @@ class WorkloadIdentity:
     provider: gcp.iam.WorkloadIdentityPoolProvider
     provider_name: pulumi.Output[str]
     principal_sets: pulumi.Output[list[str]]
+    sts_audience: pulumi.Output[str]
 
 
 def _cel_string(value: str) -> str:
@@ -49,13 +58,21 @@ def _cel_string(value: str) -> str:
 
 
 def build_attribute_condition(
-    *, project_id: str, enclave_sa_email: str, allowed_digests: Sequence[str]
+    *,
+    project_id: str,
+    enclave_sa_email: str,
+    allowed_digests: Sequence[str],
+    audience: str,
 ) -> str:
     """Return the CEL condition every attestation token must satisfy."""
     if not allowed_digests:
         raise ValueError("allowed_digests must not be empty")
+    if audience in FORBIDDEN_WIF_AUDIENCES:
+        raise ValueError(f"audience {audience!r} must never be accepted by WIF")
     digests = ", ".join(_cel_string(digest) for digest in allowed_digests)
     clauses = [
+        # ``aud`` is a single string in Confidential Space tokens.
+        f"assertion.aud == {_cel_string(audience)}",
         f"assertion.swname == {_cel_string(REQUIRED_SWNAME)}",
         f"assertion.hwmodel == {_cel_string(REQUIRED_HWMODEL)}",
         f"assertion.dbgstat == {_cel_string(REQUIRED_DBGSTAT)}",
@@ -77,6 +94,14 @@ def build_principal_set(*, project_number: str, pool_id: str, digest: str) -> st
     )
 
 
+def build_provider_audience(*, project_number: str, pool_id: str) -> str:
+    """Default STS audience: the provider's full resource name."""
+    return (
+        f"//iam.googleapis.com/projects/{project_number}/locations/global"
+        f"/workloadIdentityPools/{pool_id}/providers/{PROVIDER_ID}"
+    )
+
+
 def create_workload_identity(
     *,
     prefix: str,
@@ -84,7 +109,7 @@ def create_workload_identity(
     project_number: pulumi.Input[str],
     enclave_sa_email: pulumi.Input[str],
     allowed_digests: Sequence[str],
-    audience: str,
+    audience: str | None,
     depends_on: Sequence[pulumi.Resource] = (),
 ) -> WorkloadIdentity:
     """Create the attestation pool and OIDC provider, in code."""
@@ -96,23 +121,33 @@ def create_workload_identity(
         description="Confidential Space tokens from the Carapace enclave",
         opts=pulumi.ResourceOptions(depends_on=list(depends_on)),
     )
-    condition = pulumi.Output.from_input(enclave_sa_email).apply(
-        lambda email: build_attribute_condition(
+    sts_audience = (
+        pulumi.Output.from_input(audience)
+        if audience
+        else pulumi.Output.from_input(project_number).apply(
+            lambda number: build_provider_audience(
+                project_number=number, pool_id=pool_id
+            )
+        )
+    )
+    condition = pulumi.Output.all(enclave_sa_email, sts_audience).apply(
+        lambda args: build_attribute_condition(
             project_id=project_id,
-            enclave_sa_email=email,
+            enclave_sa_email=args[0],
             allowed_digests=allowed_digests,
+            audience=args[1],
         )
     )
     provider = gcp.iam.WorkloadIdentityPoolProvider(
         f"{prefix}-attestation-provider",
         workload_identity_pool_id=pool.workload_identity_pool_id,
-        workload_identity_pool_provider_id="confidential-space",
+        workload_identity_pool_provider_id=PROVIDER_ID,
         display_name="Confidential Space",
         attribute_mapping=ATTRIBUTE_MAPPING,
         attribute_condition=condition,
         oidc={
             "issuer_uri": CONFIDENTIAL_SPACE_ISSUER,
-            "allowed_audiences": [audience],
+            "allowed_audiences": sts_audience.apply(lambda aud: [aud]),
         },
     )
     # Derived from the pool's output so the key binding waits for the pool.
@@ -129,4 +164,5 @@ def create_workload_identity(
         provider=provider,
         provider_name=provider.name,
         principal_sets=principal_sets,
+        sts_audience=sts_audience,
     )

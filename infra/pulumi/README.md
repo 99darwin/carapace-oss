@@ -14,7 +14,7 @@ their config.
 | `identity.py` | Enclave VM service account and server (Cloud Run) service account |
 | `enclave_vm.py` | A dedicated VPC and subnet, one static external IP, one firewall rule (tcp:443 ingress), and one Confidential Space VM (AMD SEV, Secure Boot) |
 | `server.py` | An Artifact Registry repo, Cloud SQL Postgres 16 (`db-f1-micro`, zonal), a generated DB password in Secret Manager, and a Cloud Run v2 service (min 0 instances) |
-| `monitoring.py` | Optional. A log-match alert on IAM or configuration changes to the KMS key, the WIF pool, or project IAM |
+| `monitoring.py` | Optional. A log-match alert on IAM or configuration changes to the KMS key ring and key, the WIF pool, the enclave service account, or project IAM |
 
 ### Who can decrypt
 
@@ -26,9 +26,34 @@ added by hand. It contains exactly:
   `principalSet://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<prefix>-attest/attribute.image_digest/<digest>`
 - `roles/cloudkms.publicKeyViewer`: the server service account.
 
+The key ring also has an authoritative IAM policy, and that policy has **zero**
+bindings. Ring-level grants would be inherited by the key, so `pulumi up`
+removes any that are added by hand.
+
+### Two audiences
+
+The enclave publishes Confidential Space tokens through `GET /attestation`,
+so a token it hands to clients must never be exchangeable at STS. Two
+audiences keep the two uses apart:
+
+- **STS audience.** The default is the provider's full resource name,
+  `//iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<prefix>-attest/providers/confidential-space`.
+  It is the **only** entry in the provider's `allowedAudiences`, and the CEL
+  condition requires it as well. The stack exports it as `wif_audience`
+  and passes it to the enclave as `WIF_AUDIENCE`. The enclave requests a
+  token with this audience only for the STS exchange and never publishes it.
+- **Client audience.** `carapace-attestation` is used only for the token
+  served by `/attestation`. WIF does not accept it.
+
+`wif_audience` can be overridden with any other stack-specific string. The
+stack refuses `https://sts.googleapis.com`, the audience of the token the
+launcher writes into the container by default, and it refuses
+`carapace-attestation`.
+
 The WIF provider accepts a token only if **all** of the following hold:
 
 ```
+assertion.aud == '<STS audience>'
 assertion.swname == 'CONFIDENTIAL_SPACE'
 assertion.hwmodel == 'GCP_AMD_SEV'
 assertion.dbgstat == 'disabled-since-boot'
@@ -42,6 +67,14 @@ assertion.submods.gce.project_id == '<this project>'
 The last two clauses pin the token to this project's VM. The enclave image is
 public, so without them anyone could run the same image in their own project
 and present a valid token.
+
+`hwmodel == GCP_AMD_SEV` means the VM is an AMD SEV Confidential VM. SEV
+encrypts guest memory, but it does **not** provide SNP's integrity protection
+or SNP hardware attestation reports. The Confidential Space token is rooted in
+the VM's vTPM measured boot, which Google attests. The trusted computing base
+therefore includes AMD SEV, Google's vTPM and Shielded VM firmware, and the
+Confidential Space image. This stack does not use SEV-SNP (see
+[Open questions](#open-questions)).
 
 The enclave VM's service account has only `logging.logWriter`,
 `artifactregistry.reader` and `confidentialcomputing.workloadUser`. It has **no
@@ -82,8 +115,8 @@ pulumi config set deploy_workloads false && pulumi up
 pulumi config set deploy_workloads true && pulumi up
 ```
 
-The outputs include `enclave_url`, `server_url`, `kms_key_version_name` and
-`wif_provider_name`. `carapace verify` checks the enclave against these values.
+The outputs include `enclave_url`, `server_url`, `kms_key_version_name`,
+`wif_provider_name` and `wif_audience`. `carapace verify` checks the enclave against these values.
 
 ### Config keys
 
@@ -91,14 +124,14 @@ The outputs include `enclave_url`, `server_url`, `kms_key_version_name` and
 |---|---|---|
 | `gcp:project` | required | |
 | `gcp:region` / `gcp:zone` | `us-central1` / `<region>-a` | Pick a zone that offers N2D Confidential VMs |
-| `prefix` | `carapace` | 3–20 chars. Every resource name is derived from it |
+| `prefix` | `carapace` | 3–20 chars. Every resource name is derived from it. Use a new prefix to redeploy after a destroy (see below) |
 | `allowed_digests` | required | List of `sha256:…`. Each digest gets one decrypter binding |
 | `enclave_image_digest` | required* | Must appear in `allowed_digests`. Tags are refused |
 | `server_image_digest` | required* | Tags are refused |
 | `image_registry` | this stack's AR repo | Images are `<registry>/enclave@…` and `<registry>/server@…` |
 | `deploy_workloads` | `true` | `false` skips the VM and Cloud Run (*digests are then optional) |
 | `control_plane_url` | Cloud Run URL | Passed to the enclave as `CONTROL_PLANE_URL` |
-| `wif_audience` | `https://sts.googleapis.com` | Allowed audience on the WIF provider |
+| `wif_audience` | provider resource name | The only audience WIF accepts. Must be stack-specific. `https://sts.googleapis.com` and `carapace-attestation` are refused |
 | `enclave_machine_type` | `n2d-standard-2` | Must support AMD SEV |
 | `db_tier` | `db-f1-micro` | |
 | `server_min_instances` / `server_max_instances` | `0` / `2` | |
@@ -116,9 +149,38 @@ The outputs include `enclave_url`, `server_url`, `kms_key_version_name` and
    downtime.
 3. Remove the old digest from `allowed_digests` and run `pulumi up`.
 
-The enclave receives exactly two environment overrides, `CONTROL_PLANE_URL`
-and `KMS_KEY_NAME` (the key **version** resource name). The image's launch
-policy must allow these two and nothing else.
+The enclave receives exactly three environment overrides:
+`CONTROL_PLANE_URL`, `KMS_KEY_NAME` (the key **version** resource name) and
+`WIF_AUDIENCE` (the STS audience). The image's launch policy must allow these
+three and nothing else.
+
+The VM also sets `tee-container-log-redirect=true`. This sends the
+container's stdout and stderr to Cloud Logging, and it is the only reason the
+VM service account holds `logging.logWriter`. The image's launch policy must
+allow log redirect. The enclave never logs secrets, and its logs go to the
+self-hoster's own project.
+
+### Confidential Space image support
+
+The boot disk is resolved from the latest image in the
+`confidential-space` family of `confidential-space-images` each time
+`pulumi up` runs. The WIF condition requires the `STABLE` support attribute.
+Google publishes new images regularly and ends support for old ones; an image
+that has aged out carries only `USABLE`, or nothing. Google does not publish a
+fixed cadence. A VM keeps running its boot image, so a long-lived VM
+eventually stops being able to decrypt. Run `pulumi up` periodically (monthly
+is a reasonable interval). When the family has moved on, the image change
+recreates the VM on the current image, which costs a few minutes of enclave
+downtime.
+
+### Destroy and redeploy
+
+- KMS key rings and keys can't be deleted. `pulumi destroy` only schedules
+  the key version for destruction and leaves the key ring name taken.
+- WIF pools and providers are soft-deleted and keep their IDs for 30 days.
+
+A redeploy into the same project within that window therefore needs a new
+`prefix`.
 
 ## Cost estimate (us-central1, list prices)
 
@@ -145,6 +207,11 @@ database still bill while the VM is stopped.
 - No budget alerts, org policies, or VPC Service Controls.
 - No idle-stop scheduler for the VM.
 - No backups beyond Cloud SQL's default automated backups.
+- No private IP for Cloud SQL. The instance has a public IP but **no
+  authorized networks**, so it accepts only connections through the Cloud SQL
+  Auth Proxy or connectors, which require IAM (`cloudsql.client`). This is an
+  accepted trade-off: it avoids private services access and a VPC connector,
+  and the database holds only envelope ciphertext.
 
 ## Residual risk
 
@@ -152,6 +219,12 @@ A project owner can still change IAM on the key or loosen the WIF condition.
 Such changes appear in Cloud Audit Logs (Admin Activity, always on). Set
 `enable_iam_alerts` to get an alert within minutes. For self-hosters, the
 project owner is you.
+
+## Open questions
+
+- **SEV-SNP.** Google's Confidential Space token claims reference does not
+  yet list an `hwmodel` value for SEV-SNP. Once one is confirmed, add an option that sets `confidentialInstanceType = SEV_SNP` and
+  requires that `hwmodel` in the WIF condition.
 
 ## Tests
 

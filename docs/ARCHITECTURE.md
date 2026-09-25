@@ -25,9 +25,17 @@ ENCLAVE     ──WIF principalSet(image_digest)──────────�
   protection level `HSM`.
 - `roles/cloudkms.cryptoKeyDecrypter` is granted **only** to a Workload
   Identity Federation `principalSet` keyed on the enclave image digest. The
-  WIF provider condition requires `hwmodel == GCP_AMD_SEV`,
-  `swname == CONFIDENTIAL_SPACE`, `dbgstat == disabled-since-boot`, and
-  `secboot == true`.
+  WIF provider condition requires the stack's STS audience,
+  `hwmodel == GCP_AMD_SEV`, `swname == CONFIDENTIAL_SPACE`,
+  `dbgstat == disabled-since-boot`, `secboot == true`, a `STABLE` launcher
+  image, an allowed image digest, this project, and the enclave service
+  account.
+- `GCP_AMD_SEV` means AMD SEV memory encryption, not SEV-SNP. The token is
+  rooted in the VM's vTPM measured boot, which Google attests. AMD SEV,
+  Google's vTPM and Shielded VM firmware, and the Confidential Space image are
+  therefore in the TCB. SEV-SNP is an open question until Google documents its
+  `hwmodel` claim.
+- The key ring's IAM policy is authoritative and empty.
 - The server's service account holds only `roles/cloudkms.publicKeyViewer`.
 - No service account attached to the VM has KMS permissions, and the enclave
   has no fallback to ambient credentials.
@@ -52,6 +60,20 @@ At boot the enclave generates a TLS key pair and an Ed25519 receipt key, then
 requests a Confidential Space token with
 `eat_nonce = sha256(tls_spki_der || receipt_pubkey)`. `GET /attestation`
 returns the token, TLS certificate, receipt public key, and KMS public key.
+
+Tokens use two audiences, and WIF accepts only one of them:
+
+- The **client token** served by `/attestation` has audience
+  `carapace-attestation`. Anyone can fetch it, so WIF must never accept it.
+- The **STS token** has the stack-specific audience in `WIF_AUDIENCE`. By
+  default that is the WIF provider's full resource name. It is the only entry
+  in the provider's `allowedAudiences`, and the provider condition requires
+  `assertion.aud` to equal it. The enclave uses this token only for the STS
+  exchange and never publishes it.
+
+The launcher also writes a default token with audience
+`https://sts.googleapis.com` into the container. It is not tied to this stack,
+so it is never an allowed audience.
 
 `carapace verify`:
 

@@ -15,7 +15,14 @@ DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 # Short enough that every derived ID stays within GCP limits (service account
 # IDs max 30 chars, WIF pool/provider IDs max 32 chars).
 PREFIX_PATTERN = re.compile(r"^[a-z][a-z0-9-]{1,18}[a-z0-9]$")
-DEFAULT_WIF_AUDIENCE = "https://sts.googleapis.com"
+# The launcher's default token audience. Never accepted by WIF: the enclave
+# publishes tokens, so an accepted default audience would let anyone holding a
+# published token exchange it for decrypt access.
+LAUNCHER_DEFAULT_AUDIENCE = "https://sts.googleapis.com"
+# Audience of the client-facing token served at GET /attestation. Never
+# accepted by WIF, for the same reason.
+ATTESTATION_AUDIENCE = "carapace-attestation"
+FORBIDDEN_WIF_AUDIENCES = frozenset({LAUNCHER_DEFAULT_AUDIENCE, ATTESTATION_AUDIENCE})
 
 
 class ConfigError(ValueError):
@@ -61,7 +68,8 @@ class StackConfig:
     enclave_image_digest: str
     server_image_digest: str
     image_registry: str | None = None
-    wif_audience: str = DEFAULT_WIF_AUDIENCE
+    # None derives the provider resource name, which is stack-specific.
+    wif_audience: str | None = None
     control_plane_url: str | None = None
     enclave_machine_type: str = "n2d-standard-2"
     db_tier: str = "db-f1-micro"
@@ -101,6 +109,13 @@ class StackConfig:
             raise ConfigError("server_min_instances must be >= 0")
         if self.server_max_instances < max(1, self.server_min_instances):
             raise ConfigError("server_max_instances must be >= min and >= 1")
+        if self.wif_audience is not None and (
+            not self.wif_audience or self.wif_audience in FORBIDDEN_WIF_AUDIENCES
+        ):
+            raise ConfigError(
+                f"wif_audience {self.wif_audience!r} is not allowed; it must be "
+                "stack-specific and never a published token's audience"
+            )
         if self.enable_iam_alerts and not self.alert_emails:
             raise ConfigError("enable_iam_alerts requires alert_emails")
 
@@ -119,7 +134,7 @@ def load_config() -> StackConfig:
         enclave_image_digest=cfg.get("enclave_image_digest") or "",
         server_image_digest=cfg.get("server_image_digest") or "",
         image_registry=cfg.get("image_registry"),
-        wif_audience=cfg.get("wif_audience") or DEFAULT_WIF_AUDIENCE,
+        wif_audience=cfg.get("wif_audience"),
         control_plane_url=cfg.get("control_plane_url"),
         enclave_machine_type=cfg.get("enclave_machine_type") or "n2d-standard-2",
         db_tier=cfg.get("db_tier") or "db-f1-micro",

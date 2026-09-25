@@ -7,6 +7,10 @@ pytest.importorskip("pulumi_gcp")
 from components.config import ConfigError, build_image_reference  # noqa: E402
 from components.enclave_vm import build_enclave_metadata  # noqa: E402
 from components.kms import build_key_policy  # noqa: E402
+from components.wif import (  # noqa: E402
+    build_attribute_condition,
+    build_provider_audience,
+)
 from harness import DIGEST_A, DIGEST_B, make_config  # noqa: E402
 
 REPO = "us-docker.pkg.dev/example-project/carapace/enclave"
@@ -75,3 +79,31 @@ def test_config_alerts_require_recipients() -> None:
 def test_key_policy_refuses_non_principal_set_decrypter() -> None:
     with pytest.raises(ValueError, match="principalSet"):
         build_key_policy(["serviceAccount:x@example.com"], [])
+
+
+@pytest.mark.parametrize(
+    "audience", ["", "https://sts.googleapis.com", "carapace-attestation"]
+)
+def test_config_rejects_exchangeable_public_audiences(audience: str) -> None:
+    with pytest.raises(ConfigError):
+        make_config(wif_audience=audience)
+
+
+@pytest.mark.parametrize(
+    "audience", ["https://sts.googleapis.com", "carapace-attestation"]
+)
+def test_attribute_condition_refuses_public_audiences(audience: str) -> None:
+    with pytest.raises(ValueError, match="never be accepted"):
+        build_attribute_condition(
+            project_id="example-project",
+            enclave_sa_email="e@example-project.iam.gserviceaccount.com",
+            allowed_digests=["sha256:" + "a" * 64],
+            audience=audience,
+        )
+
+
+def test_provider_audience_is_the_provider_resource_name() -> None:
+    assert build_provider_audience(project_number="42", pool_id="p-attest") == (
+        "//iam.googleapis.com/projects/42/locations/global"
+        "/workloadIdentityPools/p-attest/providers/confidential-space"
+    )

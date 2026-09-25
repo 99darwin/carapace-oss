@@ -15,6 +15,12 @@ DIGEST_A = "sha256:" + "a" * 64
 DIGEST_B = "sha256:" + "b" * 64
 STATIC_IP = "203.0.113.10"
 GET_PROJECT_TOKEN = "gcp:organizations/getProject:getProject"  # noqa: S105
+GET_IMAGE_TOKEN = "gcp:compute/getImage:getImage"  # noqa: S105
+ENCLAVE_SA_UNIQUE_ID = "104200000000000000001"
+CONFIDENTIAL_SPACE_IMAGE = (
+    "https://www.googleapis.com/compute/v1/projects/confidential-space-images"
+    "/global/images/confidential-space-251000"
+)
 
 
 @dataclass(frozen=True)
@@ -38,6 +44,12 @@ class RecordingMocks(pulumi.runtime.Mocks):
     def call(self, args: pulumi.runtime.MockCallArgs):
         if args.token == GET_PROJECT_TOKEN:
             return {"number": PROJECT_NUMBER, "projectId": PROJECT_ID}
+        if args.token == GET_IMAGE_TOKEN:
+            return {
+                "selfLink": CONFIDENTIAL_SPACE_IMAGE,
+                "family": args.args.get("family"),
+                "project": args.args.get("project"),
+            }
         return {}
 
     def of_type(self, typ: str) -> list[Recorded]:
@@ -54,7 +66,8 @@ def _computed_state(typ: str, inputs: dict) -> dict:
     pool_path = f"projects/{PROJECT_NUMBER}/locations/global/workloadIdentityPools"
     computed = {
         "gcp:serviceaccount/account:Account": lambda: {
-            "email": f"{inputs['accountId']}@{PROJECT_ID}.iam.gserviceaccount.com"
+            "email": f"{inputs['accountId']}@{PROJECT_ID}.iam.gserviceaccount.com",
+            "uniqueId": ENCLAVE_SA_UNIQUE_ID,
         },
         "gcp:kms/keyRing:KeyRing": lambda: {
             "id": f"{location}/keyRings/{inputs['name']}"

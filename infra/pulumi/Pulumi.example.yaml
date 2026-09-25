@@ -16,7 +16,9 @@ config:
   # carapace:image_registry: us-central1-docker.pkg.dev/your-gcp-project-id/carapace
   # carapace:deploy_workloads: "true"      # "false" = bootstrap without VM/Cloud Run
   # carapace:control_plane_url: https://api.example.com   # default: Cloud Run URL
-  # carapace:wif_audience: https://sts.googleapis.com
+  # STS audience, the only one WIF accepts. Default: the provider's resource name.
+  # https://sts.googleapis.com and carapace-attestation are refused.
+  # carapace:wif_audience: carapace-sts-your-stack
   # carapace:enclave_machine_type: n2d-standard-2
   # carapace:db_tier: db-f1-micro
   # carapace:server_min_instances: "0"
