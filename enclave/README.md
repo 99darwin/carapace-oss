@@ -6,8 +6,13 @@ The code that runs inside the Confidential Space VM.
   validates an agent's HTTP request against a secret's injection policy,
   resolves DNS once and connects to the pinned public IP, injects the secret,
   and redacts it from the response.
-
-Attestation, KMS unwrapping, the HTTP server, and receipts land in later PRs.
+- `carapace_enclave.attestation`: Confidential Space tokens from the
+  launcher, the per-boot identity, and KMS unwrapping through Workload
+  Identity Federation.
+- `carapace_enclave.broker` and `carapace_enclave.server`: the attested HTTPS
+  server and the credential broker that checks each agent request against
+  the owner-signed grant and policy.
+- `carapace_enclave.receipts`: the per-boot signed receipt chain.
 
 ## Reproducible image
 
@@ -99,6 +104,7 @@ attestations), and the signature is on the linux/amd64 manifest inside it.
 Check that the manifest's `tag` is the tag you asked for, so one release's
 manifest cannot be served in place of another's.
 
-The entrypoint is `python3 -m carapace_enclave`. The attested HTTPS server
-(`carapace_enclave/__main__.py`) lands in a later PR. Until then the image
-builds but exits at start.
+The entrypoint is `python3 -m carapace_enclave` (`carapace_enclave/__main__.py`).
+It boots the attested HTTPS server on port 8443, and it exits at start if the
+Confidential Space launcher socket is absent, so the image does nothing
+outside Confidential Space.
