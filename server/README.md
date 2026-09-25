@@ -1,7 +1,7 @@
 # carapace-server
 
-Control-plane API: accounts, sessions, owner keys, the ciphertext store
-and API keys.
+Control-plane API: accounts, sessions, owner keys, the ciphertext store, API
+keys, and the attested enclave API with its receipt log.
 
 The server is **untrusted** by design. It never sees plaintext secrets, holds
 no KMS decrypt rights, and is not on the agent-to-enclave data path.
@@ -23,6 +23,9 @@ The default mode is `prod`, which refuses to start unless these are set:
 | `CARAPACE_DATABASE_URL` | `postgresql+asyncpg://...` (SQLite rejected) |
 | `CARAPACE_PUBLIC_URL` | `https://...`; also the passkey RP origin |
 | `CARAPACE_JWT_SECRET` | at least 32 characters |
+| `CARAPACE_ALLOWED_IMAGE_DIGESTS` | comma list of `sha256:<hex>` enclave images |
+| `CARAPACE_ATTESTATION_PROJECT_ID` | GCP project the enclave VMs run in |
+| `CARAPACE_ATTESTATION_SERVICE_ACCOUNT` | the enclave VMs' service account |
 
 Behind a reverse proxy, run uvicorn with `--proxy-headers` and
 `--forwarded-allow-ips` set to the proxy address so rate limits key on the
@@ -94,8 +97,69 @@ owner-signed objects, but cannot forge one.
   scope included: the enclave decides from the signed grant and can only
   record a tombstone in its monotonic cache if it is served one.
 
+## Enclave API (`/internal/*`)
+
+Enclaves authenticate with a Confidential Space OIDC token whose audience is
+`CARAPACE_PUBLIC_URL`. Google's signing keys are found via OIDC discovery and
+cached for an hour (refetched early for an unknown `kid`, at most once a
+minute). A token is accepted only with RS256, the right `iss`/`aud`, a live
+`exp`, `swname=CONFIDENTIAL_SPACE`, an allowed `hwmodel`,
+`dbgstat=disabled-since-boot`, `secboot=true`, `STABLE` support, an allowed
+image digest, and the configured project and service account. These mirror
+the KMS key-release policy, so the server never trusts an enclave the KMS
+would not.
+
+`CARAPACE_ATTESTATION_ISSUER=mock://local` plus
+`CARAPACE_MOCK_ATTESTATION_PUBLIC_KEY_PEM` enables a local mock enclave. Both
+config and the verifier refuse it outside `dev`.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /internal/boots` | register `{receipt_pubkey, tls_cert_pem}`; `eat_nonce` must equal `sha256(tls_spki_der ‖ receipt_pubkey)` |
+| `GET /internal/secrets/{id}` | ciphertext envelope |
+| `POST /internal/keys/verify` | `{key_hash, secret_id}` → `{allowed}` |
+| `POST /internal/receipts` | append a batch of signed receipts |
+
+All but the first require a registered boot (403 otherwise) and a request
+signature from its receipt key (401 otherwise). Owners can read boots'
+attestation tokens from `/v1/receipts`, so a token alone must not unlock
+anything:
+
+```
+message = "carapace-internal-v1\n" METHOD "\n" PATH[?QUERY] "\n"
+          TIMESTAMP "\n" hex(sha256(body))
+X-Carapace-Timestamp: unix seconds (±60 s)
+X-Carapace-Signature: base64(Ed25519(receipt_key, message))
+```
+
+### Receipts
+
+Each boot keeps one hash chain, signed with the Ed25519 key it registered:
+
+```
+signed = canonical_json({"boot_id", "seq", "prev_hash", "payload"})
+hash   = sha256(signed).hex()
+sig    = Ed25519(receipt_key, signed)     # base64, 64 bytes
+```
+
+`boot_id` is the boot's `eat_nonce` (hex). The first receipt has `seq` 0 and
+`prev_hash` of 64 zeros. Ingest checks the signature and continuity of every
+receipt and stores the batch atomically; unsigned receipts, gaps and forks
+are rejected. Re-sending an already stored receipt is a no-op, so retries
+are safe.
+
+`GET /v1/receipts?secret_id=&cursor=&limit=` returns an owner's receipts
+verbatim, with the boots (attestation token, TLS cert, receipt key) needed to
+verify them offline. A receipt belongs to the owner of `payload.secret_id`;
+if that secret has been deleted, the signed `payload.owner_id` is used.
+Payloads are capped at 16 KiB of canonical JSON.
+
 ## Known limitations
 
 - Registering an existing email returns 400, which reveals the account
   exists. Closing this requires email verification, which is out of scope.
 - In-process rate limits are per replica.
+- A captured signed `/internal` request can be replayed within its 60 s
+  window. This requires breaking TLS to the server; there is no nonce store.
+- A boot's chain holds every owner's receipts, so an owner sees `seq` gaps
+  and cannot prove on their own that nothing was withheld between them.

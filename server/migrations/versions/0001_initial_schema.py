@@ -17,6 +17,8 @@ depends_on: str | Sequence[str] | None = None
 
 
 TABLES_IN_DROP_ORDER = (
+    "receipts",
+    "enclave_boots",
     "api_key_secrets",
     "api_keys",
     "secrets",
@@ -164,6 +166,34 @@ def upgrade() -> None:
             primary_key=True,
             index=True,
         ),
+    )
+    op.create_table(
+        "enclave_boots",
+        sa.Column("boot_id", sa.String(64), primary_key=True),
+        sa.Column("attestation_token", sa.Text(), nullable=False),
+        sa.Column("receipt_pubkey", sa.LargeBinary(32), nullable=False),
+        sa.Column("tls_cert_pem", sa.Text(), nullable=False),
+        sa.Column("image_digest", sa.String(71), nullable=False),
+        _ts("first_seen"),
+    )
+    op.create_table(
+        "receipts",
+        _id(),
+        sa.Column(
+            "boot_id",
+            sa.String(64),
+            sa.ForeignKey("enclave_boots.boot_id"),
+            nullable=False,
+        ),
+        sa.Column("seq", sa.BigInteger(), nullable=False),
+        sa.Column("prev_hash", sa.String(64), nullable=False),
+        sa.Column("hash", sa.String(64), nullable=False),
+        sa.Column("payload", sa.JSON(), nullable=False),
+        sa.Column("signature", sa.LargeBinary(64), nullable=False),
+        sa.Column("secret_id", sa.Uuid(), index=True),
+        sa.Column("owner_id", sa.Uuid(), index=True),
+        _ts("received_at"),
+        sa.UniqueConstraint("boot_id", "seq", name="uq_receipts_boot_id"),
     )
 
 

@@ -8,18 +8,35 @@ per-process JWT secret, so no secret value ever lives in source.
 
 from __future__ import annotations
 
+import re
 import secrets
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 
-from pydantic import Field, SecretStr, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 MIN_JWT_SECRET_LENGTH = 32
 MIN_PROD_BCRYPT_ROUNDS = 12
 DEV_DATABASE_URL = "sqlite+aiosqlite:///./carapace-local.db"
 DEV_PUBLIC_URL = "http://localhost:8000"
+
+GOOGLE_ATTESTATION_ISSUER = "https://confidentialcomputing.googleapis.com"
+# Local mock enclave only. Never accepted outside dev mode.
+MOCK_ATTESTATION_ISSUER = "mock://local"
+IMAGE_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+CommaList = Annotated[list[str], NoDecode]
+
+PROD_REQUIRED_SETTINGS = (
+    "database_url",
+    "public_url",
+    "jwt_secret",
+    "allowed_image_digests",
+    "attestation_project_id",
+    "attestation_service_account",
+)
 
 
 class ConfigError(ValueError):
@@ -47,11 +64,38 @@ class Settings(BaseSettings):
     # Browser origin for passkey ceremonies; defaults to public_url.
     webauthn_origin: str | None = None
 
+    # Enclave attestation (Confidential Space tokens on /internal/*). The
+    # expected audience is public_url.
+    attestation_issuer: str = GOOGLE_ATTESTATION_ISSUER
+    allowed_image_digests: CommaList = Field(default_factory=list)
+    allowed_hwmodels: CommaList = Field(default_factory=lambda: ["GCP_AMD_SEV"])
+    # Pin tokens to one GCP project and enclave service account; the enclave
+    # image is public, so anyone could otherwise run it and attest.
+    attestation_project_id: str | None = None
+    attestation_service_account: str | None = None
+    mock_attestation_public_key_pem: str | None = None
+
     rate_limit_enabled: bool = True
     cleanup_interval_seconds: int = Field(default=3600, ge=10)
 
+    @field_validator("allowed_image_digests", "allowed_hwmodels", mode="before")
+    @classmethod
+    def _split_commas(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("allowed_image_digests")
+    @classmethod
+    def _check_digests(cls, value: list[str]) -> list[str]:
+        bad = [d for d in value if not IMAGE_DIGEST_PATTERN.match(d)]
+        if bad:
+            raise ConfigError(f"image digests must be sha256:<64 hex>: {bad}")
+        return value
+
     @model_validator(mode="after")
     def _apply_mode(self) -> Settings:
+        self._check_attestation_issuer()
         if self.mode == "dev":
             self._fill_dev_defaults()
         else:
@@ -68,12 +112,17 @@ class Settings(BaseSettings):
         if self.jwt_secret is None:
             self.jwt_secret = SecretStr(secrets.token_urlsafe(48))
 
+    def _check_attestation_issuer(self) -> None:
+        is_mock = self.attestation_issuer == MOCK_ATTESTATION_ISSUER
+        if not is_mock and self.attestation_issuer != GOOGLE_ATTESTATION_ISSUER:
+            raise ConfigError("unsupported attestation_issuer")
+        if self.mode != "dev" and (is_mock or self.mock_attestation_public_key_pem):
+            raise ConfigError("the mock attestation issuer is only allowed in dev")
+        if is_mock and not self.mock_attestation_public_key_pem:
+            raise ConfigError("mock issuer requires mock_attestation_public_key_pem")
+
     def _require_prod_settings(self) -> None:
-        missing = [
-            name
-            for name in ("database_url", "public_url", "jwt_secret")
-            if getattr(self, name) is None
-        ]
+        missing = [name for name in PROD_REQUIRED_SETTINGS if not getattr(self, name)]
         if missing:
             env = ", ".join(f"CARAPACE_{m.upper()}" for m in missing)
             raise ConfigError(f"prod mode requires {env}")

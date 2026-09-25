@@ -52,6 +52,7 @@ async def test_register_rejects_weak_passwords(
         "/v1/auth/register", json={"email": "weak@example.com", "password": password}
     )
     assert response.status_code == 422
+    assert password not in response.text
 
 
 async def test_register_requires_password(client: httpx.AsyncClient) -> None:
