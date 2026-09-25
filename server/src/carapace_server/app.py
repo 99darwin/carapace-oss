@@ -23,6 +23,7 @@ from carapace_server.attestation import AttestationVerifier
 from carapace_server.auth.router import router as auth_router
 from carapace_server.auth.service import dummy_password_hash, purge_expired_auth_rows
 from carapace_server.auth.tokens import purge_expired_blacklist
+from carapace_server.bodylimit import BodySizeLimitMiddleware
 from carapace_server.config import Settings, get_settings
 from carapace_server.db import create_engine, create_sessionmaker
 from carapace_server.internal.router import router as internal_router
@@ -108,6 +109,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     app.add_exception_handler(RequestValidationError, _validation_error)
+    app.add_middleware(
+        BodySizeLimitMiddleware, max_bytes=settings.max_request_body_bytes
+    )
     app.state.attestation_verifier = AttestationVerifier(settings)
     routers = (
         auth_router,
