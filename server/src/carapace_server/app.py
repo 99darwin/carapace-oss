@@ -19,14 +19,17 @@ from slowapi.errors import RateLimitExceeded
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from carapace_server.apikeys.router import router as api_keys_router
+from carapace_server.attestation import AttestationVerifier
 from carapace_server.auth.router import router as auth_router
 from carapace_server.auth.service import dummy_password_hash, purge_expired_auth_rows
 from carapace_server.auth.tokens import purge_expired_blacklist
 from carapace_server.bodylimit import BodySizeLimitMiddleware
 from carapace_server.config import Settings, get_settings
 from carapace_server.db import create_engine, create_sessionmaker
+from carapace_server.internal.router import router as internal_router
 from carapace_server.ownerkeys.router import router as owner_keys_router
 from carapace_server.ratelimit import limiter
+from carapace_server.receipts.router import router as receipts_router
 from carapace_server.store.router import router as secrets_router
 
 logger = logging.getLogger(__name__)
@@ -109,7 +112,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.add_middleware(
         BodySizeLimitMiddleware, max_bytes=settings.max_request_body_bytes
     )
-    for router in (auth_router, owner_keys_router, secrets_router, api_keys_router):
+    app.state.attestation_verifier = AttestationVerifier(settings)
+    routers = (
+        auth_router,
+        owner_keys_router,
+        secrets_router,
+        api_keys_router,
+        receipts_router,
+        internal_router,
+    )
+    for router in routers:
         app.include_router(router)
 
     @app.get("/healthz", include_in_schema=False)
