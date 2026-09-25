@@ -4,9 +4,15 @@ import pytest
 
 pytest.importorskip("pulumi_gcp")
 
-from components.config import ConfigError, build_image_reference  # noqa: E402
+from components.config import (  # noqa: E402
+    ConfigError,
+    StackConfig,
+    build_image_reference,
+    validate_control_plane_url,
+)
 from components.enclave_vm import build_enclave_metadata  # noqa: E402
 from components.kms import build_key_policy  # noqa: E402
+from components.server import build_database_url, build_server_url  # noqa: E402
 from components.wif import (  # noqa: E402
     build_attribute_condition,
     build_provider_audience,
@@ -99,6 +105,18 @@ def test_attribute_condition_refuses_public_audiences(audience: str) -> None:
             enclave_sa_email="e@example-project.iam.gserviceaccount.com",
             allowed_digests=["sha256:" + "a" * 64],
             audience=audience,
+            control_plane_url="https://api.example.com",
+        )
+
+
+def test_attribute_condition_requires_a_control_plane_url() -> None:
+    with pytest.raises(ValueError, match="control_plane_url"):
+        build_attribute_condition(
+            project_id="example-project",
+            enclave_sa_email="e@example-project.iam.gserviceaccount.com",
+            allowed_digests=["sha256:" + "a" * 64],
+            audience="carapace-sts-test",
+            control_plane_url="",
         )
 
 
@@ -107,3 +125,49 @@ def test_provider_audience_is_the_provider_resource_name() -> None:
         "//iam.googleapis.com/projects/42/locations/global"
         "/workloadIdentityPools/p-attest/providers/confidential-space"
     )
+
+
+def test_iam_alerts_are_on_by_default() -> None:
+    assert StackConfig.__dataclass_fields__["enable_iam_alerts"].default is True
+    with pytest.raises(ConfigError, match="alert_emails"):
+        make_config(alert_emails=[])
+    assert make_config(enable_iam_alerts=False, alert_emails=[])
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://api.example.com",
+        "https://api.example.com/",
+        "https://api.example.com/v1",
+        "https://API.example.com",
+        "https://user@api.example.com",
+        "https://api.example.com?x=1",
+        "https://api.example.com'",
+        "",
+    ],
+)
+def test_config_rejects_non_origin_control_plane_url(url: str) -> None:
+    with pytest.raises(ConfigError, match="control_plane_url"):
+        make_config(control_plane_url=url)
+
+
+@pytest.mark.parametrize(
+    "url", ["https://api.example.com", "https://api.example.com:8443"]
+)
+def test_config_accepts_bare_https_origin(url: str) -> None:
+    assert validate_control_plane_url(url) == url
+    assert make_config(control_plane_url=url).control_plane_url == url
+
+
+def test_database_url_uses_the_cloud_sql_socket_and_quotes_the_password() -> None:
+    url = build_database_url(password="p@ss/w:rd", connection_name="p:r:i")
+    assert url == (
+        "postgresql+asyncpg://carapace:p%40ss%2Fw%3Ard@/carapace?host=/cloudsql/p:r:i"
+    )
+
+
+def test_server_url_is_cloud_runs_deterministic_url() -> None:
+    assert build_server_url(
+        service_name="carapace-server", project_number="42", region="us-central1"
+    ) == ("https://carapace-server-42.us-central1.run.app")

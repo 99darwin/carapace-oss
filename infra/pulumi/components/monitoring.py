@@ -1,8 +1,10 @@
-"""Optional alerting on changes that could widen who can decrypt.
+"""Alerting on changes that could widen who can decrypt (on by default).
 
 The residual risk in the threat model is a project owner changing KMS IAM or
 loosening the WIF gate. Both are Admin Activity audit log entries (always on),
-so a log-match alert makes such a change visible within minutes.
+so a log-match alert makes such a change visible within minutes. Decrypt
+calls are Data Access entries, which the stack turns on for Cloud KMS; the
+alert also fires on a decrypt by anyone other than the attested enclave.
 """
 
 from __future__ import annotations
@@ -44,11 +46,30 @@ def build_alert_filter(
         f' AND (protoPayload.resourceName:"serviceAccounts/{enclave_sa_email}"'
         f' OR protoPayload.resourceName:"serviceAccounts/{enclave_sa_unique_id}")'
     )
+    # Also catches a change to the project's audit config (for example turning
+    # off the KMS Data Access logs), which is written through SetIamPolicy.
     project_iam_change = (
         'protoPayload.serviceName="cloudresourcemanager.googleapis.com"'
         ' AND protoPayload.methodName="SetIamPolicy"'
     )
-    clauses = (kms_change, wif_change, enclave_sa_change, project_iam_change)
+    # A Data Access entry (see kms.enable_kms_data_access_logs). The enclave
+    # decrypts as a federated principal of the attestation pool; any other
+    # caller, allowed or denied, is suspicious. An entry without a principal
+    # subject also matches, which errs towards alerting.
+    foreign_decrypt = (
+        'protoPayload.serviceName="cloudkms.googleapis.com"'
+        ' AND protoPayload.methodName="AsymmetricDecrypt"'
+        f' AND protoPayload.resourceName:"{key_ring_name}"'
+        " AND NOT protoPayload.authenticationInfo.principalSubject:"
+        f'"/workloadIdentityPools/{pool_id}/"'
+    )
+    clauses = (
+        kms_change,
+        wif_change,
+        enclave_sa_change,
+        project_iam_change,
+        foreign_decrypt,
+    )
     return " OR ".join(f"({clause})" for clause in clauses)
 
 
@@ -99,7 +120,8 @@ def create_iam_change_alert(
             "content": (
                 "Someone changed IAM or configuration on the Carapace KMS key "
                 "ring, the attestation WIF pool, the enclave service account, "
-                "or project IAM. Confirm the change "
+                "or project IAM, or a principal other than the attested "
+                "enclave called AsymmetricDecrypt on the key. Confirm it "
                 "was intended; an unexpected decrypter grant defeats the "
                 "attestation gate."
             ),

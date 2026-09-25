@@ -15,7 +15,9 @@ config:
   # are pulled as <image_registry>/enclave@<digest> and <image_registry>/server@<digest>.
   # carapace:image_registry: us-central1-docker.pkg.dev/your-gcp-project-id/carapace
   # carapace:deploy_workloads: "true"      # "false" = bootstrap without VM/Cloud Run
-  # carapace:control_plane_url: https://api.example.com   # default: Cloud Run URL
+  # Bare https origin, no path. Also the server's public URL and pinned in the
+  # WIF condition. Default: https://<prefix>-server-<project number>.<region>.run.app
+  # carapace:control_plane_url: https://api.example.com
   # STS audience, the only one WIF accepts. Default: the provider's resource name.
   # https://sts.googleapis.com and carapace-attestation are refused.
   # carapace:wif_audience: carapace-sts-your-stack
@@ -25,6 +27,8 @@ config:
   # carapace:server_max_instances: "2"
   # carapace:protect_kms_key: "true"
   # carapace:db_deletion_protection: "true"
-  # carapace:enable_iam_alerts: "true"
-  # carapace:alert_emails:
-  #   - security@example.com
+  # Alerts are on by default and need at least one recipient. Set
+  # enable_iam_alerts to "false" to deploy without them.
+  # carapace:enable_iam_alerts: "false"
+  carapace:alert_emails:
+    - security@example.com

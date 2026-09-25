@@ -6,10 +6,12 @@ on:
     paths:
       - "infra/pulumi/**"
       - ".github/workflows/infra.yml"
+      - "server/src/carapace_server/config.py"
   pull_request:
     paths:
       - "infra/pulumi/**"
       - ".github/workflows/infra.yml"
+      - "server/src/carapace_server/config.py"
 
 permissions:
   contents: read

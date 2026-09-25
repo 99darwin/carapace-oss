@@ -6,6 +6,8 @@ import pytest
 
 pytest.importorskip("pulumi_gcp")
 
+import pulumi  # noqa: E402
+
 from components.wif import build_principal_set  # noqa: E402
 from harness import (  # noqa: E402
     CONFIDENTIAL_SPACE_IMAGE,
@@ -32,6 +34,11 @@ STS_AUDIENCE = (
     "/workloadIdentityPools/cptest-attest/providers/confidential-space"
 )
 KEY_RING_ID = "projects/example-project/locations/us-central1/keyRings/cptest-keyring"
+SERVER_URL = f"https://cptest-server-{PROJECT_NUMBER}.us-central1.run.app"
+REPOSITORY_IAM = "gcp:artifactregistry/repositoryIamMember:RepositoryIamMember"
+# Pulumi's wire encoding of a secret value: {SECRET_SIG: SECRET_SIG_VALUE, ...}.
+SECRET_SIG = pulumi.runtime.rpc._special_sig_key
+SECRET_SIG_VALUE = pulumi.runtime.rpc._special_secret_sig
 
 
 @pytest.fixture(scope="module")
@@ -224,14 +231,58 @@ def test_vm_is_confidential_space_with_digest_pinned_image(stack) -> None:
     assert metadata["tee-env-WIF_AUDIENCE"] == STS_AUDIENCE
 
 
-def test_database_password_never_in_outputs(stack) -> None:
+def _server_env(mocks: RecordingMocks) -> dict[str, str | None]:
+    template = mocks.one("gcp:cloudrunv2/service:Service").inputs["template"]
+    return {e["name"]: e.get("value") for e in template["containers"][0]["envs"]}
+
+
+def test_generated_secrets_never_in_outputs_or_plain_env(stack) -> None:
     mocks, outputs = stack
     assert "mock-password" not in json.dumps(outputs, default=str)
     service = mocks.one("gcp:cloudrunv2/service:Service").inputs
     envs = service["template"]["containers"][0]["envs"]
-    password_env = next(e for e in envs if e["name"] == "DB_PASSWORD")
-    assert "value" not in password_env
-    assert "secretKeyRef" in password_env["valueSource"]
+    assert "mock-password" not in json.dumps(envs)
+    by_name = {e["name"]: e for e in envs}
+    secret_ids = {}
+    for name in ("CARAPACE_DATABASE_URL", "CARAPACE_JWT_SECRET"):
+        assert "value" not in by_name[name]
+        secret_ids[name] = by_name[name]["valueSource"]["secretKeyRef"]["secret"]
+    assert secret_ids == {
+        "CARAPACE_DATABASE_URL": "cptest-database-url",
+        "CARAPACE_JWT_SECRET": "cptest-jwt-secret",
+    }
+
+
+def test_secrets_are_readable_only_by_the_server(stack) -> None:
+    mocks, _ = stack
+    accessors = mocks.of_type("gcp:secretmanager/secretIamMember:SecretIamMember")
+    assert sorted(a.inputs["secretId"] for a in accessors) == [
+        f"projects/{PROJECT_ID}/secrets/cptest-database-url",
+        f"projects/{PROJECT_ID}/secrets/cptest-jwt-secret",
+    ]
+    assert {a.inputs["member"] for a in accessors} == {SERVER_MEMBER}
+    assert {a.inputs["role"] for a in accessors} == {
+        "roles/secretmanager.secretAccessor"
+    }
+
+
+def test_database_url_secret_targets_the_cloud_sql_socket(stack) -> None:
+    mocks, _ = stack
+    versions = mocks.of_type("gcp:secretmanager/secretVersion:SecretVersion")
+    assert len(versions) == 2
+    # Every secret value reaches the engine wrapped as a Pulumi secret.
+    assert all(
+        v.inputs["secretData"].get(SECRET_SIG) == SECRET_SIG_VALUE for v in versions
+    )
+    database_url = next(
+        v.inputs["secretData"]["value"]
+        for v in versions
+        if v.inputs["secret"].endswith("/cptest-database-url")
+    )
+    assert database_url == (
+        "postgresql+asyncpg://carapace:mock-password@/carapace"
+        f"?host=/cloudsql/{PROJECT_ID}:region:db-instance"
+    )
 
 
 def test_server_runs_by_digest_and_scales_to_zero(stack) -> None:
@@ -239,9 +290,68 @@ def test_server_runs_by_digest_and_scales_to_zero(stack) -> None:
     template = mocks.one("gcp:cloudrunv2/service:Service").inputs["template"]
     assert "@sha256:" in template["containers"][0]["image"]
     assert template["scaling"]["minInstanceCount"] == 0
-    envs = {e["name"]: e.get("value") for e in template["containers"][0]["envs"]}
+    envs = _server_env(mocks)
     assert envs["CARAPACE_MODE"] == "prod"
-    assert envs["ALLOWED_IMAGE_DIGESTS"] == f"{DIGEST_A},{DIGEST_B}"
+    assert envs["CARAPACE_ALLOWED_IMAGE_DIGESTS"] == f"{DIGEST_A},{DIGEST_B}"
+    assert envs["CARAPACE_ATTESTATION_PROJECT_ID"] == PROJECT_ID
+    assert envs["CARAPACE_ATTESTATION_SERVICE_ACCOUNT"] == (
+        ENCLAVE_MEMBER.removeprefix("serviceAccount:")
+    )
+
+
+def _pins_control_plane(condition: str, url: str) -> bool:
+    return f"assertion.submods.container.env.CONTROL_PLANE_URL == '{url}'" in (
+        condition
+    )
+
+
+def test_one_control_plane_url_everywhere(stack) -> None:
+    mocks, outputs = stack
+    metadata = mocks.one(INSTANCE).inputs["metadata"]
+    condition = mocks.one(PROVIDER).inputs["attributeCondition"]
+    assert _server_env(mocks)["CARAPACE_PUBLIC_URL"] == SERVER_URL
+    assert metadata["tee-env-CONTROL_PLANE_URL"] == SERVER_URL
+    assert _pins_control_plane(condition, SERVER_URL)
+    assert outputs["server_url"] == outputs["control_plane_url"] == SERVER_URL
+
+
+def test_control_plane_url_override_is_used_everywhere() -> None:
+    url = "https://api.example.com"
+    mocks, outputs = run_stack(make_config(control_plane_url=url))
+    assert _server_env(mocks)["CARAPACE_PUBLIC_URL"] == url
+    assert mocks.one(INSTANCE).inputs["metadata"]["tee-env-CONTROL_PLANE_URL"] == url
+    assert _pins_control_plane(mocks.one(PROVIDER).inputs["attributeCondition"], url)
+    assert outputs["control_plane_url"] == url
+
+
+def test_bootstrap_still_pins_the_control_plane_url() -> None:
+    mocks, _ = run_stack(
+        make_config(
+            deploy_workloads=False, enclave_image_digest="", server_image_digest=""
+        )
+    )
+    condition = mocks.one(PROVIDER).inputs["attributeCondition"]
+    assert _pins_control_plane(condition, SERVER_URL)
+
+
+def test_kms_data_access_logs_are_enabled(stack) -> None:
+    mocks, _ = stack
+    audit = mocks.one("gcp:projects/iAMAuditConfig:IAMAuditConfig").inputs
+    assert audit["service"] == "cloudkms.googleapis.com"
+    assert audit["project"] == PROJECT_ID
+    assert audit["auditLogConfigs"] == [{"logType": "DATA_READ"}]
+
+
+def test_image_pull_is_scoped_to_the_stack_repository(stack) -> None:
+    mocks, _ = stack
+    project_roles = {r.inputs["role"] for r in mocks.of_type(PROJECT_IAM)}
+    assert "roles/artifactregistry.reader" not in project_roles
+    pull = mocks.one(REPOSITORY_IAM).inputs
+    assert pull["role"] == "roles/artifactregistry.reader"
+    assert pull["member"] == ENCLAVE_MEMBER
+    assert pull["repository"] == "cptest"
+    assert pull["location"] == "us-central1"
+    assert pull["project"] == PROJECT_ID
 
 
 def test_cloud_sql_is_small_and_zonal(stack) -> None:
@@ -264,6 +374,13 @@ def test_iam_change_alert_watches_decrypt_path(stack) -> None:
     enclave_email = ENCLAVE_MEMBER.removeprefix("serviceAccount:")
     assert f'resourceName:"serviceAccounts/{enclave_email}"' in log_filter
     assert f'resourceName:"serviceAccounts/{ENCLAVE_SA_UNIQUE_ID}"' in log_filter
+    assert (
+        '(protoPayload.serviceName="cloudkms.googleapis.com"'
+        ' AND protoPayload.methodName="AsymmetricDecrypt"'
+        f' AND protoPayload.resourceName:"{KEY_RING_ID}"'
+        " AND NOT protoPayload.authenticationInfo.principalSubject:"
+        '"/workloadIdentityPools/cptest-attest/")'
+    ) in log_filter
 
 
 def _resources(**overrides: object) -> list[Recorded]:
@@ -352,4 +469,6 @@ def test_workloads_wait_for_their_iam(monkeypatch) -> None:
     assert len(vm_deps) == 1 and len(run_deps) == 1
     assert by_role["roles/confidentialcomputing.workloadUser"] in vm_deps[0]
     assert key_policies[0] in vm_deps[0]
+    dep_types = {type(dep).__name__ for dep in vm_deps[0]}
+    assert {"RepositoryIamMember", "IAMAuditConfig"} <= dep_types
     assert by_role["roles/cloudsql.client"] in run_deps[0]

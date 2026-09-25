@@ -9,12 +9,12 @@ their config.
 | Component | Resources |
 |---|---|
 | `apis.py` | Enables the Compute, Cloud KMS, Confidential Computing, IAM, IAM Credentials, STS, Cloud Run, Cloud SQL Admin, Artifact Registry, Logging, Secret Manager and Monitoring APIs |
-| `kms.py` | One key ring and one `ASYMMETRIC_DECRYPT` / `RSA_DECRYPT_OAEP_4096_SHA256` / `HSM` key (`protect` is on by default), plus an **authoritative** IAM policy on the key |
+| `kms.py` | One key ring and one `ASYMMETRIC_DECRYPT` / `RSA_DECRYPT_OAEP_4096_SHA256` / `HSM` key (`protect` is on by default), an **authoritative** IAM policy on the key, and Data Access (`DATA_READ`) audit logs for Cloud KMS so every decrypt is logged |
 | `wif.py` | A Workload Identity pool and an OIDC provider that trust Confidential Space attestation tokens |
 | `identity.py` | Enclave VM service account and server (Cloud Run) service account |
 | `enclave_vm.py` | A dedicated VPC and subnet, one static external IP, one firewall rule (tcp:443 ingress), and one Confidential Space VM (AMD SEV, Secure Boot) |
-| `server.py` | An Artifact Registry repo, Cloud SQL Postgres 16 (`db-f1-micro`, zonal), a generated DB password in Secret Manager, and a Cloud Run v2 service (min 0 instances) |
-| `monitoring.py` | Optional. A log-match alert on IAM or configuration changes to the KMS key ring and key, the WIF pool, the enclave service account, or project IAM |
+| `server.py` | An Artifact Registry repo, Cloud SQL Postgres 16 (`db-f1-micro`, zonal), two generated secrets in Secret Manager (the database URL and the JWT signing secret), and a Cloud Run v2 service (min 0 instances) |
+| `monitoring.py` | On by default. A log-match alert on IAM or configuration changes to the KMS key ring and key, the WIF pool, the enclave service account, or project IAM, and on any `AsymmetricDecrypt` by a principal outside the attestation pool |
 
 ### Who can decrypt
 
@@ -62,11 +62,14 @@ assertion.secboot == true
 assertion.submods.container.image_digest in [<allowed_digests>]
 assertion.submods.gce.project_id == '<this project>'
 '<enclave SA email>' in assertion.google_service_accounts
+assertion.submods.container.env.CONTROL_PLANE_URL == '<control_plane_url>'
 ```
 
-The last two clauses pin the token to this project's VM. The enclave image is
-public, so without them anyone could run the same image in their own project
-and present a valid token.
+The `project_id` and service account clauses pin the token to this project's
+VM. The enclave image is public, so without them anyone could run the same
+image in their own project and present a valid token. The `CONTROL_PLANE_URL`
+clause refuses a VM of this project that was launched with a different control
+plane, since that override is one the launch policy allows.
 
 `hwmodel == GCP_AMD_SEV` means the VM is an AMD SEV Confidential VM. SEV
 encrypts guest memory, but it does **not** provide SNP's integrity protection
@@ -76,11 +79,33 @@ therefore includes AMD SEV, Google's vTPM and Shielded VM firmware, and the
 Confidential Space image. This stack does not use SEV-SNP (see
 [Open questions](#open-questions)).
 
-The enclave VM's service account has only `logging.logWriter`,
-`artifactregistry.reader` and `confidentialcomputing.workloadUser`. It has **no
-KMS role**, and the enclave never falls back to ambient credentials. The server
-service account has only `publicKeyViewer` on the key, `cloudsql.client`, and
-`secretAccessor` on the DB password secret.
+The enclave VM's service account has only `logging.logWriter` and
+`confidentialcomputing.workloadUser` on the project, and
+`artifactregistry.reader` on this stack's repository only. It has **no KMS
+role**, and the enclave never falls back to ambient credentials. The server
+service account has only `publicKeyViewer` on the key, `cloudsql.client` on
+the project, and `secretAccessor` on its two secrets (not on the project).
+`cloudsql.client` stays project-level because Cloud SQL has no instance-level
+IAM, only IAM conditions; the database password is still required to connect.
+
+### Server environment
+
+The server reads `CARAPACE_*` variables and silently ignores anything else, so
+`tests/test_server_env_contract.py` checks the names below against
+`server/src/carapace_server/config.py`:
+
+| Variable | Source |
+|---|---|
+| `CARAPACE_MODE` | `prod` |
+| `CARAPACE_PUBLIC_URL` | `control_plane_url` |
+| `CARAPACE_ALLOWED_IMAGE_DIGESTS` | `allowed_digests`, comma-separated |
+| `CARAPACE_ATTESTATION_PROJECT_ID` | `gcp:project` |
+| `CARAPACE_ATTESTATION_SERVICE_ACCOUNT` | the enclave service account |
+| `CARAPACE_DATABASE_URL` | Secret Manager `<prefix>-database-url` (`postgresql+asyncpg` over the `/cloudsql` socket, generated password) |
+| `CARAPACE_JWT_SECRET` | Secret Manager `<prefix>-jwt-secret` (64 random characters) |
+
+Secret values are referenced by Cloud Run and never appear in plain env or
+stack outputs. They are in Pulumi state, encrypted as Pulumi secrets.
 
 No `serviceAccountUser`, `workloadIdentityUser` or `serviceAccountTokenCreator`
 binding is created. Whoever runs `pulumi up` needs `iam.serviceAccounts.actAs`
@@ -115,8 +140,10 @@ pulumi config set deploy_workloads false && pulumi up
 pulumi config set deploy_workloads true && pulumi up
 ```
 
-The outputs include `enclave_url`, `server_url`, `kms_key_version_name`,
-`wif_provider_name` and `wif_audience`. `carapace verify` checks the enclave against these values.
+The outputs include `enclave_url`, `server_url`, `control_plane_url`,
+`kms_key_version_name`, `wif_provider_name` and `wif_audience`, plus the
+Secret Manager ids `database_url_secret` and `jwt_secret` (never the values).
+`carapace verify` checks the enclave against these values.
 
 ### Config keys
 
@@ -130,14 +157,14 @@ The outputs include `enclave_url`, `server_url`, `kms_key_version_name`,
 | `server_image_digest` | required* | Tags are refused |
 | `image_registry` | this stack's AR repo | Images are `<registry>/enclave@…` and `<registry>/server@…` |
 | `deploy_workloads` | `true` | `false` skips the VM and Cloud Run (*digests are then optional) |
-| `control_plane_url` | Cloud Run URL | Passed to the enclave as `CONTROL_PLANE_URL` |
+| `control_plane_url` | `https://<prefix>-server-<project number>.<region>.run.app` | A bare `https://host[:port]` origin (no path or trailing slash). Used as the server's `CARAPACE_PUBLIC_URL`, the enclave's `CONTROL_PLANE_URL`, and in the WIF condition |
 | `wif_audience` | provider resource name | The only audience WIF accepts. Must be stack-specific. `https://sts.googleapis.com` and `carapace-attestation` are refused |
 | `enclave_machine_type` | `n2d-standard-2` | Must support AMD SEV |
 | `db_tier` | `db-f1-micro` | |
 | `server_min_instances` / `server_max_instances` | `0` / `2` | |
 | `protect_kms_key` | `true` | Pulumi `protect` on the key ring and key |
 | `db_deletion_protection` | `true` | |
-| `enable_iam_alerts` / `alert_emails` | `false` / `[]` | Alert on changes to the decrypt path |
+| `enable_iam_alerts` / `alert_emails` | `true` / required | Alert on changes to the decrypt path. Set `enable_iam_alerts: "false"` to deploy without recipients |
 
 ### Rolling out a new enclave image
 
@@ -216,9 +243,11 @@ database still bill while the VM is stopped.
 ## Residual risk
 
 A project owner can still change IAM on the key or loosen the WIF condition.
-Such changes appear in Cloud Audit Logs (Admin Activity, always on). Set
-`enable_iam_alerts` to get an alert within minutes. For self-hosters, the
-project owner is you.
+Such changes appear in Cloud Audit Logs (Admin Activity, always on), and the
+alert (on by default) fires within minutes. Every decrypt is also a Data
+Access entry, so a decrypt by anyone other than the attested enclave alerts
+too. Turning those logs off is itself a project `SetIamPolicy` change, which
+alerts. For self-hosters, the project owner is you.
 
 ## Open questions
 
