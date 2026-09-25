@@ -27,6 +27,11 @@ The default mode is `prod`, which refuses to start unless these are set:
 | `CARAPACE_ATTESTATION_PROJECT_ID` | GCP project the enclave VMs run in |
 | `CARAPACE_ATTESTATION_SERVICE_ACCOUNT` | the enclave VMs' service account |
 
+Optional, set together: `CARAPACE_KMS_PUBLIC_KEY_PEM` (RSA 3072-8192 SPKI
+PEM) and `CARAPACE_KMS_KEY_VERSION`. They are served at
+`GET /v1/kms/public-key` for the CLI, which seals only if they equal the
+KMS key the attested enclave reports. Without them `carapace verify` fails.
+
 Behind a reverse proxy, run uvicorn with `--proxy-headers` and
 `--forwarded-allow-ips` set to the proxy address so rate limits key on the
 real client IP. The app never reads `X-Forwarded-For` itself.

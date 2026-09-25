@@ -27,6 +27,7 @@ from carapace_crypto.grant import (
     GrantScopeError,
     GrantSignatureError,
     create_grant,
+    reissue_grant,
     verify_grant,
     verify_grant_signature,
 )
@@ -451,3 +452,42 @@ class TestSeedlessForgery:
             verify_grant(grant, key, now=NOW)
         with pytest.raises(GrantSignatureError):
             verify_grant_signature(grant)
+
+
+# -- reissue_grant: replacing a grant without the raw API key ------------------
+
+
+def test_reissue_keeps_binding_and_advances_iat() -> None:
+    first = _grant()
+    renewed = reissue_grant(OWNER, first, {"secret-a": 7}, now=NOW)
+    assert renewed.key_bind == first.key_bind
+    assert renewed.iat == first.iat + 1
+    assert verify_grant(renewed, KEY, now=NOW + 1).secrets == {"secret-a": 7}
+
+
+def test_reissue_tombstone_verifies_and_authorizes_nothing() -> None:
+    tombstone = reissue_grant(OWNER, _grant(), {}, now=NOW + 10)
+    verified = verify_grant(tombstone, KEY, now=NOW + 10)
+    assert verified.secrets == {}
+    with pytest.raises(GrantScopeError):
+        verified.min_version_for("secret-a")
+
+
+def test_reissue_refuses_another_owners_grant() -> None:
+    theirs = create_grant(ATTACKER, ATTACKER_KEY, SECRETS, now=NOW)
+    with pytest.raises(GrantKeyMismatchError):
+        reissue_grant(OWNER, theirs, {}, now=NOW)
+
+
+def test_reissue_refuses_a_forged_previous_grant() -> None:
+    """A server swapping key_bind cannot get the owner to sign it."""
+    forged = dataclasses.replace(_grant(), key_bind=OTHER_KEY.bind_hash)
+    with pytest.raises(GrantSignatureError):
+        reissue_grant(OWNER, forged, {}, now=NOW)
+
+
+def test_reissue_respects_the_ttl_cap() -> None:
+    with pytest.raises(GrantError):
+        reissue_grant(
+            OWNER, _grant(), {}, now=NOW, ttl_seconds=MAX_GRANT_TTL_SECONDS + 1
+        )
