@@ -15,7 +15,6 @@ and the dev mock can substitute a local RSA key.
 from __future__ import annotations
 
 import hmac
-import re
 import secrets
 from typing import Any, Protocol
 
@@ -28,6 +27,7 @@ from google.auth import exceptions as auth_exceptions
 from google.auth import identity_pool
 from google.cloud import kms
 
+from carapace_crypto.kms import is_kms_key_version_name
 from carapace_enclave.attestation.token import (
     AttestationError,
     TokenSource,
@@ -41,14 +41,6 @@ JWT_SUBJECT_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:jwt"  # noqa: S105
 CLOUD_PLATFORM_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 KMS_TIMEOUT_SECONDS = 15.0
 PROBE_BYTES = 32
-
-KEY_VERSION_NAME = re.compile(
-    r"^projects/[a-z][a-z0-9-]{4,28}[a-z0-9]"
-    r"/locations/[a-z0-9-]{1,63}"
-    r"/keyRings/[A-Za-z0-9_-]{1,63}"
-    r"/cryptoKeys/[A-Za-z0-9_-]{1,63}"
-    r"/cryptoKeyVersions/[1-9][0-9]{0,18}$"
-)
 
 
 class KmsError(Exception):
@@ -77,7 +69,7 @@ class DekDecrypter(Protocol):
 
 def validate_key_version_name(name: str) -> str:
     """Refuse anything but a full crypto key *version* resource name."""
-    if not isinstance(name, str) or not KEY_VERSION_NAME.fullmatch(name):
+    if not is_kms_key_version_name(name):
         raise KmsError("KMS key name must be a full cryptoKeyVersions resource name")
     return name
 

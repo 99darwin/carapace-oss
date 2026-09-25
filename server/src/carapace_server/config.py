@@ -19,6 +19,7 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from carapace_crypto import EnvelopeError
 from carapace_crypto.envelope import load_rsa_public_key
+from carapace_crypto.kms import is_kms_key_version_name
 
 MIN_JWT_SECRET_LENGTH = 32
 MIN_PROD_BCRYPT_ROUNDS = 12
@@ -89,7 +90,9 @@ class Settings(BaseSettings):
     # /v1/kms/public-key. Clients only use it if it matches the key the
     # attested enclave reports, so a wrong value here fails closed.
     kms_public_key_pem: str | None = None
-    kms_key_version: str | None = Field(default=None, min_length=1, max_length=512)
+    # Full projects/*/locations/*/keyRings/*/cryptoKeys/*/cryptoKeyVersions/N
+    # name, exactly as the enclave reports it.
+    kms_key_version: str | None = None
 
     rate_limit_enabled: bool = True
     cleanup_interval_seconds: int = Field(default=3600, ge=10)
@@ -121,6 +124,15 @@ class Settings(BaseSettings):
             load_rsa_public_key(value)
         except EnvelopeError as exc:
             raise ConfigError(f"kms_public_key_pem: {exc}") from None
+        return value
+
+    @field_validator("kms_key_version")
+    @classmethod
+    def _check_kms_key_version(cls, value: str | None) -> str | None:
+        if value is not None and not is_kms_key_version_name(value):
+            raise ConfigError(
+                "kms_key_version must be a full cryptoKeyVersions resource name"
+            )
         return value
 
     @model_validator(mode="after")
