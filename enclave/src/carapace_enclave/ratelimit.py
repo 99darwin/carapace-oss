@@ -53,3 +53,18 @@ class RateLimiter:
             while len(self._events) > self._max_keys:
                 self._events.popitem(last=False)
             return True
+
+    def count(self, key: Hashable) -> int:
+        """Events recorded for ``key`` within the current window.
+
+        Read-only: nothing is recorded and no window is created, so probing
+        a key that was never seen costs no memory.
+        """
+        now = self._monotonic()
+        with self._lock:
+            events = self._events.get(key)
+            if events is None:
+                return 0
+            while events and events[0] <= now - self._window:
+                events.popleft()
+            return len(events)

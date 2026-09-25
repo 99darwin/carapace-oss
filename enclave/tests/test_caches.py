@@ -53,6 +53,20 @@ def test_rate_limiter_is_bounded_in_keys() -> None:
     assert not limiter.acquire("c", 1)
 
 
+def test_rate_limiter_count_is_read_only_and_windowed() -> None:
+    clock = FakeMonotonic()
+    limiter = RateLimiter(window=10, max_keys=1, monotonic=clock)
+    assert limiter.count("never") == 0
+    assert limiter.acquire("a", 5)
+    assert limiter.acquire("a", 5)
+    assert limiter.count("a") == 2
+    assert limiter.count("a") == 2  # counting recorded nothing
+    assert limiter.count("b") == 0
+    assert limiter.acquire("a", 5)  # "b" was not created, "a" survived
+    clock.now += 10.01
+    assert limiter.count("a") == 0
+
+
 @pytest.mark.parametrize("kwargs", [{"window": 0}, {"max_keys": 0}])
 def test_rate_limiter_rejects_bad_config(kwargs: dict) -> None:
     with pytest.raises(ValueError):

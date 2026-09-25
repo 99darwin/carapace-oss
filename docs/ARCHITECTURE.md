@@ -140,6 +140,8 @@ For each request, the enclave executor:
 - Redacts the secret from response headers and body, in raw, base64,
   URL-encoded, and JSON-escaped forms.
 - Rate-limits per API key.
+- Throttles a peer address after repeated refused authorizations, so an
+  unauthenticated flood cannot spend the control-plane budget of every owner.
 - Emits one signed receipt per request.
 
 ## Receipts

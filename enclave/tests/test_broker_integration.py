@@ -26,7 +26,7 @@ from carapace_crypto import ApiKey, Envelope, seal
 from carapace_enclave.attestation import LauncherClient, TokenSource
 from carapace_enclave.attestation.identity import BootIdentity
 from carapace_enclave.attestation.token import ATTESTATION_AUDIENCE, AttestationToken
-from carapace_enclave.broker import BrokerError
+from carapace_enclave.broker import AUTH_FAILURES_PER_PEER_PER_MINUTE, BrokerError
 from carapace_enclave.clock import TrustedClock
 from carapace_enclave.egress import AgentRequest
 from carapace_enclave.runtime import boot
@@ -204,10 +204,11 @@ def _request(**overrides: Any) -> AgentRequest:
 
 
 async def _handle(enclave: Enclave, setup: Setup, **overrides: Any) -> Any:
+    raw_key = overrides.pop("raw_key", setup.api_key.raw)
+    secret_id = overrides.pop("secret_id", setup.secret_id)
+    peer = overrides.pop("peer", "")
     return await enclave.services.broker.handle(
-        overrides.pop("raw_key", setup.api_key.raw),
-        overrides.pop("secret_id", setup.secret_id),
-        _request(**overrides),
+        raw_key, secret_id, _request(**overrides), peer=peer
     )
 
 
@@ -335,6 +336,37 @@ async def test_revoked_key_is_forbidden(
     assert response.status_code == 204, response.text
     error = await _refused(enclave, setup)
     assert (error.status, error.code) == (403, "forbidden")
+
+
+async def test_peer_is_throttled_after_repeated_refusals(
+    enclave: Enclave, setup: Setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stranger = ApiKey.generate(setup.account.owner_key)
+    for _ in range(AUTH_FAILURES_PER_PEER_PER_MINUTE):
+        error = await _refused(enclave, setup, raw_key=stranger.raw, peer="a")
+        assert error.status == 403
+
+    async def not_reached(*_args: Any, **_kwargs: Any) -> bytes:
+        raise AssertionError("throttled peer must not reach the control plane")
+
+    monkeypatch.setattr(ControlPlaneClient, "fetch_grant", not_reached)
+    error = await _refused(enclave, setup, raw_key=stranger.raw, peer="a")
+    assert (error.status, error.code) == (429, "rate_limited")
+    # The address is throttled as a whole, valid key or not ...
+    error = await _refused(enclave, setup, peer="a")
+    assert error.status == 429
+    monkeypatch.undo()
+    # ... while another address is untouched.
+    assert (await _handle(enclave, setup, peer="b")).status == 200
+
+
+async def test_verified_requests_never_count_against_the_peer(
+    enclave: Enclave, setup: Setup
+) -> None:
+    for _ in range(AUTH_FAILURES_PER_PEER_PER_MINUTE):
+        error = await _refused(enclave, setup, url="https://evil.example/", peer="a")
+        assert error.code.startswith("egress_denied:")
+    assert (await _handle(enclave, setup, peer="a")).status == 200
 
 
 # -- a lying control plane ------------------------------------------------------

@@ -139,9 +139,15 @@ def create_app(services: EnclaveServices, *, background: bool = True) -> Starlet
                     headers=parsed.headers,
                     body=parsed.body,
                 ),
+                # The TCP peer: TLS terminates here and proxy headers are off.
+                peer=request.client.host if request.client else "",
             )
         except BrokerError as exc:
             return _error(exc.status, exc.code)
+        except AttestationError as exc:
+            # No control-plane token, so nothing could be verified.
+            logger.error("attestation token unavailable: %s", exc)
+            return _error(503, "attestation_unavailable")
         return JSONResponse(
             {
                 "status": result.status,

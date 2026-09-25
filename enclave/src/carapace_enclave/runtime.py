@@ -47,7 +47,13 @@ logger = logging.getLogger(__name__)
 
 # Matches INGRESS_PORT in infra/pulumi/components/enclave_vm.py.
 ENCLAVE_PORT = 443
-LISTEN_HOST = "0.0.0.0"  # noqa: S104 - the VM has no public IP; see infra
+# The VM's only interface carries its public address (see infra): the API is
+# meant to be reachable, and authorization is the API key, not the network.
+LISTEN_HOST = "0.0.0.0"  # noqa: S104
+# Every connection may buffer MAX_AGENT_BODY_BYTES before the key is checked,
+# so the number of simultaneous connections bounds the memory anyone can
+# make the enclave hold. Beyond this uvicorn answers 503 without reading.
+MAX_CONCURRENT_CONNECTIONS = 256
 
 
 class ConfigurationError(Exception):
@@ -157,6 +163,7 @@ async def serve(
         access_log=False,
         server_header=False,
         proxy_headers=False,
+        limit_concurrency=MAX_CONCURRENT_CONNECTIONS,
         log_config=None,
     )
     await uvicorn.Server(config).serve()

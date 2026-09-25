@@ -67,6 +67,13 @@ RECEIPT_PAYLOAD_VERSION = 1
 REQUESTS_PER_OWNER_PER_MINUTE = 600
 # KMS calls (DEK cache misses) per owner fingerprint.
 KMS_UNWRAPS_PER_OWNER_PER_MINUTE = 60
+# Refused authorizations (401/403 before any secret is touched) per peer
+# address. Every unverified request costs one control-plane call out of a
+# budget the server meters per enclave, so without this a flood of invented
+# keys from one address takes the enclave down for every owner. Verified
+# requests are never counted: a busy fleet behind one address is unaffected.
+AUTH_FAILURES_PER_PEER_PER_MINUTE = 30
+_AUTH_FAILURE_STATUSES = frozenset({401, 403})
 
 
 class BrokerError(Exception):
@@ -145,9 +152,42 @@ class Broker:
         self._limiter = limiter or RateLimiter()
 
     async def handle(
-        self, raw_key: str, secret_id: str, request: AgentRequest
+        self, raw_key: str, secret_id: str, request: AgentRequest, *, peer: str = ""
     ) -> EgressResult:
-        """Run one request. Raises :class:`BrokerError`."""
+        """Run one request. Raises :class:`BrokerError`.
+
+        ``peer`` is the agent's network address as the transport saw it; it
+        only meters refused authorizations and is never trusted for anything.
+        """
+        peer_key = ("peer", peer)
+        if self._limiter.count(peer_key) >= AUTH_FAILURES_PER_PEER_PER_MINUTE:
+            raise _rate_limited()
+        try:
+            key, secret_id, grant, floor = await self._authorize(raw_key, secret_id)
+        except BrokerError as exc:
+            if exc.status in _AUTH_FAILURE_STATUSES:
+                self._limiter.acquire(peer_key, AUTH_FAILURES_PER_PEER_PER_MINUTE)
+            raise
+        envelope = await self._verified_envelope(key, grant, secret_id)  # 7-8
+        policy = self._policy(envelope)
+        if not self._limiter.acquire(
+            ("policy", key.fingerprint, secret_id), policy.limits.rpm
+        ):
+            raise _rate_limited()
+        plaintext = await self._open(key, grant, envelope, secret_id, floor)  # 9
+        verified = _Verified(
+            secret_id=secret_id,
+            owner_id=envelope.owner_id,
+            owner_fp=key.fingerprint.hex(),
+            envelope_version=envelope.version,
+            grant_iat=grant.iat,
+        )
+        return await self._execute(policy, plaintext, request, verified)  # 10
+
+    async def _authorize(
+        self, raw_key: str, secret_id: str
+    ) -> tuple[ApiKey, str, Grant, int]:
+        """Steps 1-6: the key, the canonical secret id, its grant and floor."""
         try:
             key = ApiKey.parse(raw_key)  # 1
         except ApiKeyError:
@@ -165,21 +205,7 @@ class Broker:
             floor = grant.min_version_for(secret_id)  # 6
         except GrantError:
             raise _forbidden() from None
-        envelope = await self._verified_envelope(key, grant, secret_id)  # 7-8
-        policy = self._policy(envelope)
-        if not self._limiter.acquire(
-            ("policy", key.fingerprint, secret_id), policy.limits.rpm
-        ):
-            raise _rate_limited()
-        plaintext = await self._open(key, grant, envelope, secret_id, floor)  # 9
-        verified = _Verified(
-            secret_id=secret_id,
-            owner_id=envelope.owner_id,
-            owner_fp=key.fingerprint.hex(),
-            envelope_version=envelope.version,
-            grant_iat=grant.iat,
-        )
-        return await self._execute(policy, plaintext, request, verified)  # 10
+        return key, secret_id, grant, floor
 
     async def _verified_grant(self, key: ApiKey, secret_id: str, *, now: int) -> Grant:
         try:

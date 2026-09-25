@@ -239,14 +239,16 @@ async def test_client_unreachable(tokens: TokenSource, clock: TrustedClock) -> N
 
 
 class FakeBroker:
-    def __init__(self, error: BrokerError | None = None) -> None:
+    def __init__(self, error: Exception | None = None) -> None:
         self.error = error
         self.calls: list[tuple[str, str, AgentRequest]] = []
+        self.peers: list[str] = []
 
     async def handle(
-        self, raw_key: str, secret_id: str, request: AgentRequest
+        self, raw_key: str, secret_id: str, request: AgentRequest, *, peer: str = ""
     ) -> EgressResult:
         self.calls.append((raw_key, secret_id, request))
+        self.peers.append(peer)
         if self.error is not None:
             raise self.error
         return EgressResult(
@@ -334,6 +336,7 @@ async def test_agent_request_round_trip(tokens: TokenSource) -> None:
     assert (raw_key, secret_id) == ("cpk_x", "sid")
     assert request.headers == [("accept", "application/json")]
     assert request.body == b"hi"
+    assert broker.peers == ["127.0.0.1"]  # the ASGI transport's default client
 
 
 @pytest.mark.parametrize(
@@ -395,6 +398,20 @@ async def test_broker_refusal_is_passed_through(tokens: TokenSource) -> None:
             json={"secret_id": "s", "method": "GET", "url": "u"},
         )
     assert (response.status_code, response.json()) == (403, {"error": "forbidden"})
+
+
+async def test_agent_request_without_attestation_is_unavailable(
+    tokens: TokenSource,
+) -> None:
+    broker = FakeBroker(AttestationError("launcher down"))
+    async with _app_client(tokens, broker) as client:
+        response = await client.post(
+            "/v1/request",
+            headers={"Authorization": "Bearer k"},
+            json={"secret_id": "s", "method": "GET", "url": "u"},
+        )
+    assert response.status_code == 503
+    assert response.json() == {"error": "attestation_unavailable"}
 
 
 def test_canonical_secret_id() -> None:
