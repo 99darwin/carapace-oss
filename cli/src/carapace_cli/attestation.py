@@ -82,9 +82,7 @@ class TrustPolicy:
 
     def __post_init__(self) -> None:
         if not self.allowed_digests:
-            raise VerificationError(
-                "no trusted image digests: pass --allow-digest or --release-manifest"
-            )
+            raise VerificationError("no trusted image digests: pass --allow-digest")
         for digest in self.allowed_digests:
             validate_digest(digest)
 
