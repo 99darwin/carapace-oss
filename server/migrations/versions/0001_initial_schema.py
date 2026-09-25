@@ -48,6 +48,7 @@ def upgrade() -> None:
             nullable=False,
             index=True,
         ),
+        sa.Column("family_id", sa.Uuid(), nullable=False, index=True),
         sa.Column("token_hash", sa.String(64), nullable=False, unique=True),
         _ts("expires_at"),
         _ts("revoked_at", nullable=True),

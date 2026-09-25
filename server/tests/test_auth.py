@@ -10,10 +10,11 @@ from datetime import timedelta
 import httpx
 import jwt
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from carapace_server.auth.models import User
+from carapace_server.auth.models import RefreshToken, User
+from carapace_server.auth.service import purge_expired_auth_rows
 from carapace_server.config import Settings
 from carapace_server.db import utcnow
 
@@ -130,12 +131,77 @@ async def test_refresh_rotates_tokens(client: httpx.AsyncClient, register_user) 
     rotated = response.json()["refresh_token"]
     assert rotated != original
 
+    again = await client.post("/v1/auth/refresh", json={"refresh_token": rotated})
+    assert again.status_code == 200
+    assert again.json()["refresh_token"] not in {original, rotated}
+
     reuse = await client.post("/v1/auth/refresh", json={"refresh_token": original})
     assert reuse.status_code == 401
     assert reuse.json()["detail"] == "Invalid or expired refresh token"
 
-    again = await client.post("/v1/auth/refresh", json={"refresh_token": rotated})
-    assert again.status_code == 200
+
+async def _refresh(client: httpx.AsyncClient, token: str) -> httpx.Response:
+    return await client.post("/v1/auth/refresh", json={"refresh_token": token})
+
+
+async def test_refresh_reuse_revokes_whole_family(
+    client: httpx.AsyncClient, register_user
+) -> None:
+    """Replaying a rotated token is treated as theft: its descendants die too."""
+    original = (await register_user(client, "family@example.com"))["refresh_token"]
+    rotated = (await _refresh(client, original)).json()["refresh_token"]
+    latest = (await _refresh(client, rotated)).json()["refresh_token"]
+
+    assert (await _refresh(client, original)).status_code == 401
+    assert (await _refresh(client, rotated)).status_code == 401
+    assert (await _refresh(client, latest)).status_code == 401
+
+
+async def test_refresh_reuse_spares_other_sessions(
+    client: httpx.AsyncClient, register_user
+) -> None:
+    """Family revocation is scoped to the leaked chain, not the whole account."""
+    email = "devices@example.com"
+    phone = (await register_user(client, email))["refresh_token"]
+    login = await client.post(
+        "/v1/auth/login", json={"email": email, "password": PASSWORD}
+    )
+    laptop = login.json()["refresh_token"]
+
+    phone_rotated = (await _refresh(client, phone)).json()["refresh_token"]
+    assert (await _refresh(client, phone)).status_code == 401
+    assert (await _refresh(client, phone_rotated)).status_code == 401
+    assert (await _refresh(client, laptop)).status_code == 200
+
+
+async def test_logged_out_token_replay_spares_other_sessions(
+    client: httpx.AsyncClient, register_user
+) -> None:
+    email = "logout-replay@example.com"
+    phone = (await register_user(client, email))["refresh_token"]
+    login = await client.post(
+        "/v1/auth/login", json={"email": email, "password": PASSWORD}
+    )
+    laptop = login.json()["refresh_token"]
+
+    logout = await client.post("/v1/auth/logout", json={"refresh_token": phone})
+    assert logout.status_code == 204
+    assert (await _refresh(client, phone)).status_code == 401
+    assert (await _refresh(client, laptop)).status_code == 200
+
+
+async def test_purge_keeps_revoked_tokens_for_reuse_detection(
+    client: httpx.AsyncClient, db: AsyncSession, register_user
+) -> None:
+    original = (await register_user(client, "purge@example.com"))["refresh_token"]
+    rotated = (await _refresh(client, original)).json()["refresh_token"]
+
+    await purge_expired_auth_rows(db)
+    await db.commit()
+    assert await db.scalar(select(func.count()).select_from(RefreshToken)) == 2
+
+    assert (await _refresh(client, original)).status_code == 401
+    assert (await _refresh(client, rotated)).status_code == 401
 
 
 async def test_refresh_invalid_token(client: httpx.AsyncClient) -> None:

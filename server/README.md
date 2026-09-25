@@ -34,10 +34,15 @@ real client IP. The app never reads `X-Forwarded-For` itself.
   checks awkward. An email address is not a credential, and the server is
   already treated as untrusted, so the confidentiality it bought was small.
 - Passwords: bcrypt over base64(sha256(password)) to avoid the 72-byte limit.
-- Passkeys: full attestation verification with `py_webauthn`; login options
-  for unknown accounts return a deterministic decoy credential ID.
+- Passkeys: full attestation verification with `py_webauthn`; user
+  verification is required on every ceremony (a user-presence-only assertion
+  is rejected); login options for unknown accounts return a deterministic
+  decoy credential ID.
 - Access JWTs carry `jti`, `iss`, `aud`; logout blacklists the `jti` in the
-  database. Refresh tokens are single use and rotated atomically.
+  database. Refresh tokens are single use and rotated atomically. Every
+  rotation stays in the family of the login that started it; presenting an
+  already-rotated token is treated as theft and revokes the whole family.
+  Revoked rows are kept until they expire so that reuse remains detectable.
 - No Redis or Celery: rate limiting is in-process (per replica) and expired
   rows are purged by a periodic asyncio task.
 

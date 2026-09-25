@@ -40,6 +40,12 @@ class SoftwareAuthenticator:
     )
     credential_id: bytes = field(default_factory=lambda: secrets.token_bytes(32))
     sign_count: int = 0
+    user_verified: bool = True
+
+    @property
+    def _user_flags(self) -> int:
+        verified = FLAG_USER_VERIFIED if self.user_verified else 0
+        return FLAG_USER_PRESENT | verified
 
     def _client_data(self, kind: str, challenge: str, origin: str | None) -> bytes:
         data = {"type": kind, "challenge": challenge, "origin": origin or self.origin}
@@ -62,8 +68,7 @@ class SoftwareAuthenticator:
             + self.credential_id
             + cbor2.dumps(cose_key)
         )
-        flags = FLAG_USER_PRESENT | FLAG_USER_VERIFIED | FLAG_ATTESTED_DATA
-        auth_data = self._auth_data(flags, attested)
+        auth_data = self._auth_data(self._user_flags | FLAG_ATTESTED_DATA, attested)
         attestation = cbor2.dumps({"fmt": "none", "attStmt": {}, "authData": auth_data})
         client_data = self._client_data("webauthn.create", options["challenge"], origin)
         return {
@@ -79,7 +84,7 @@ class SoftwareAuthenticator:
 
     def get(self, options: dict, credential_id: bytes | None = None) -> dict:
         self.sign_count += 1
-        auth_data = self._auth_data(FLAG_USER_PRESENT | FLAG_USER_VERIFIED)
+        auth_data = self._auth_data(self._user_flags)
         client_data = self._client_data("webauthn.get", options["challenge"], None)
         signed = auth_data + hashlib.sha256(client_data).digest()
         signature = self.key.sign(signed, ec.ECDSA(hashes.SHA256()))
@@ -158,6 +163,33 @@ async def test_registration_rejects_wrong_origin(
         "/v1/auth/passkey/register", json={"email": email, "credential": credential}
     )
     assert response.status_code == 400
+
+
+async def test_options_require_user_verification(client: httpx.AsyncClient) -> None:
+    creation = await _options(client, "/v1/auth/passkey/register/options", "uv@x.io")
+    request = await _options(client, "/v1/auth/passkey/login/options", "uv@x.io")
+    assert creation["authenticatorSelection"]["userVerification"] == "required"
+    assert request["userVerification"] == "required"
+
+
+async def test_registration_requires_user_verification(
+    client: httpx.AsyncClient, authenticator: SoftwareAuthenticator
+) -> None:
+    authenticator.user_verified = False
+    response = await _register(client, authenticator, "presence@example.com")
+    assert response.status_code == 400
+
+
+async def test_login_requires_user_verification(
+    client: httpx.AsyncClient, authenticator: SoftwareAuthenticator
+) -> None:
+    """A stolen authenticator (user present, not verified) must not sign in."""
+    email = "stolen@example.com"
+    assert (await _register(client, authenticator, email)).status_code == 201
+    authenticator.user_verified = False
+    response = await _login(client, authenticator.get, email)
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid credentials"
 
 
 async def test_registration_challenge_is_single_use(

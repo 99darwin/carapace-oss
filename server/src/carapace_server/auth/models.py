@@ -41,7 +41,12 @@ class User(Base):
 
 
 class RefreshToken(Base):
-    """Refresh tokens are stored as SHA-256 hashes and rotated on use."""
+    """Refresh tokens are stored as SHA-256 hashes and rotated on use.
+
+    ``family_id`` is shared by every token descended from one login. Reuse of
+    an already-rotated token revokes the whole family, so a stolen token
+    cannot keep a session alive alongside the legitimate client.
+    """
 
     __tablename__ = "refresh_tokens"
 
@@ -49,6 +54,7 @@ class RefreshToken(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="CASCADE"), index=True
     )
+    family_id: Mapped[uuid.UUID] = mapped_column(Uuid, index=True)
     token_hash: Mapped[str] = mapped_column(String(64), unique=True)
     expires_at: Mapped[datetime] = mapped_column(UTCDateTime, index=True)
     revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime)

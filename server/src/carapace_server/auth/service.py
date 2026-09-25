@@ -9,7 +9,10 @@ Security notes:
   credential ID, so neither timing nor response shape reveals existence.
 - Passkey registration verifies the full attestation response with
   py_webauthn; client-supplied public keys are never trusted directly.
-- Refresh tokens are random, stored as SHA-256 hashes, single use.
+- Refresh tokens are random, stored as SHA-256 hashes, single use. Reuse of
+  a rotated token revokes its whole family (see :meth:`AuthService.refresh`).
+- Passkey ceremonies require user verification, so possession of an
+  authenticator alone (user presence) is not enough to sign in.
 """
 
 from __future__ import annotations
@@ -22,16 +25,20 @@ import logging
 import secrets
 import uuid
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any
 
 import bcrypt
 import webauthn
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from webauthn.helpers import options_to_json_dict, parse_authentication_credential_json
-from webauthn.helpers.structs import PublicKeyCredentialDescriptor
+from webauthn.helpers.structs import (
+    AuthenticatorSelectionCriteria,
+    PublicKeyCredentialDescriptor,
+    UserVerificationRequirement,
+)
 
 from carapace_server.auth.models import (
     ChallengeType,
@@ -149,6 +156,9 @@ class AuthService:
             user_name=email,
             challenge=challenge,
             timeout=CHALLENGE_TIMEOUT_MS,
+            authenticator_selection=AuthenticatorSelectionCriteria(
+                user_verification=UserVerificationRequirement.REQUIRED
+            ),
         )
         return options_to_json_dict(options)
 
@@ -169,6 +179,7 @@ class AuthService:
                 expected_challenge=challenge,
                 expected_rp_id=self.settings.webauthn_rp_id,
                 expected_origin=self.settings.webauthn_origin,
+                require_user_verification=True,
             )
         except Exception as exc:
             logger.info("passkey registration rejected: %s", type(exc).__name__)
@@ -199,6 +210,7 @@ class AuthService:
             challenge=challenge,
             timeout=CHALLENGE_TIMEOUT_MS,
             allow_credentials=[PublicKeyCredentialDescriptor(id=credential_id)],
+            user_verification=UserVerificationRequirement.REQUIRED,
         )
         return options_to_json_dict(options)
 
@@ -221,6 +233,7 @@ class AuthService:
                 expected_origin=self.settings.webauthn_origin,
                 credential_public_key=user.passkey_public_key,
                 credential_current_sign_count=user.passkey_sign_count,
+                require_user_verification=True,
             )
         except Exception as exc:
             logger.info("passkey login rejected: %s", type(exc).__name__)
@@ -269,17 +282,20 @@ class AuthService:
 
     async def _start_session(self, user: User, client: ClientInfo) -> Session:
         user.last_login_at = utcnow()
-        refresh = self._new_refresh_token(user.id, client)
+        refresh = self._new_refresh_token(user.id, uuid.uuid4(), client)
         await self.db.commit()
         access = create_access_token(self.settings, user.id)
         return Session(user_id=user.id, access_token=access, refresh_token=refresh)
 
-    def _new_refresh_token(self, user_id: uuid.UUID, client: ClientInfo) -> str:
+    def _new_refresh_token(
+        self, user_id: uuid.UUID, family_id: uuid.UUID, client: ClientInfo
+    ) -> str:
         token = secrets.token_urlsafe(REFRESH_TOKEN_BYTES)
         user_agent = client.user_agent
         self.db.add(
             RefreshToken(
                 user_id=user_id,
+                family_id=family_id,
                 token_hash=hash_refresh_token(token),
                 expires_at=utcnow() + timedelta(days=self.settings.refresh_token_days),
                 user_agent=user_agent[:USER_AGENT_MAX_LENGTH] if user_agent else None,
@@ -292,27 +308,59 @@ class AuthService:
         """Rotate: the presented token is revoked and a new pair issued.
 
         The revoke is a conditional UPDATE so two concurrent refreshes with
-        the same token cannot both succeed.
+        the same token cannot both succeed. A token that was already rotated
+        (revoked but not yet expired) is evidence that it leaked, because the
+        legitimate client only ever holds the newest token in its family; the
+        whole family is revoked so neither party keeps the session.
         """
         now = utcnow()
+        token_hash = hash_refresh_token(refresh_token)
         result = await self.db.execute(
             update(RefreshToken)
             .where(
-                RefreshToken.token_hash == hash_refresh_token(refresh_token),
+                RefreshToken.token_hash == token_hash,
                 RefreshToken.revoked_at.is_(None),
                 RefreshToken.expires_at > now,
             )
             .values(revoked_at=now)
-            .returning(RefreshToken.user_id)
+            .returning(RefreshToken.user_id, RefreshToken.family_id)
         )
-        user_id = result.scalar_one_or_none()
-        if user_id is None:
+        row = result.one_or_none()
+        if row is None:
             await self.db.rollback()
+            await self._revoke_family_on_reuse(token_hash, now)
             raise AuthError("Invalid or expired refresh token")
-        new_refresh = self._new_refresh_token(user_id, client)
+        user_id, family_id = row
+        new_refresh = self._new_refresh_token(user_id, family_id, client)
         await self.db.commit()
         access = create_access_token(self.settings, user_id)
         return Session(user_id=user_id, access_token=access, refresh_token=new_refresh)
+
+    async def _revoke_family_on_reuse(self, token_hash: str, now: datetime) -> None:
+        reused = await self.db.execute(
+            select(RefreshToken.user_id, RefreshToken.family_id).where(
+                RefreshToken.token_hash == token_hash,
+                RefreshToken.revoked_at.is_not(None),
+                RefreshToken.expires_at > now,
+            )
+        )
+        row = reused.one_or_none()
+        if row is None:
+            return
+        user_id, family_id = row
+        await self.db.execute(
+            update(RefreshToken)
+            .where(
+                RefreshToken.family_id == family_id,
+                RefreshToken.revoked_at.is_(None),
+            )
+            .values(revoked_at=now)
+        )
+        await self.db.commit()
+        logger.warning(
+            "refresh token reuse detected; revoked session family for user %s",
+            user_id,
+        )
 
     async def revoke_refresh_token(self, refresh_token: str) -> None:
         await self.db.execute(
@@ -326,13 +374,13 @@ class AuthService:
 
 
 async def purge_expired_auth_rows(db: AsyncSession) -> None:
-    """Delete expired refresh tokens and passkey challenges."""
+    """Delete expired refresh tokens and passkey challenges.
+
+    Revoked-but-unexpired refresh tokens are deliberately kept: they are what
+    lets :meth:`AuthService.refresh` recognise a replayed token.
+    """
     now = utcnow()
-    await db.execute(
-        delete(RefreshToken).where(
-            or_(RefreshToken.expires_at <= now, RefreshToken.revoked_at.is_not(None))
-        )
-    )
+    await db.execute(delete(RefreshToken).where(RefreshToken.expires_at <= now))
     await db.execute(
         delete(WebAuthnChallenge).where(WebAuthnChallenge.expires_at <= now)
     )
