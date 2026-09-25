@@ -28,6 +28,7 @@ from carapace_crypto.grant import (
     GrantSignatureError,
     create_grant,
     verify_grant,
+    verify_grant_signature,
 )
 from carapace_crypto.hashing import tagged_sha256
 from carapace_crypto.ownerkey import FINGERPRINT_TAG, OwnerKey, signing_input
@@ -175,6 +176,25 @@ class TestTampering:
         )
         with pytest.raises(GrantSignatureError):
             verify_grant(dataclasses.replace(grant, sig=sig), KEY, now=NOW)
+
+
+class TestSignatureOnly:
+    """``verify_grant_signature``: what a holder without the raw key can check."""
+
+    def test_accepts_valid_grant_regardless_of_key_or_time(self) -> None:
+        grant = _grant(now=NOW - 10 * DEFAULT_GRANT_TTL_SECONDS)
+        assert verify_grant_signature(grant) is grant
+        other = create_grant(OWNER, OTHER_KEY, SECRETS, now=NOW)
+        assert verify_grant_signature(other) is other
+
+    def test_rejects_tampered_body(self) -> None:
+        grant = dataclasses.replace(_grant(), secrets={"secret-a": 1})
+        with pytest.raises(GrantSignatureError):
+            verify_grant_signature(grant)
+
+    def test_rejects_signature_by_another_key(self) -> None:
+        with pytest.raises(GrantSignatureError):
+            verify_grant_signature(_resigned(_grant(), signer=ATTACKER))
 
 
 class TestLifetime:
@@ -429,3 +449,5 @@ class TestSeedlessForgery:
         )
         with pytest.raises(GrantKeyMismatchError, match="invalid"):
             verify_grant(grant, key, now=NOW)
+        with pytest.raises(GrantSignatureError):
+            verify_grant_signature(grant)

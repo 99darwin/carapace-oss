@@ -17,9 +17,13 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from carapace_crypto import Grant, GrantError
-from carapace_crypto.grant import CLOCK_SKEW_SECONDS, GRANT_CONTEXT
-from carapace_crypto.ownerkey import SignatureError, verify_object
+from carapace_crypto import (
+    Grant,
+    GrantError,
+    GrantSignatureError,
+    verify_grant_signature,
+)
+from carapace_crypto.grant import CLOCK_SKEW_SECONDS
 from carapace_server.apikeys.models import ApiKey
 from carapace_server.db import utcnow
 from carapace_server.ids import parse_canonical_uuid
@@ -53,12 +57,11 @@ def _unix_now() -> int:
 def _parse_signed_grant(grant_wire: dict[str, Any]) -> Grant:
     """``Grant.from_dict`` plus the owner signature under its own ``owner_pk``."""
     try:
-        grant = Grant.from_dict(grant_wire)
-        verify_object(grant.owner_pk, GRANT_CONTEXT, grant.signed_body(), grant.sig)
+        grant = verify_grant_signature(Grant.from_dict(grant_wire))
+    except GrantSignatureError:
+        raise ApiKeyError("grant signature does not verify") from None
     except GrantError as exc:
         raise ApiKeyError(f"invalid grant: {exc}") from None
-    except SignatureError:
-        raise ApiKeyError("grant signature does not verify") from None
     return grant
 
 
