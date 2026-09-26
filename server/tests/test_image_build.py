@@ -110,7 +110,7 @@ def _infra_constant(name: str) -> object:
 def test_base_images_are_pinned_by_digest() -> None:
     args = _build_args()
     froms = [rest for keyword, rest in _instructions() if keyword == "FROM"]
-    assert len(froms) == 2, "expected a build stage and a runtime stage"
+    assert len(froms) == 3, "expected web, build and runtime stages"
     for line in froms:
         image = line.split()[0]
         match = re.fullmatch(r"\$\{(\w+)\}", image)
@@ -118,6 +118,10 @@ def test_base_images_are_pinned_by_digest() -> None:
         assert PINNED_IMAGE.match(resolved), resolved
     assert "distroless" in args["RUNTIME_IMAGE"]
     assert ":nonroot@" in args["RUNTIME_IMAGE"]
+    # The runtime stage is the last FROM; node is only ever a build stage.
+    assert froms[-1].split()[0] == "${RUNTIME_IMAGE}"
+    assert froms[0].split()[0] == "${WEB_BUILD_IMAGE}"
+    assert args["WEB_BUILD_IMAGE"].startswith("node:")
 
 
 def test_no_unpinned_frontend() -> None:
@@ -171,7 +175,7 @@ def test_copy_sources_are_explicit_and_allowed_by_dockerignore() -> None:
     allowed = {line[1:].rstrip("/") for line in rules if line.startswith("!")}
     for source in _copy_map():
         assert source in allowed, f"{source} missing from dockerignore"
-        assert source not in {".", "server", "server/src", "packages"}, source
+        assert source not in {".", "server", "server/src", "packages", "web"}, source
 
 
 def test_workspace_dependencies_are_copied() -> None:
@@ -230,9 +234,73 @@ def test_lock_matches_uv_export() -> None:
     )
 
 
+# --- web UI stage ---------------------------------------------------------
+
+WEB_DIR_SETTING = "CARAPACE_WEB_DIR"
+WEB_BUILD_INPUTS = {
+    "web/package.json",
+    "web/package-lock.json",
+    "web/index.html",
+    "web/tsconfig.json",
+    "web/vite.config.ts",
+    "web/public",
+    "web/src",
+}
+
+
+def _stage_copies() -> list[tuple[str, str, str]]:
+    """(stage, source, destination) of every COPY --from=<stage>."""
+    copies = []
+    for keyword, rest in _instructions():
+        if keyword != "COPY" or not rest.startswith("--from="):
+            continue
+        stage, _, paths = rest.partition(" ")
+        source, destination = paths.split()
+        copies.append((stage.removeprefix("--from="), source, destination))
+    return copies
+
+
+def _final_env() -> dict[str, str]:
+    env = {}
+    for keyword, rest in _final_stage():
+        if keyword == "ENV":
+            env.update(dict(re.findall(r"(\w+)=(\S+)", rest)))
+    return env
+
+
+def test_web_ui_is_installed_from_the_lockfile_without_scripts() -> None:
+    runs = [rest for keyword, rest in _instructions() if keyword == "RUN"]
+    installs = [r for r in runs if r.startswith("npm ")]
+    assert "npm ci --ignore-scripts" in installs
+    assert not any("npm install" in r or "npm i " in r for r in runs)
+    assert "npm run build" in installs
+    assert set(_copy_map()) >= WEB_BUILD_INPUTS
+
+
+def test_only_the_web_build_output_reaches_the_image() -> None:
+    """The final image serves dist/ alone: no node_modules, sources or lock."""
+    web_copies = [(s, d) for stage, s, d in _stage_copies() if stage == "web"]
+    assert web_copies == [("/web/dist/", "/app/web/")]
+    build_copies = [(s, d) for stage, s, d in _stage_copies() if stage == "build"]
+    assert build_copies == [("/app", "/app")]
+    assert _final_env()[WEB_DIR_SETTING] == "/app/web"
+
+
+def test_web_test_code_is_excluded_from_the_build_context() -> None:
+    rules = DOCKERIGNORE.read_text().splitlines()
+    for pattern in ("web/src/**/*.test.ts", "web/src/**/*.test.tsx"):
+        assert pattern in rules, pattern
+    assert "web/src/testing.ts" in rules
+    assert not any(line.startswith("!web/e2e") for line in rules)
+
+
 # --- .github/workflows/server-image.yml -----------------------------------
 
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "server-image.yml"
+
+
+def test_workflow_rebuilds_when_the_web_ui_changes() -> None:
+    assert '      - "web/**"\n' in WORKFLOW.read_text()
 
 
 def test_workflow_is_read_only_except_the_tag_gated_push() -> None:
