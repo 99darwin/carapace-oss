@@ -292,7 +292,9 @@ carapace destroy --project <project> --prefix <prefix>
 ```
 
 which prints the warnings below, asks you to type the project id, turns
-off the deletion protection and runs `pulumi destroy`. A stack deployed
+off the deletion protection and runs `pulumi destroy`. It then removes the
+empty Pulumi stack and, when they belong to this deployment, the session
+and enclave pin in the CLI's config directory. The owner key is kept. A stack deployed
 by hand is removed with
 
 ```bash

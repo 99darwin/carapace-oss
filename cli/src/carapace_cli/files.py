@@ -111,6 +111,40 @@ def read_private_json(path: Path) -> dict[str, Any]:
     return value
 
 
+FileIdentity = tuple[int, int]
+
+
+def regular_file_identity(path: Path) -> FileIdentity | None:
+    """``(device, inode)`` of ``path`` if it is a regular file, not a link.
+
+    None for anything else, including a symlink (never followed).
+
+    Raises:
+        FileNotFoundError: Nothing is at ``path``.
+    """
+    info = path.lstat()
+    if not stat.S_ISREG(info.st_mode):
+        return None
+    return info.st_dev, info.st_ino
+
+
+def remove_private(path: Path, *, identity: FileIdentity) -> None:
+    """Unlink ``path`` only if it is still the regular file ``identity``.
+
+    Raises:
+        StorageError: ``path`` was replaced (by a symlink or another file)
+            since ``identity`` was taken.
+    """
+    try:
+        current = regular_file_identity(path)
+    except FileNotFoundError:
+        return
+    if current != identity:
+        raise StorageError(f"{path} changed while it was being removed; kept it")
+    path.unlink()
+    _fsync_dir(path.parent)
+
+
 def _fsync_dir(directory: Path) -> None:
     fd = os.open(directory, os.O_RDONLY)
     try:

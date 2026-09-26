@@ -13,11 +13,13 @@ from typing import Any
 
 import pytest
 from deploy_support import (
+    ENCLAVE_URL,
     NEW_DIGEST,
     PREFIX,
     PROJECT,
     REGION,
     SERVER_DIGEST,
+    SERVER_URL,
     FakeGoogle,
     FakeStack,
     deployable_project,
@@ -30,7 +32,7 @@ from deploy_support import (
 from first_run_support import fake_first_run
 
 from carapace_cli.deploy import command
-from carapace_cli.deploy.destroy import UNPROTECTED, run_destroy
+from carapace_cli.deploy.destroy import FRESH_STACK, UNPROTECTED, run_destroy
 from carapace_cli.deploy.gcp import STORAGE
 from carapace_cli.deploy.preflight import (
     ExistingDeployment,
@@ -46,7 +48,16 @@ from carapace_cli.deploy.record import (
     record_name,
     write_record,
 )
+from carapace_cli.errors import StorageError
+from carapace_cli.files import (
+    regular_file_identity,
+    remove_private,
+    write_private_json,
+)
 from carapace_cli.main import main
+from carapace_cli.ownerkey_store import owner_key_path
+from carapace_cli.pin import pin_path
+from carapace_cli.session import session_path
 
 EMAIL = "a@b.io"
 ZONE = f"{REGION}-a"
@@ -349,3 +360,178 @@ def test_resumed_destroy_skips_the_protection_up() -> None:
     stack.set_config(UNPROTECTED)
     run_destroy(stack, say=lambda _: None)
     assert not stack.ups and stack.destroyed
+
+
+# -- after the destroy: the stack, the record and the config dir ---------------
+
+DEPLOY = ["deploy", "--project", PROJECT, "--prefix", PREFIX, "--alert-email", EMAIL]
+OTHER_SERVER = "https://other-server-456.us-central1.run.app"
+OTHER_ENCLAVE = "https://198.51.100.9:8443"
+
+
+def deployed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[FakeGoogle, FakeStack]:
+    """A deploy through the CLI: record, stack, owner key, session and pin."""
+    google, stack = deployable_project(), FakeStack()
+    code, output = run_cli(monkeypatch, tmp_path, google, stack, *DEPLOY, *DEPLOY_FLAGS)
+    assert code == 0, output
+    return google, stack
+
+
+def local_files(config_dir: Path) -> dict[str, bool]:
+    return {
+        "session": session_path(config_dir).exists(),
+        "pin": pin_path(config_dir).exists(),
+        "owner key": owner_key_path(config_dir).exists(),
+    }
+
+
+def write_local(config_dir: Path, *, server_url: str, enclave_url: str) -> None:
+    write_private_json(
+        session_path(config_dir),
+        {
+            "server_url": server_url,
+            "user_id": "u",
+            "access_token": "a",
+            "refresh_token": "r",
+        },
+    )
+    write_private_json(pin_path(config_dir), {"enclave_url": enclave_url})
+
+
+def test_destroy_removes_the_stack_and_the_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    google, stack = recorded(deployable_project()), live_stack()
+    code, output = destroy(
+        monkeypatch, tmp_path, google, stack, "--confirm-project", PROJECT
+    )
+    assert code == 0, output
+    assert stack.destroyed and stack.removed
+    assert stack.config() == {}
+    assert record_name(PREFIX) not in google.objects
+    assert f"Removed the Pulumi stack {PREFIX!r}" in output
+    assert "pulumi stack rm" not in output
+    assert "use another --config-dir" not in output
+    assert f"Kept the state bucket gs://{PROJECT}-carapace-state" in output
+
+
+def test_failed_stack_rm_does_not_fail_the_destroy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    google, stack = recorded(deployable_project()), live_stack()
+    stack.fail_on_remove = True
+    code, output = destroy(
+        monkeypatch, tmp_path, google, stack, "--confirm-project", PROJECT
+    )
+    assert code == 0, output
+    assert stack.destroyed and not stack.removed
+    assert "Could not remove the empty Pulumi stack" in output
+    assert "simulated" in output
+    assert record_name(PREFIX) not in google.objects
+    # The config file left behind would otherwise say the workloads run
+    # and deletion protection is off.
+    assert all(stack.config()[key] == value for key, value in FRESH_STACK.items())
+    assert output.rstrip().endswith("so the project can be deployed again.")
+
+
+def test_destroy_removes_its_session_and_pin_but_keeps_the_owner_key(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    google, stack = deployed(monkeypatch, tmp_path)
+    assert local_files(tmp_path) == {"session": True, "pin": True, "owner key": True}
+    code, output = destroy(
+        monkeypatch, tmp_path, google, stack, "--confirm-project", PROJECT
+    )
+    assert code == 0, output
+    assert local_files(tmp_path) == {
+        "session": False,
+        "pin": False,
+        "owner key": True,
+    }
+    assert f"Removed the destroyed deployment's session {tmp_path}" in output
+    assert f"Kept the owner key {owner_key_path(tmp_path)}" in output
+
+
+@pytest.mark.parametrize(
+    ("server_url", "enclave_url"),
+    [
+        (OTHER_SERVER, OTHER_ENCLAVE),
+        (SERVER_URL, OTHER_ENCLAVE),
+        (OTHER_SERVER, ENCLAVE_URL),
+    ],
+)
+def test_destroy_keeps_another_deployments_session_and_pin(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    server_url: str,
+    enclave_url: str,
+) -> None:
+    write_local(tmp_path, server_url=server_url, enclave_url=enclave_url)
+    before = {
+        path: path.read_bytes() for path in (session_path(tmp_path), pin_path(tmp_path))
+    }
+    google, stack = recorded(deployable_project()), live_stack()
+    code, output = destroy(
+        monkeypatch, tmp_path, google, stack, "--confirm-project", PROJECT
+    )
+    assert code == 0, output
+    assert stack.destroyed
+    assert {path: path.read_bytes() for path in before} == before
+    assert f"Left {tmp_path} untouched" in output
+    assert "another deployment" in output
+
+
+def test_destroy_never_follows_a_symlinked_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    config_dir, elsewhere = tmp_path / "config", tmp_path / "elsewhere"
+    write_local(elsewhere, server_url=SERVER_URL, enclave_url=ENCLAVE_URL)
+    write_private_json(pin_path(config_dir), {"enclave_url": ENCLAVE_URL})
+    session_path(config_dir).symlink_to(session_path(elsewhere))
+    google, stack = recorded(deployable_project()), live_stack()
+    code, output = destroy(
+        monkeypatch, config_dir, google, stack, "--confirm-project", PROJECT
+    )
+    assert code == 0, output
+    assert session_path(config_dir).is_symlink()
+    assert session_path(elsewhere).is_file()
+    assert pin_path(config_dir).is_file()
+    assert "is not a regular file" in output
+
+
+def test_remove_private_refuses_a_replaced_file(tmp_path: Path) -> None:
+    path = tmp_path / "session.json"
+    write_private_json(path, {"server_url": SERVER_URL})
+    identity = regular_file_identity(path)
+    assert identity is not None
+    replacement = tmp_path / "replacement"
+    write_private_json(replacement, {"server_url": SERVER_URL})
+    path.unlink()
+    path.symlink_to(replacement)
+    with pytest.raises(StorageError, match="changed"):
+        remove_private(path, identity=identity)
+    assert path.is_symlink() and replacement.is_file()
+
+
+@pytest.mark.parametrize("fail_on_remove", [False, True])
+def test_deploy_after_destroy_starts_fresh(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, fail_on_remove: bool
+) -> None:
+    google, stack = deployed(monkeypatch, tmp_path)
+    stack.fail_on_remove = fail_on_remove
+    code, output = destroy(
+        monkeypatch, tmp_path, google, stack, "--confirm-project", PROJECT
+    )
+    assert code == 0, output
+    ups_before = len(stack.ups)
+    code, output = run_cli(monkeypatch, tmp_path, google, stack, *DEPLOY, *DEPLOY_FLAGS)
+    assert code == 0, output
+    assert "Existing deployment" not in output
+    assert "skipping the bootstrap" not in output
+    bootstrap = stack.ups[ups_before]
+    assert bootstrap["carapace:deploy_workloads"] == "false"
+    assert all(bootstrap.get(key) != "false" for key in UNPROTECTED)
+    assert record_name(PREFIX) in google.objects
+    assert local_files(tmp_path) == {"session": True, "pin": True, "owner key": True}

@@ -15,6 +15,7 @@ the streamed output and are never returned.
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import re
@@ -39,6 +40,13 @@ ERROR_TAIL_LINES = 20
 # What `pulumi stack output --json` prints in place of a secret output.
 MASKED_OUTPUT = "[secret]"  # noqa: S105 - a placeholder, not a credential
 VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)")
+RESUME_HINT = "fix the cause and run the same command again to resume"
+# What `pulumi destroy` prints after a successful destroy. The CLI removes
+# the stack itself, so the hint to run `pulumi stack rm` is not shown.
+STACK_RM_HINT = (
+    "The resources in the stack have been deleted, but the history and configuration",
+    "If you want to remove the stack completely, run `pulumi stack rm",
+)
 
 
 class PulumiError(CarapaceError):
@@ -55,6 +63,8 @@ class StackHandle(Protocol):
     def up(self) -> dict[str, Any]: ...
 
     def destroy(self) -> None: ...
+
+    def remove(self) -> None: ...
 
     def outputs(self) -> dict[str, Any]: ...
 
@@ -159,6 +169,10 @@ def find_pulumi(
     return executable
 
 
+def _is_subcommand(arg: str) -> bool:
+    return not arg.startswith("-")
+
+
 @dataclass
 class PulumiStack:
     """A :class:`StackHandle` that runs ``pulumi`` in ``infra/pulumi``."""
@@ -170,7 +184,14 @@ class PulumiStack:
     on_output: Callable[[str], None]
     run: ProcessRunner = field(default=run_process)
 
-    def _pulumi(self, *args: str, stream: bool = False, scoped: bool = True) -> str:
+    def _pulumi(
+        self,
+        *args: str,
+        stream: bool = False,
+        scoped: bool = True,
+        hint: str = RESUME_HINT,
+        on_output: Callable[[str], None] | None = None,
+    ) -> str:
         argv = [self.executable, *args, "--non-interactive"]
         if scoped:
             argv += ["--stack", self.stack]
@@ -178,15 +199,13 @@ class PulumiStack:
             argv,
             cwd=self.infra,
             env=pulumi_env(self.backend),
-            on_output=self.on_output if stream else None,
+            on_output=(on_output or self.on_output) if stream else None,
         )
         if result.code != 0:
             lines = [line for line in result.output.splitlines() if line.strip()]
             detail = lines[-1].strip() if lines else f"exit code {result.code}"
-            raise PulumiError(
-                f"pulumi {args[0]} failed: {detail}; fix the cause and run the "
-                "same command again to resume"
-            )
+            command = " ".join(itertools.takewhile(_is_subcommand, args[:2]))
+            raise PulumiError(f"pulumi {command} failed: {detail}; {hint}")
         return result.output
 
     def _json(self, *args: str) -> dict[str, Any]:
@@ -234,7 +253,33 @@ class PulumiStack:
         return self.outputs()
 
     def destroy(self) -> None:
-        self._pulumi("destroy", "--yes", "--skip-preview", stream=True)
+        self._pulumi(
+            "destroy",
+            "--yes",
+            "--skip-preview",
+            stream=True,
+            on_output=self._without_stack_rm_hint,
+        )
+
+    def remove(self) -> None:
+        """``pulumi stack rm``: the stack's history and its local config file.
+
+        Only an empty stack is removed (no ``--force``), and the config file
+        ``Pulumi.<stack>.yaml`` goes with it (no ``--preserve-config``), so
+        a later deploy with the same prefix starts from a new stack.
+        """
+        self._pulumi(
+            "stack",
+            "rm",
+            "--yes",
+            self.stack,
+            scoped=False,
+            hint="the stack's resources are already deleted",
+        )
+
+    def _without_stack_rm_hint(self, line: str) -> None:
+        if not line.strip().startswith(STACK_RM_HINT):
+            self.on_output(line)
 
     def outputs(self) -> dict[str, Any]:
         """Stack outputs, with secret outputs left out."""
