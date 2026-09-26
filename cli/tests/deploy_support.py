@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import io
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -16,6 +16,8 @@ import httpx
 
 from carapace_cli.deploy.gcp import GcpApi
 from carapace_cli.deploy.interview import Interview
+from carapace_cli.deploy.polling import Clock
+from carapace_cli.errors import CarapaceError
 
 PROJECT = "carapace-selfhost"
 PROJECT_NUMBER = "123456789012"
@@ -151,3 +153,102 @@ def transcript(interview: Interview) -> str:
     out = interview.stream_out
     assert isinstance(out, io.StringIO)
     return out.getvalue()
+
+
+STORAGE = "https://storage.googleapis.com/storage/v1"
+SERVICE_USAGE = "https://serviceusage.googleapis.com/v1"
+RUN = "https://run.googleapis.com/v2"
+REGION = "us-central1"
+PREFIX = "c1x"
+KEY_VERSION = (
+    f"projects/{PROJECT}/locations/{REGION}/keyRings/{PREFIX}-keyring"
+    f"/cryptoKeys/{PREFIX}-secrets/cryptoKeyVersions/1"
+)
+REGISTRY = f"{REGION}-docker.pkg.dev/{PROJECT}/{PREFIX}"
+OLD_DIGEST = "sha256:" + "01" * 32
+NEW_DIGEST = "sha256:" + "02" * 32
+SERVER_DIGEST = "sha256:" + "03" * 32
+
+
+def deployable_project(google: FakeGoogle | None = None) -> FakeGoogle:
+    """Preflight passes, state APIs are on, the key and migration succeed."""
+    google = healthy_project(google)
+    location = f"{KMS}/projects/{PROJECT}/locations/{REGION}"
+    return (
+        google.on(
+            "GET",
+            f"{SERVICE_USAGE}/projects/{PROJECT}/services/",
+            ok({"state": "ENABLED"}),
+        )
+        .on("GET", f"{STORAGE}/b/", ok(_healthy_bucket()))
+        .on("GET", f"{location}/keyRings/", ok({"purpose": "ENCRYPT_DECRYPT"}))
+        .on("GET", f"{KMS}/{KEY_VERSION}", ok({"state": "ENABLED"}))
+        .on(
+            "GET",
+            f"{RUN}/projects/{PROJECT}/locations/{REGION}/jobs/",
+            ok({"latestCreatedExecution": {"completionStatus": "EXECUTION_SUCCEEDED"}}),
+        )
+    )
+
+
+def _healthy_bucket() -> dict[str, Any]:
+    return {
+        "projectNumber": PROJECT_NUMBER,
+        "iamConfiguration": {
+            "uniformBucketLevelAccess": {"enabled": True},
+            "publicAccessPrevention": "enforced",
+        },
+        "versioning": {"enabled": True},
+    }
+
+
+@dataclass
+class FakeStack:
+    """A Pulumi stack in memory: config, and a log of every ``up``."""
+
+    initial: dict[str, str] = field(default_factory=dict)
+    fail_on_up: int | None = None
+    ups: list[dict[str, str]] = field(default_factory=list)
+    destroyed: bool = False
+
+    def __post_init__(self) -> None:
+        self._config = dict(self.initial)
+
+    def config(self) -> dict[str, str]:
+        return dict(self._config)
+
+    def set_config(self, values: Mapping[str, str]) -> None:
+        self._config.update(values)
+
+    def up(self) -> dict[str, Any]:
+        if self.fail_on_up is not None and len(self.ups) + 1 == self.fail_on_up:
+            self.fail_on_up = None
+            raise CarapaceError("pulumi failed: simulated")
+        self.ups.append(self.config())
+        return self.outputs()
+
+    def destroy(self) -> None:
+        self.destroyed = True
+
+    def outputs(self) -> dict[str, Any]:
+        outputs: dict[str, Any] = {
+            "kms_key_version_name": KEY_VERSION,
+            "image_registry": REGISTRY,
+        }
+        if self._config.get("carapace:deploy_workloads") == "true":
+            outputs |= {
+                "migration_job": f"{PREFIX}-migrate",
+                "enclave_url": "https://203.0.113.7:8443",
+                "server_url": "https://c1x-server-123.us-central1.run.app",
+            }
+        return outputs
+
+
+def instant_clock() -> Clock:
+    """A clock whose sleeps advance time without waiting."""
+    now = [0.0]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    return Clock(sleep=sleep, monotonic=lambda: now[0])
