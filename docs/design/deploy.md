@@ -230,7 +230,12 @@ only the enclave).
   and a later deploy with the prefix starts fresh; Pulumi's hint to run
   that command is not shown. A failed `stack rm` is reported but the
   destroy still succeeds; the stack's config is then reset (protection on,
-  `deploy_workloads` false) so a new deploy bootstraps.
+  `deploy_workloads` false, `allowed_digests` empty) so a new deploy
+  bootstraps and does not trust the dead deployment's enclave digest.
+- Every deploy sets `protect_kms_key` and `db_deletion_protection` on
+  again with the rest of the config it owns, so a config file left behind
+  by an interrupted destroy (or a failed reset) cannot bring a deployment
+  up unprotected.
 - The session and enclave pin in the config directory are removed if they
   name the destroyed deployment's server and enclave URLs (read from the
   stack outputs before the destroy). If either names another deployment,

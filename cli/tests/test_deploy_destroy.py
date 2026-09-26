@@ -8,6 +8,7 @@ network.
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ import pytest
 from deploy_support import (
     ENCLAVE_URL,
     NEW_DIGEST,
+    OLD_DIGEST,
     PREFIX,
     PROJECT,
     REGION,
@@ -535,3 +537,50 @@ def test_deploy_after_destroy_starts_fresh(
     assert all(bootstrap.get(key) != "false" for key in UNPROTECTED)
     assert record_name(PREFIX) in google.objects
     assert local_files(tmp_path) == {"session": True, "pin": True, "owner key": True}
+
+
+def test_deploy_after_failed_stack_rm_forgets_the_old_enclave_digest(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The config file the failed `stack rm` left behind still lists the
+    # dead deployment's enclave; the new bootstrap must not trust it.
+    google, stack = recorded(deployable_project()), live_stack()
+    stack.set_config(
+        {
+            "carapace:enclave_image_digest": OLD_DIGEST,
+            "carapace:allowed_digests": json.dumps([OLD_DIGEST]),
+        }
+    )
+    stack.fail_on_remove = True
+    code, output = destroy(
+        monkeypatch, tmp_path, google, stack, "--confirm-project", PROJECT
+    )
+    assert code == 0, output
+    ups_before = len(stack.ups)
+    code, output = run_cli(monkeypatch, tmp_path, google, stack, *DEPLOY, *DEPLOY_FLAGS)
+    assert code == 0, output
+    bootstrap, *workloads = stack.ups[ups_before:]
+    assert bootstrap["carapace:deploy_workloads"] == "false"
+    # No up of the new deployment trusts the old enclave, not even briefly.
+    assert all(
+        json.loads(up["carapace:allowed_digests"]) == [NEW_DIGEST]
+        for up in (bootstrap, *workloads)
+    )
+    assert workloads and all(
+        up["carapace:enclave_image_digest"] == NEW_DIGEST for up in workloads
+    )
+
+
+def test_deploy_after_an_interrupted_destroy_turns_protection_back_on(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A destroy that stopped after its protection `up` leaves the config
+    # unprotected while the state is still live. A deploy run instead of
+    # the resume must not keep it that way.
+    google, stack = recorded(deployable_project()), live_stack()
+    stack.set_config(UNPROTECTED)
+    code, output = run_cli(monkeypatch, tmp_path, google, stack, *DEPLOY, *DEPLOY_FLAGS)
+    assert code == 0, output
+    assert stack.ups, "the deploy ran no up"
+    assert all(up[key] == "true" for up in stack.ups for key in UNPROTECTED)
+    assert all(stack.config()[key] == "true" for key in UNPROTECTED)

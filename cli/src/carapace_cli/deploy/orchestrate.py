@@ -33,6 +33,14 @@ MIGRATION_PENDING = frozenset({"EXECUTION_PENDING", "EXECUTION_RUNNING"})
 MIGRATION_SUCCEEDED = "EXECUTION_SUCCEEDED"
 TRUE = "true"
 FALSE = "false"
+# Deletion protection on the KMS key and the database. Only `carapace
+# destroy` turns it off; every deploy sets it on again, so a config file
+# left behind by an interrupted destroy cannot bring a deployment up
+# unprotected.
+PROTECTED = {
+    "carapace:protect_kms_key": TRUE,
+    "carapace:db_deletion_protection": TRUE,
+}
 
 
 class DeployStepError(CarapaceError):
@@ -70,6 +78,7 @@ def base_config(target: Target) -> dict[str, str]:
         "gcp:zone": target.zone,
         "carapace:prefix": target.prefix,
         "carapace:alert_emails": json.dumps(list(target.alert_emails)),
+        **PROTECTED,
     }
 
 
