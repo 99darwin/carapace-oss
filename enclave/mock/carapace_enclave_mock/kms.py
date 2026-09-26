@@ -13,7 +13,7 @@ from carapace_enclave.attestation.kms import (
 )
 
 MOCK_KMS_KEY_VERSION = (
-    "projects/carapace-dev/locations/global/keyRings/mock"
+    "projects/example-project/locations/global/keyRings/mock"
     "/cryptoKeys/dek-wrap/cryptoKeyVersions/1"
 )
 

@@ -37,7 +37,7 @@ DEFAULT_POLICY = {
 }
 # Same name as the dev mock enclave's key (MOCK_KMS_KEY_VERSION).
 KMS_KEY_VERSION = (
-    "projects/carapace-dev/locations/global/keyRings/mock"
+    "projects/example-project/locations/global/keyRings/mock"
     "/cryptoKeys/dek-wrap/cryptoKeyVersions/1"
 )
 PLAINTEXT = b"ghp_example_token"

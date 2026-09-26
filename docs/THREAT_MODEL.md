@@ -346,9 +346,8 @@ decrypts), except where noted.
 
 ### Verified on real GCP
 
-Checked once on 2026-09-26, in a throwaway project (`throwaway-carapace`,
-region `us-east1`), with images built from source by `carapace deploy
---build`:
+Checked once on 2026-09-26, in a throwaway project in `us-east1`, with
+images built from source by `carapace deploy --build`:
 
 - The attestation token carries `submods.container.env.CONTROL_PLANE_URL`,
   `KMS_KEY_NAME` and `WIF_AUDIENCE` as a map from name to value. The WIF

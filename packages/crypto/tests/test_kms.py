@@ -7,7 +7,7 @@ import pytest
 from carapace_crypto.kms import is_kms_key_version_name
 
 VALID = (
-    "projects/carapace-dev/locations/global/keyRings/mock"
+    "projects/example-project/locations/global/keyRings/mock"
     "/cryptoKeys/dek-wrap/cryptoKeyVersions/1"
 )
 
@@ -38,8 +38,8 @@ def test_accepts_full_version_names(name: str) -> None:
         VALID + "\n",
         "\n" + VALID,
         VALID.replace("keyRings/mock", "keyRings/../x"),
-        VALID.replace("carapace-dev", "Bad_Project"),
-        VALID.replace("carapace-dev", "p"),
+        VALID.replace("example-project", "Bad_Project"),
+        VALID.replace("example-project", "p"),
         VALID.replace("global", "Global"),
         "projects/x/cryptoKeyVersions/9",
         VALID.replace("/1", "/" + "9" * 20),

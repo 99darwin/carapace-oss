@@ -1,8 +1,4 @@
-"""Password auth, token rotation, logout and bearer validation.
-
-Ported from the orchestrator's test_auth.py; KMS sealing, NextAuth exchange
-and admin roles are gone.
-"""
+"""Password auth, token rotation, logout and bearer validation."""
 
 import uuid
 from datetime import timedelta

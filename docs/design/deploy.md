@@ -255,8 +255,8 @@ only the enclave).
 
 ## Verified on real GCP
 
-Run once on 2026-09-26 in a throwaway project (`throwaway-carapace`,
-region `us-east1`), from a checkout with `carapace deploy --build`:
+Run once on 2026-09-26 in a throwaway project in `us-east1`, from a
+checkout with `carapace deploy --build`:
 
 - The whole wizard, end to end: preflight, the GCS state backend with the
   `gcpkms://` secrets provider, the bootstrap `up` and the wait for the
