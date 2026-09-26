@@ -1,6 +1,7 @@
 """``carapace deploy``: interview, preflight, summary, confirm, deploy.
 
-The command's collaborators (the GCP client, the Pulumi stack and the
+The command's collaborators (the GCP client, the Pulumi stack, HTTP to
+GitHub and the registries, signature checks, local processes and the
 clock) come from :class:`Services`, so tests replace every external call
 with a fake.
 """
@@ -8,22 +9,49 @@ with a fake.
 from __future__ import annotations
 
 import argparse
+import os
+import shutil
+import tempfile
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, TextIO
+
+import httpx
 
 from carapace_cli.deploy import pulumi_runner
 from carapace_cli.deploy.gcp import AdcTokenSource, GcpApi
-from carapace_cli.deploy.interview import Interview
+from carapace_cli.deploy.images import (
+    DEFAULT_RELEASE_REPO,
+    HTTP_TIMEOUT_SECONDS,
+    BuiltImages,
+    GitHubReleases,
+    ImageError,
+    Registries,
+    ReleaseImages,
+    SignatureVerifier,
+    fetch_release,
+    sigstore_verify,
+    validate_repo,
+    validate_tag,
+)
+from carapace_cli.deploy.interview import Interview, InvalidInputError
 from carapace_cli.deploy.orchestrate import (
     Images,
+    ImageSource,
     PrebuiltImages,
     run_deploy,
     validate_digest,
 )
 from carapace_cli.deploy.polling import Clock
 from carapace_cli.deploy.preflight import Flags, Target, run_preflight
-from carapace_cli.deploy.pulumi_runner import StackHandle
+from carapace_cli.deploy.pulumi_runner import (
+    ProcessRunner,
+    StackHandle,
+    locate_infra,
+    run_process,
+)
 from carapace_cli.deploy.state import StateBackend, ensure_state_backend
 from carapace_cli.deploy.summary import render_summary
 
@@ -54,6 +82,11 @@ class Services:
     gcp: Callable[[], GcpApi]
     stack: StackFactory = open_pulumi_stack
     clock: Clock = Clock()
+    # None means the network; tests pass an httpx.MockTransport.
+    transport: httpx.BaseTransport | None = None
+    verify: SignatureVerifier = sigstore_verify
+    run: ProcessRunner = run_process
+    which: Callable[[str], str | None] = shutil.which
 
 
 def default_services() -> Services:
@@ -96,20 +129,137 @@ def ask_images(args: argparse.Namespace, interview: Interview) -> Images:
     )
 
 
+def image_mode(args: argparse.Namespace) -> str:
+    """``release`` (the default), ``build`` or ``prebuilt``; one at most."""
+    prebuilt = args.enclave_digest is not None or args.server_digest is not None
+    chosen = [
+        name
+        for name, given in (
+            ("--release", args.release is not None),
+            ("--build", args.build),
+            ("--enclave-digest/--server-digest", prebuilt),
+        )
+        if given
+    ]
+    if len(chosen) > 1:
+        raise InvalidInputError(f"{' and '.join(chosen)} cannot be combined")
+    return "build" if args.build else "prebuilt" if prebuilt else "release"
+
+
+def require_tool(services: Services, name: str, why: str) -> str:
+    executable = services.which(name)
+    if executable is None:
+        raise ImageError(f"{why} needs {name} on PATH")
+    return executable
+
+
+def cosign_checker(services: Services) -> Callable[[list[str]], bool | None]:
+    """Run ``cosign`` if installed: True if it verified, None if absent."""
+
+    def check(arguments: list[str]) -> bool | None:
+        executable = services.which("cosign")
+        if executable is None:
+            return None
+        result = services.run(
+            [executable, *arguments],
+            cwd=Path.cwd(),
+            env=dict(os.environ),
+            on_output=None,
+        )
+        return result.code == 0
+
+    return check
+
+
+def release_images(
+    args: argparse.Namespace,
+    interview: Interview,
+    services: Services,
+    registries: Registries,
+    *,
+    ctx: CommandContext,
+    cleanup: ExitStack,
+) -> tuple[ImageSource, str]:
+    """The release's signed manifest, verified before the summary."""
+    repo = validate_repo(args.release_repo)
+    client = cleanup.enter_context(
+        httpx.Client(
+            transport=services.transport,
+            timeout=HTTP_TIMEOUT_SECONDS,
+            follow_redirects=True,
+            trust_env=False,
+        )
+    )
+    releases = GitHubReleases(client)
+    tag = interview.ask(
+        f"Release of {repo} to deploy",
+        flag="--release",
+        value=args.release,
+        default=None if args.release else releases.latest_tag(repo),
+        validate=validate_tag,
+    )
+    release = fetch_release(releases, services.verify, repo=repo, tag=tag)
+    ctx.say(f"Verified the signature of {repo} release {tag}.")
+    source = ReleaseImages(
+        release=release,
+        repo=repo,
+        registries=registries,
+        cosign=cosign_checker(services),
+        say=ctx.say,
+    )
+    description = (
+        f"release {tag} of {repo} (commit {release.commit[:12]}), "
+        f"enclave {release.digest} (signature verified), server {tag}"
+    )
+    return source, description
+
+
+def choose_images(
+    args: argparse.Namespace,
+    interview: Interview,
+    services: Services,
+    api: GcpApi,
+    *,
+    ctx: CommandContext,
+    cleanup: ExitStack,
+) -> tuple[ImageSource, str]:
+    """The image source and the line the summary shows for it."""
+    mode = image_mode(args)
+    if mode == "prebuilt":
+        images = ask_images(args, interview)
+        return PrebuiltImages(images), (
+            f"enclave {images.enclave_digest}, server {images.server_digest} "
+            "(already in the registry)"
+        )
+    registries = Registries(token=api.access_token, transport=services.transport)
+    cleanup.callback(registries.close)
+    if mode == "release":
+        return release_images(
+            args, interview, services, registries, ctx=ctx, cleanup=cleanup
+        )
+    workdir = cleanup.enter_context(tempfile.TemporaryDirectory(prefix="carapace-"))
+    source = BuiltImages(
+        root=locate_infra().parents[1],
+        workdir=Path(workdir),
+        docker=require_tool(services, "docker", "--build"),
+        git=require_tool(services, "git", "--build"),
+        run=services.run,
+        registries=registries,
+        say=ctx.say,
+        on_output=ctx.err.write,
+    )
+    return source, "built from this checkout with docker buildx (after confirming)"
+
+
 def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
     interview = make_interview(args, ctx)
     services = default_services()
-    with services.gcp() as api:
+    with services.gcp() as api, ExitStack() as cleanup:
         target, report = run_preflight(api, interview, flags_from(args))
-        images = ask_images(args, interview)
-        ctx.say(
-            render_summary(
-                target,
-                report,
-                images=f"enclave {images.enclave_digest}, "
-                f"server {images.server_digest}",
-            )
+        images, description = choose_images(
+            args, interview, services, api, ctx=ctx, cleanup=cleanup
         )
+        ctx.say(render_summary(target, report, images=description))
         if not interview.confirm(f"Deploy to {target.project} now?"):
             ctx.say("Aborted. Nothing was changed.")
             return EXIT_DECLINED
@@ -119,7 +269,7 @@ def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
             target,
             api=api,
             stack=stack,
-            images=PrebuiltImages(images),
+            images=images,
             clock=services.clock,
             say=ctx.say,
         )
@@ -153,8 +303,28 @@ def add_deploy_commands(sub: argparse._SubParsersAction) -> None:
         default=[],
         help="security alert recipient; repeat for several",
     )
-    deploy.add_argument("--enclave-digest", help="sha256 digest in the registry")
-    deploy.add_argument("--server-digest", help="sha256 digest in the registry")
+    deploy.add_argument(
+        "--release",
+        help="release tag whose signed images to deploy (default: the latest)",
+    )
+    deploy.add_argument(
+        "--release-repo",
+        default=DEFAULT_RELEASE_REPO,
+        help=f"GitHub repository of the release (default: {DEFAULT_RELEASE_REPO})",
+    )
+    deploy.add_argument(
+        "--build",
+        action="store_true",
+        help="build both images from this checkout with docker buildx instead",
+    )
+    deploy.add_argument(
+        "--enclave-digest",
+        help="use an enclave image already in the stack's registry, by digest",
+    )
+    deploy.add_argument(
+        "--server-digest",
+        help="use a server image already in the stack's registry, by digest",
+    )
     deploy.add_argument(
         "--yes", "-y", action="store_true", help="skip the final confirmation"
     )

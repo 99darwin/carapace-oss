@@ -284,6 +284,9 @@ def test_deploy_declined_interactively(monkeypatch: pytest.MonkeyPatch) -> None:
         alert_email=[EMAIL],
         enclave_digest=DIGEST,
         server_digest=DIGEST,
+        release=None,
+        release_repo="99darwin/carapace-oss",
+        build=False,
         non_interactive=False,
         yes=False,
     )
