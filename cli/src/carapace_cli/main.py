@@ -43,6 +43,7 @@ from carapace_cli.ownerkey_store import (
     owner_key_path,
     save_owner_key,
 )
+from carapace_cli.passwords import ask_new_password, check_password
 from carapace_cli.pin import EnclavePin, load_pin, pin_path, save_pin
 from carapace_cli.prompts import prompt_hidden, read_password, read_secret_value, zero
 from carapace_cli.sdk import API_KEY_ENV, Client
@@ -115,8 +116,19 @@ def cmd_init(args: argparse.Namespace, ctx: Context) -> int:
     return 0
 
 
+def _account_password(args: argparse.Namespace, ctx: Context, *, register: bool) -> str:
+    """The password; a new one must meet the server's rules first."""
+    if not register:
+        return read_password(from_stdin=args.password_stdin)
+    if args.password_stdin:
+        return check_password(read_password(from_stdin=True))
+    return ask_new_password(
+        lambda: read_password(from_stdin=False, confirm=True), ctx.say
+    )
+
+
 def _login(args: argparse.Namespace, ctx: Context, *, register: bool) -> int:
-    password = read_password(from_stdin=args.password_stdin, confirm=register)
+    password = _account_password(args, ctx, register=register)
     session = authenticate(args.server, args.email, password, register=register)
     save_session(ctx.config_dir, session)
     ctx.say(
@@ -393,12 +405,7 @@ def cmd_audit_verify(args: argparse.Namespace, ctx: Context) -> int:
     )
     for failure in report.failures:
         print(f"FAIL {failure}", file=ctx.out)
-    print(
-        f"{'OK' if report.ok else 'FAILED'}: {report.receipts} receipts from "
-        f"{report.boots} attested boots verified, {report.gaps} gaps "
-        "(other owners' receipts, or withheld)",
-        file=ctx.out,
-    )
+    print(report.summary(), file=ctx.out)
     return 0 if report.ok else EXIT_ERROR
 
 

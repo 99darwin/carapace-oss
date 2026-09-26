@@ -26,6 +26,7 @@ from carapace_cli.urls import normalize_base_url
 SESSION_FILE = "session.json"
 REQUEST_TIMEOUT_SECONDS = 30.0
 MAX_DETAIL_CHARS = 300
+REPLACEMENT_CHAR = "?"
 
 
 @dataclass
@@ -83,15 +84,61 @@ def _session_from_tokens(server_url: str, body: Any) -> Session:
         raise ServerError(200, "malformed token response") from None
 
 
+def _printable(text: str) -> str:
+    """``text`` with every character that is not printable replaced.
+
+    A server must not drive the terminal (C0 and C1 controls, DEL) nor
+    reorder or hide what the user reads: the Unicode format characters
+    (bidi overrides, zero-width joiners), line and paragraph separators,
+    and unassigned or private code points. ``str.isprintable`` is exactly
+    that set, keeping only the ASCII space among the separators.
+    """
+    return "".join(char if char.isprintable() else REPLACEMENT_CHAR for char in text)
+
+
+def _validation_error(item: Any) -> str | None:
+    """``loc: msg`` from one FastAPI/pydantic error, or None.
+
+    Only the location and message are kept: pydantic's ``input`` (and
+    ``ctx``) can echo the rejected value, such as a password.
+    """
+    if not isinstance(item, dict):
+        return None
+    loc, msg = item.get("loc"), item.get("msg")
+    if not isinstance(msg, str):
+        return None
+    if isinstance(loc, list) and loc:
+        return f"{'.'.join(str(part) for part in loc)}: {msg}"
+    return msg
+
+
+def describe_detail(detail: Any) -> str | None:
+    """A printable, bounded summary of an error body's ``detail``."""
+    if isinstance(detail, str):
+        text = detail
+    elif isinstance(detail, list):
+        errors = [e for e in map(_validation_error, detail) if e is not None]
+        if not errors:
+            return None
+        text = "; ".join(errors)
+    else:
+        return None
+    text = _printable(text)
+    if len(text) > MAX_DETAIL_CHARS:
+        text = text[: MAX_DETAIL_CHARS - 3] + "..."
+    return text
+
+
 def raise_for_status(response: httpx.Response) -> None:
     if response.is_success:
         return
     detail: Any = None
     with contextlib.suppress(ValueError, AttributeError):
         detail = response.json().get("detail")
-    if not isinstance(detail, str):
-        detail = response.reason_phrase or "error"
-    raise ServerError(response.status_code, detail[:MAX_DETAIL_CHARS])
+    described = describe_detail(detail)
+    if described is None:
+        described = _printable(response.reason_phrase or "error")[:MAX_DETAIL_CHARS]
+    raise ServerError(response.status_code, described)
 
 
 def authenticate(

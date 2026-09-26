@@ -17,8 +17,9 @@ Related documents: [ARCHITECTURE.md](ARCHITECTURE.md) (design),
 freshness), [VERIFY.md](VERIFY.md) (checking an enclave and receipts),
 [SELF_HOST.md](SELF_HOST.md) (deploying your own).
 
-> **Status: pre-alpha.** No part of the system has yet run end to end on
-> real Confidential Space hardware. See [Unverified
+> **Status: pre-alpha.** The system has run end to end once on real
+> Confidential Space hardware (2026-09-26, images built from source with
+> `carapace deploy --build`). The release path has not. See [Unverified
 > assumptions](#unverified-assumptions).
 
 ## Assets
@@ -43,7 +44,7 @@ freshness), [VERIFY.md](VERIFY.md) (checking an enclave and receipts),
 | **Network attacker** | No | Can observe, drop, delay and modify traffic between any two parties |
 | **VM host operator** | No | Controls the hypervisor, guest clock, disk and network of the enclave VM, but not its encrypted memory (AMD SEV) |
 | **Other tenants** | No | Their own owner keys and API keys; can send traffic to the shared enclave |
-| **GCP project Owner/Editor** | Partly: see [residual risks](#residual-risks) | Can change IAM, including on the KMS key. Self-hosters are their own project owner |
+| **GCP project Owner/Editor** | Partly: see [residual risks](#residual-risks) | An Owner can change IAM, including on the KMS key, and so grant itself decrypt. An Editor cannot change IAM and holds no KMS decrypt permission; it can reconfigure, stop or replace the enclave VM, which costs availability, not secrets. Self-hosters are their own project owner |
 | **Upstream API** (the service a secret authenticates to) | No, beyond holding the secret legitimately | Sees the secret on every request, by design |
 
 ## Trusted computing base
@@ -126,18 +127,48 @@ Each guarantee below assumes the TCB is intact.
 These are known, accepted for v0.1, and out of scope as vulnerability
 reports unless you show they are worse than stated.
 
-### R1. A GCP project Owner or Editor can decrypt
+### R1. A GCP project Owner can decrypt
 
 The KMS key's IAM policy is authoritative, so `pulumi up` removes any extra
 binding on the key. It does **not** remove roles inherited from the project,
-folder or organization: the basic Owner and Editor roles carry Cloud KMS
-decrypt permission, so a principal holding either can call
-`AsymmetricDecrypt` directly, without touching any IAM policy and without an
-attested enclave. That call is a Data Access log entry and matches the
-alert's foreign-decrypt clause (below). A project Owner can also add a
-decrypt binding, loosen the WIF condition, add an image digest, or create a
-new key version. Each of those is an Admin Activity audit log entry, which
-cannot be turned off.
+folder or organization. The basic Editor role carries no decrypt permission
+(checked, below). Whether `roles/owner` itself carries
+`cloudkms.cryptoKeyVersions.useToDecrypt` was not checked, and does not
+matter: an Owner can change IAM, so it can grant itself (or anyone) a Cloud
+KMS role that decrypts, on the key or on the project, and then call
+`AsymmetricDecrypt` without an attested enclave. A project Owner can also
+loosen the WIF condition, add an image digest, or create a new key version.
+Each of those IAM or key changes is an Admin Activity audit log entry, which
+cannot be turned off, and any decrypt by a caller outside the stack's WIF
+pool is a Data Access log entry that matches the alert's foreign-decrypt
+clause (below).
+
+An Editor cannot change IAM policies, so it cannot decrypt unless it also
+holds a Cloud KMS role that allows it (granted directly, or inherited from a
+folder or organization). This matters because GCP grants the default
+Compute Engine service account Editor on new projects: that grant alone
+does not reach the key. Checked on real GCP on 2026-09-26, with `gcloud iam
+roles describe roles/editor` and the key's IAM policy: `roles/editor` has
+no `cloudkms.cryptoKeyVersions.useToDecrypt`, no
+`cloudkms.cryptoKeys.setIamPolicy`, and no write permission on workload
+identity pools or their providers (no `iam.workloadIdentityPools.*` write
+and no `iam.workloadIdentityPoolProviders.create`, `.update` or `.delete`),
+so it cannot loosen the WIF condition, its attribute mapping or its issuer
+either. The key's policy held only the attested digest principal set
+(`roles/cloudkms.cryptoKeyDecrypter`) and the server service account
+(`roles/cloudkms.publicKeyViewer`).
+
+What an Editor can reach is the enclave VM. `roles/editor` does carry
+`compute.instances.setMetadata` and `iam.serviceAccounts.actAs`, so it can
+change the VM's launcher metadata, stop it, or replace it with a VM of its
+own running as the enclave service account. None of that reaches the key:
+a different image has a different digest, outside the principal set; a
+different `CONTROL_PLANE_URL`, `KMS_KEY_NAME` or `WIF_AUDIENCE` fails the
+WIF condition; and the launcher refuses env overrides the image's launch
+policy does not list. Decrypt fails closed, and `carapace verify` refuses
+an enclave that is not the pinned one. The effect is on availability only.
+(The same role can redeploy the control plane and its database, which this
+model already treats as untrusted: see the server operator row above.)
 
 Detection, not prevention: when `enable_iam_alerts` is on (the default), a
 log-based alert emails `alert_emails` on KMS `SetIamPolicy`,
@@ -297,23 +328,49 @@ mocks. They need confirmation on real Confidential Space hardware before
 v0.1 is tagged. If one is wrong, the system should **fail closed** (nothing
 decrypts), except where noted.
 
-- The attestation token carries `submods.container.env.CONTROL_PLANE_URL`,
-  `KMS_KEY_NAME` and `WIF_AUDIENCE` in the form the WIF condition and
-  `carapace verify` expect (a map from name to value, including launch-time
-  overrides). If it does not, nothing can decrypt and `carapace verify`
-  refuses every enclave; both fail closed.
-- The `image_digest` claim is the platform manifest digest (the digest of
-  record), not an index digest.
 - The `principalSubject` recorded in Data Access logs for federated callers
   matches the pool prefix the alert allows. If it does not, every enclave
   decrypt alerts (noisy, but fails safe).
 - The KMS Data Access `methodName` for decrypt is `AsymmetricDecrypt` as the
   alert filter expects. If it is not, **unauthorized decrypts would not
   alert** (fails open for detection only).
-- WIF principal sets keyed on a `sha256:` attribute value work as written.
 - STS-federated credentials can call `GetPublicKey` with
   `roles/cloudkms.publicKeyViewer`.
-- The launcher accepts the image's launch policy and `log_redirect=always`.
-- Port 8443 is reachable through the launcher's rules and the firewall.
+- A non-confidential VM, or the server service account, actively calling
+  decrypt gets `PERMISSION_DENIED`. The key's IAM policy was inspected (see
+  below), but no such call was made.
 - The two CI builders produce the same digest in practice, and the tag,
-  push and cosign path in `enclave-image.yml` has not yet run.
+  push and cosign path in `enclave-image.yml` has not yet run. The release
+  download and sigstore verification in `carapace deploy` have not run
+  against a real release either (the repository was private).
+
+### Verified on real GCP
+
+Checked once on 2026-09-26, in a throwaway project (`throwaway-carapace`,
+region `us-east1`), with images built from source by `carapace deploy
+--build`:
+
+- The attestation token carries `submods.container.env.CONTROL_PLANE_URL`,
+  `KMS_KEY_NAME` and `WIF_AUDIENCE` as a map from name to value. The WIF
+  condition pinning all three was satisfied, and `carapace verify` with the
+  deployment identity pins passed.
+- The `image_digest` claim matched the pinned platform manifest digest, and
+  a WIF principal set keyed on a `sha256:` attribute value was granted
+  decrypt as written.
+- The launcher accepted the image's launch policy, and the enclave was
+  reachable on port 8443.
+- Real decrypt, header injection and response redaction worked through the
+  enclave (against httpbin.org), and a request to a host outside the
+  policy's allowlist was denied.
+- `carapace audit verify` passed with 2 receipts from 1 attested boot.
+- The KMS key's IAM policy held only the digest principal set
+  (`roles/cloudkms.cryptoKeyDecrypter`) and the server service account
+  (`roles/cloudkms.publicKeyViewer`).
+- `gcloud iam roles describe roles/editor` on the live project: the role
+  has no `cloudkms.cryptoKeyVersions.useToDecrypt`, no
+  `cloudkms.cryptoKeys.setIamPolicy`, and no write permission on workload
+  identity pools or their providers, so the Editor grant GCP gives the
+  default Compute Engine service account can neither decrypt nor loosen
+  the WIF condition. It does have `iam.serviceAccounts.actAs` and
+  `compute.instances.setMetadata`: an Editor can reconfigure, stop or
+  replace the enclave VM, which fails closed for decrypt (see R1).

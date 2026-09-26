@@ -2,8 +2,10 @@
 
 Status: in progress. It lands as stacked PRs: this design and the
 interview; preflight and the confirmation summary; state and Pulumi
-orchestration; then images, first run, resume and destroy. Nothing in
-it has been run against a real project yet (see [Unverified](#unverified)).
+orchestration; then images, first run, resume and destroy. It has run end
+to end once against a real project, with `--build` (see [Verified on real
+GCP](#verified-on-real-gcp)); the release path and `destroy` have not (see
+[Unverified](#unverified)).
 
 ## Goal
 
@@ -20,7 +22,7 @@ value is an error. It never waits for input that cannot come.
    the caller's permissions, and pick a region that has both N2D
    Confidential VMs and Cloud KMS HSM. Validate the alert email. Print a
    summary: what gets created, about $80/month, and residual risk R1
-   (project Owners and Editors can decrypt, so use a dedicated project).
+   (a project Owner can grant itself decrypt, so use a dedicated project).
    Nothing changes until the user confirms, or passes `--yes`.
 2. **State backend.** Create the state bucket and the state key if they are
    missing (see below).
@@ -150,7 +152,11 @@ only the enclave).
   and a blob redirect (ghcr.io serves blobs from a CDN) is followed
   without the Authorization header.
 - `--build` runs `docker buildx` locally (docker is needed only then) with
-  the release workflow's flags into an OCI layout tarball, takes the
+  the release workflow's flags into an OCI layout tarball. Docker's
+  default `docker` driver cannot write one, so when the current builder
+  uses it the CLI builds with a `carapace` builder instead, creating it
+  (the `docker-container` driver and the release workflow's pinned
+  BuildKit) if it is missing. It takes the
   `linux/amd64` image manifest from it (skipping attestation manifests,
   as `scripts/oci_image_digest.py` does) and uploads it with the same
   copier, so docker never needs registry credentials.
@@ -243,45 +249,70 @@ only the enclave).
   published. The pin is then refused unless the attested KMS key version
   is exactly the stack's `kms_key_version_name`, which must be a version of
   `kms_key_name`. The project id, enclave service account and control
-  plane URL are gathered into `DeploymentIdentity` and handed to
-  `trust_policy_for`, the one place to set them once `TrustPolicy` enforces
-  them (branch security/pin-deployment-identity, not merged yet). The
-  deploy does not change `attestation.py` or `verify.py`.
+  plane URL are gathered into `DeploymentIdentity`, and
+  `trust_policy_for` pins all of them in the `TrustPolicy` that `verify`
+  enforces. The deploy does not change `attestation.py` or `verify.py`.
+
+## Verified on real GCP
+
+Run once on 2026-09-26 in a throwaway project (`throwaway-carapace`,
+region `us-east1`), from a checkout with `carapace deploy --build`:
+
+- The whole wizard, end to end: preflight, the GCS state backend with the
+  `gcpkms://` secrets provider, the bootstrap `up` and the wait for the
+  HSM key version, the `--build` images copied into Artifact Registry (the
+  registry token flow, blob upload and push by digest), the workloads
+  `up`, the migration job, and the first run (sign-up on a fresh database,
+  owner key registration, `verify` and the pin), all within the first-run
+  time limit. The enclave was reachable on `:8443`.
+- Real Confidential Space tokens carry `submods.container.env`
+  `CONTROL_PLANE_URL`, `KMS_KEY_NAME` and `WIF_AUDIENCE`. The WIF
+  condition pinning all of them was satisfied, and `carapace verify` with
+  the deployment identity pins passed.
+- Real decrypt, header injection and response redaction through the
+  enclave (against httpbin.org), and denial of a host outside the
+  policy's allowlist.
+- `carapace audit verify` passed with 2 receipts from 1 attested boot.
+- The KMS key's IAM policy held only the digest principal set (decrypter)
+  and the server service account (`publicKeyViewer`). `roles/editor` has
+  no `cloudkms.cryptoKeyVersions.useToDecrypt`, no
+  `cloudkms.cryptoKeys.setIamPolicy` and no write permission on workload
+  identity pools or their providers, so the Editor grant GCP gives the
+  default Compute Engine service account can neither decrypt nor loosen
+  the WIF condition. It can change, stop or replace the enclave VM
+  (`compute.instances.setMetadata`, `iam.serviceAccounts.actAs`), which
+  fails closed for decrypt: see
+  [THREAT_MODEL.md, R1](../THREAT_MODEL.md#r1-a-gcp-project-owner-can-decrypt).
+
+That run found the problems fixed since: a private repository's release
+download failed with a bare 404, `--build` failed on Docker's default
+`docker` buildx driver (it cannot export OCI layouts; the CLI now uses a
+`carapace` builder with the `docker-container` driver), the password
+prompt checked only the length, and server 422 details were dropped.
 
 ## Unverified
 
 These are exercised only with mocked HTTP and a fake `pulumi` process.
 They need a real project:
 
-- The GCS backend and `gcpkms://` secrets provider with ADC user
-  credentials.
-- Resource Manager, Cloud Billing and `testIamPermissions` responses for a
-  fresh project, including which of them work before any API is enabled.
-- The Artifact Registry token flow (realm on the registry host, basic
-  auth with `oauth2accesstoken`), the monolithic blob upload streamed with
-  an explicit `Content-Length`, push by digest, and the
-  `Docker-Content-Digest` it returns. Also ghcr.io's anonymous token
-  endpoint and its blob redirect.
-- That the sigstore bundle cosign v3 `sign-blob --bundle` emits in the
+- The release path: the GitHub release download and its redirect, and
+  that the sigstore bundle cosign v3 `sign-blob --bundle` emits in the
   release workflow verifies with `sigstore` 4.x against the workflow
-  identity (only a malformed bundle is tested, offline), and the GitHub
-  release download redirect.
+  identity (only a malformed bundle is tested, offline). The repository
+  was private for the real run, so it used `--build`. Also ghcr.io's
+  anonymous token endpoint and its blob redirect.
 - `cosign verify` of the server image with the `server-image.yml`
   identity.
-- `--build`: `docker buildx` writing the OCI layout with
-  `rewrite-timestamp=true` on a developer machine, and whether its
-  digest matches the release build (it needs the same pinned BuildKit).
-- The time it takes the HSM key version to reach `ENABLED`, and for the
-  enclave to boot and register, against the 15 minute first-run limit.
-- The first run against a real server and enclave: sign-up on a fresh
-  database, the 400-then-login path for an existing account, and a real
-  attestation whose KMS key version equals the stack output.
-- `pulumi stack select --create --secrets-provider gcpkms://...` against
-  a `gs://` backend, `pulumi install` creating the Python 3.12 venv, and
-  recovery of `Pulumi.<prefix>.yaml` from state on a second machine.
-- The Service Usage, Cloud Storage and Cloud Run v2 responses the state
-  backend and migration check parse, and the Cloud Storage media upload,
-  `alt=media` read and delete of the deployment record.
+- Whether a `--build` digest matches the release build (it needs the same
+  pinned BuildKit).
+- That a non-confidential VM, or the server service account, actively
+  calling decrypt gets `PERMISSION_DENIED`. Only the key's IAM policy was
+  inspected.
+- Which Resource Manager, Cloud Billing and `testIamPermissions` calls
+  work on a fresh project before any API is enabled.
+- The 400-then-login path of the first run for an existing account.
+- The `pulumi stack output` behaviour on a fresh stack, and recovery of
+  `Pulumi.<prefix>.yaml` from state on a second machine.
 - `carapace destroy` against a real stack: the protection-lifting `up`,
   `pulumi destroy` of the HSM key (scheduling its version's destruction)
   and of the Cloud SQL instance, and the order Pulumi deletes in.

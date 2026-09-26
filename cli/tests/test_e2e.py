@@ -47,7 +47,7 @@ def test_full_flow(verified) -> None:
     stack.flush_receipts()
     code, out, err = stack.cli("audit", "verify")
     assert code == 0, out + err
-    assert "OK: 1 receipts" in out
+    assert "OK: 1 receipt from 1 attested boot" in out
 
 
 def test_config_files_are_private(verified) -> None:

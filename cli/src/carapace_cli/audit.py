@@ -62,6 +62,21 @@ class AuditReport:
     def ok(self) -> bool:
         return not self.failures
 
+    def summary(self) -> str:
+        """One line: the verdict and counts, explaining gaps only if any."""
+        line = (
+            f"{'OK' if self.ok else 'FAILED'}: {plural(self.receipts, 'receipt')} "
+            f"from {plural(self.boots, 'attested boot')} verified, "
+            f"{plural(self.gaps, 'gap')}"
+        )
+        if self.gaps:
+            line += " (other owners' receipts, or withheld)"
+        return line
+
+
+def plural(count: int, noun: str) -> str:
+    return f"{count} {noun}{'' if count == 1 else 's'}"
+
 
 def fetch_receipt_pages(
     server: ServerClient, *, secret_id: str | None = None

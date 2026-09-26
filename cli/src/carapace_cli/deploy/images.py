@@ -25,7 +25,7 @@ import httpx
 
 from carapace_cli.deploy.interview import InvalidInputError
 from carapace_cli.deploy.orchestrate import DIGEST_PATTERN, Images
-from carapace_cli.deploy.pulumi_runner import ProcessRunner
+from carapace_cli.deploy.pulumi_runner import Completed, ProcessRunner
 from carapace_cli.deploy.registry import (
     GHCR,
     INDEXES,
@@ -52,8 +52,27 @@ TAG_PATTERN = re.compile(r"^v[0-9A-Za-z._-]+$")
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}$")
 MAX_RELEASE_FILE_BYTES = 1024 * 1024
 HTTP_TIMEOUT_SECONDS = 60.0
+HTTP_NOT_FOUND = 404
 PLATFORM = {"os": "linux", "architecture": "amd64"}
 IMAGE_NAMES = ("enclave", "server")
+# Docker's default driver cannot write the OCI layout tarballs --build needs.
+DOCKER_DRIVER = "docker"
+BUILDER_NAME = "carapace"
+# The BuildKit the release workflow pins (.github/actions/build-enclave): the
+# image bytes depend on it, so a --build digest can match the release's.
+BUILDKIT_IMAGE = (
+    "moby/buildkit:v0.33.0"
+    "@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3"
+)
+CREATE_BUILDER_ARGS = (
+    "create",
+    "--name",
+    BUILDER_NAME,
+    "--driver",
+    "docker-container",
+    "--driver-opt",
+    f"image={BUILDKIT_IMAGE}",
+)
 
 RegistryFactory = Callable[[str], RegistryClient]
 
@@ -147,11 +166,18 @@ class GitHubReleases:
 
     client: httpx.Client
 
-    def _get(self, url: str) -> httpx.Response:
+    def _get(self, url: str, *, not_found: str) -> httpx.Response:
         with network_errors("GitHub"):
             response = self.client.get(url)
         if response.url.scheme != "https":
             raise ImageError("GitHub redirected a release download off https")
+        if response.status_code == HTTP_NOT_FOUND:
+            raise ImageError(
+                f"{not_found}: either the repository is private (release "
+                "downloads are unauthenticated, so a private repository "
+                "looks empty) or it has no such release. Deploy from a "
+                "checkout of the repository with --build instead"
+            )
         if not response.is_success:
             raise ImageError(f"GitHub returned {response.status_code} for {url}")
         if len(response.content) > MAX_RELEASE_FILE_BYTES:
@@ -159,11 +185,17 @@ class GitHubReleases:
         return response
 
     def latest_tag(self, repo: str) -> str:
-        body = self._get(f"{GITHUB_API}/repos/{repo}/releases/latest").json()
+        body = self._get(
+            f"{GITHUB_API}/repos/{repo}/releases/latest",
+            not_found=f"GitHub has no published release of {repo}",
+        ).json()
         return validate_tag(str(body.get("tag_name", "")))
 
     def asset(self, repo: str, tag: str, name: str) -> bytes:
-        return self._get(f"{GITHUB}/{repo}/releases/download/{tag}/{name}").content
+        return self._get(
+            f"{GITHUB}/{repo}/releases/download/{tag}/{name}",
+            not_found=f"GitHub has no {name} in release {tag} of {repo}",
+        ).content
 
 
 def fetch_release(
@@ -246,6 +278,15 @@ class ReleaseImages:
         return Images(enclave_digest=self.release.digest, server_digest=server)
 
 
+def buildx_driver(inspect_output: str) -> str | None:
+    """The builder's driver from ``docker buildx inspect`` output."""
+    for line in inspect_output.splitlines():
+        key, _, value = line.partition(":")
+        if key.strip() == "Driver":
+            return value.strip() or None
+    return None
+
+
 @dataclass
 class BuiltImages:
     """An :class:`ImageSource` building both images from this checkout.
@@ -264,6 +305,7 @@ class BuiltImages:
     say: Callable[[str], None]
     on_output: Callable[[str], None]
     _built: dict[str, str] = field(default_factory=dict)
+    _builder: list[str] | None = None
 
     def _source_date_epoch(self) -> str:
         result = self.run(
@@ -280,14 +322,61 @@ class BuiltImages:
     def _tarball(self, name: str) -> Path:
         return self.workdir / f"{name}.tar"
 
+    def _buildx(self, *arguments: str) -> Completed:
+        return self.run(
+            [self.docker, "buildx", *arguments],
+            cwd=self.root,
+            env=dict(os.environ),
+            on_output=None,
+        )
+
+    def _choose_builder(self) -> list[str]:
+        """``--builder`` arguments for a builder that can export OCI layouts.
+
+        Docker's default ``docker`` driver cannot, so when the current
+        builder uses it, a dedicated ``docker-container`` builder named
+        ``carapace`` is used, and created if it does not exist.
+        """
+        current = self._buildx("inspect")
+        if current.code != 0:
+            raise ImageError(
+                "--build needs docker buildx: `docker buildx inspect` failed"
+            )
+        if buildx_driver(current.output) != DOCKER_DRIVER:
+            return []
+        dedicated = self._buildx("inspect", BUILDER_NAME)
+        if dedicated.code == 0:
+            if buildx_driver(dedicated.output) == DOCKER_DRIVER:
+                raise ImageError(
+                    f"the buildx builder {BUILDER_NAME!r} uses the docker driver, "
+                    "which cannot export OCI images; remove it with "
+                    f"`docker buildx rm {BUILDER_NAME}` and run again"
+                )
+            return ["--builder", BUILDER_NAME]
+        self.say(
+            "The current buildx builder uses the docker driver, which cannot "
+            f"export OCI images; creating the {BUILDER_NAME!r} builder "
+            "(docker-container driver)..."
+        )
+        if self._buildx(*CREATE_BUILDER_ARGS).code != 0:
+            raise ImageError(
+                f"could not create the {BUILDER_NAME!r} buildx builder; create "
+                f"it with `docker buildx {' '.join(CREATE_BUILDER_ARGS)}` "
+                "and run again"
+            )
+        return ["--builder", BUILDER_NAME]
+
     def _build(self, name: str) -> str:
         if name in self._built:
             return self._built[name]
+        if self._builder is None:
+            self._builder = self._choose_builder()
         self.say(f"Building the {name} image with docker buildx...")
         argv = [
             self.docker,
             "buildx",
             "build",
+            *self._builder,
             "--file",
             f"{name}/Dockerfile",
             "--platform",

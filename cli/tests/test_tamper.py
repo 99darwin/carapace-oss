@@ -175,7 +175,7 @@ def _audit(stack: Any, path: Path) -> tuple[int, str]:
 def test_untampered_receipts_verify(verified, receipts_file) -> None:
     code, out = _audit(verified, receipts_file)
     assert code == 0, out
-    assert "OK: 3 receipts from 1 attested boots verified, 0 gaps" in out
+    assert "OK: 3 receipts from 1 attested boot verified, 0 gaps\n" in out
 
 
 def _flip_signature(page: dict[str, Any]) -> None:
@@ -269,7 +269,10 @@ def test_withheld_receipt_is_reported_as_a_gap(verified, receipts_file) -> None:
     _edit(receipts_file, lambda page: page["receipts"].pop(1))
     code, out = _audit(verified, receipts_file)
     assert code == 0, out
-    assert "2 receipts from 1 attested boots verified, 1 gaps" in out
+    assert (
+        "2 receipts from 1 attested boot verified, 1 gap "
+        "(other owners' receipts, or withheld)" in out
+    )
 
 
 # -- edited policy -----------------------------------------------------------------
