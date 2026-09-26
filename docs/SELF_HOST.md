@@ -283,6 +283,16 @@ depend on use. These are estimates, not measured bills.
 
 ## Teardown
 
+A deployment made with `carapace deploy` is removed with
+
+```bash
+carapace destroy --project <project> --prefix <prefix>
+```
+
+which prints the warnings below, asks you to type the project id, turns
+off the deletion protection and runs `pulumi destroy`. A stack deployed
+by hand is removed with
+
 ```bash
 pulumi destroy
 ```
@@ -304,7 +314,7 @@ Things to know:
   (which also destroys its key versions after the same waiting period).
 - The KMS key and database have deletion protection on by default
   (`protect_kms_key`, `db_deletion_protection`). Turn them off first if you
-  really want them removed.
+  really want them removed (`carapace destroy` does this for you).
 - **WIF pools and providers are soft-deleted** and keep their IDs for 30
   days. Redeploying into the same project within that window needs a new
   `prefix`.

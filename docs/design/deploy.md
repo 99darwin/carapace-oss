@@ -39,8 +39,9 @@ value is an error. It never waits for input that cannot come.
    works next. See [First run](#first-run).
 
 Every step is idempotent. After a failure, running the same command again
-finds the existing stack in the state bucket, reads its config back as the
-defaults, and continues. `carapace destroy` prints the KMS restore-window
+finds the deployment record in the state bucket, uses its region, zone and
+alert emails as the defaults, and continues (see
+[Resume and updates](#resume-and-updates)). `carapace destroy` prints the KMS restore-window
 warning from SELF_HOST.md and requires the project id to be typed back.
 
 ## Decisions
@@ -157,9 +158,26 @@ only the enclave).
 ### Resume and updates
 
 - The stack name is the prefix, so one project can hold several
-  deployments with different prefixes. A re-run finds the stack in the
-  state bucket and offers its config (region, zone, alert emails) as the
-  defaults, then offers to update or resume.
+  deployments with different prefixes. The interview asks for the prefix
+  right after the project.
+- Pulumi keeps stack config in `infra/pulumi/Pulumi.<prefix>.yaml`, which
+  cannot be read before the stack is opened (and opening creates it). So
+  the deploy writes a small record, with no secrets, to
+  `gs://<project>-carapace-state/carapace/deployments/<prefix>.json`:
+  project, prefix, region, zone and alert emails. It is written once the
+  stack has its base config, before the first `up`.
+- A re-run reads the record during preflight (read-only). Its region, zone
+  and alert emails become the defaults, and the summary shows "Existing
+  deployment". A different `--region` or `--zone` is refused: the stack
+  would replace everything, and the state key lives in the region. If the
+  bucket cannot be read (a fresh project without Cloud Storage enabled),
+  that is a warning and the deploy proceeds as new.
+- After opening the stack, the deploy refuses a stack whose config names
+  another region or zone (say, one deployed by hand), and refuses an
+  existing deployment whose `Pulumi.<prefix>.yaml` is not on this machine:
+  with an empty config, the bootstrap would run on a live stack and delete
+  its workloads. The state survives the loss of the laptop, but the config
+  file has to be copied to the new machine first.
 - A re-run never bootstraps a stack whose workloads are live: that `up`
   would delete the VM and Cloud Run. It goes straight to the workloads
   step.
@@ -179,6 +197,22 @@ only the enclave).
   These three are mutually exclusive. A release is downloaded and its
   signature verified before the summary, so the summary shows the
   verified digest and commit, and a bad release changes nothing.
+
+### Destroy
+
+- `carapace destroy --project <p> --prefix <prefix>` needs the deployment
+  record, so it only destroys what `carapace deploy` made; a stack deployed
+  by hand is destroyed with `pulumi destroy`, as SELF_HOST.md describes.
+- It prints the KMS restore-window warning from SELF_HOST.md ("Teardown")
+  and what is kept, then asks for the project id to be typed back.
+  `--confirm-project <p>` confirms in scripts; there is no `--yes`.
+- It turns off `protect_kms_key` and `db_deletion_protection` with one
+  `up` (skipped when a failed destroy already did), runs `pulumi destroy`
+  and deletes the record. Each step is idempotent, so a failed destroy is
+  resumed by running it again.
+- The state bucket, the state key, the key ring names and the CLI config
+  directory are kept. The CLI says the session and pin in the config
+  directory belong to the deleted deployment rather than deleting them.
 
 ### First run
 
@@ -237,4 +271,8 @@ They need a real project:
   a `gs://` backend, `pulumi install` creating the Python 3.12 venv, and
   recovery of `Pulumi.<prefix>.yaml` from state on a second machine.
 - The Service Usage, Cloud Storage and Cloud Run v2 responses the state
-  backend and migration check parse.
+  backend and migration check parse, and the Cloud Storage media upload,
+  `alt=media` read and delete of the deployment record.
+- `carapace destroy` against a real stack: the protection-lifting `up`,
+  `pulumi destroy` of the HSM key (scheduling its version's destruction)
+  and of the Cloud SQL instance, and the order Pulumi deletes in.

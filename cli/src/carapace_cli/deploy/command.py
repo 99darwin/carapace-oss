@@ -9,6 +9,7 @@ with a fake.
 from __future__ import annotations
 
 import argparse
+import functools
 import os
 import shutil
 import tempfile
@@ -21,6 +22,7 @@ from typing import Protocol, TextIO
 import httpx
 
 from carapace_cli.deploy import pulumi_runner
+from carapace_cli.deploy.destroy import DestroyError, destroy_warning, run_destroy
 from carapace_cli.deploy.first_run import (
     AccountFlags,
     FirstRunServices,
@@ -47,18 +49,37 @@ from carapace_cli.deploy.orchestrate import (
     Images,
     ImageSource,
     PrebuiltImages,
+    base_config,
     run_deploy,
     validate_digest,
 )
 from carapace_cli.deploy.polling import Clock
-from carapace_cli.deploy.preflight import Flags, Target, run_preflight
+from carapace_cli.deploy.preflight import (
+    DEFAULT_PREFIX,
+    Flags,
+    Target,
+    run_preflight,
+    validate_prefix,
+    validate_project_id,
+)
 from carapace_cli.deploy.pulumi_runner import (
     ProcessRunner,
     StackHandle,
     locate_infra,
     run_process,
 )
-from carapace_cli.deploy.state import StateBackend, ensure_state_backend
+from carapace_cli.deploy.record import (
+    check_stack_config,
+    delete_record,
+    describe_existing,
+    read_record,
+    write_record,
+)
+from carapace_cli.deploy.state import (
+    StateBackend,
+    ensure_state_backend,
+    state_backend_for,
+)
 from carapace_cli.deploy.summary import render_summary
 
 EXIT_DECLINED = 1
@@ -273,11 +294,24 @@ def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
     interview = make_interview(args, ctx)
     services = default_services()
     with services.gcp() as api, ExitStack() as cleanup:
-        target, report = run_preflight(api, interview, flags_from(args))
+        target, report = run_preflight(
+            api,
+            interview,
+            flags_from(args),
+            find_existing=functools.partial(read_record, api),
+        )
         images, description = choose_images(
             args, interview, services, api, ctx=ctx, cleanup=cleanup
         )
-        ctx.say(render_summary(target, report, images=description))
+        existing = report.existing
+        ctx.say(
+            render_summary(
+                target,
+                report,
+                images=description,
+                existing=describe_existing(existing, target) if existing else None,
+            )
+        )
         ctx.say(
             "Then the CLI signs up (or logs in) on the new server, verifies the "
             f"enclave and saves its config in {ctx.config_dir}."
@@ -294,6 +328,13 @@ def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
         )
         backend = ensure_state_backend(api, target, say=ctx.say, clock=services.clock)
         stack = services.stack(target, backend, ctx)
+        check_stack_config(
+            stack.config(), target, is_existing=report.existing is not None
+        )
+        # The record is written once the stack has its config, so a re-run
+        # that finds the record also finds the config.
+        stack.set_config(base_config(target))
+        write_record(api, target)
         deployment = run_deploy(
             target,
             api=api,
@@ -315,6 +356,62 @@ def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
         say=ctx.say,
     )
     ctx.say("Ready: add a secret with `carapace secret add`.")
+    return 0
+
+
+def cmd_destroy(args: argparse.Namespace, ctx: CommandContext) -> int:
+    # No --yes: only the typed project id confirms a destroy.
+    interview = Interview.from_args(
+        non_interactive=args.non_interactive, assume_yes=False
+    )
+    interview.stream_out = ctx.err
+    services = default_services()
+    with services.gcp() as api:
+        project = interview.ask(
+            "GCP project to destroy the deployment in",
+            flag="--project",
+            value=args.project,
+            validate=validate_project_id,
+        )
+        prefix = interview.ask(
+            "Resource name prefix",
+            flag="--prefix",
+            value=args.prefix,
+            default=DEFAULT_PREFIX,
+            validate=validate_prefix,
+        )
+        existing = read_record(api, project, prefix)
+        if existing is None:
+            raise DestroyError(
+                f"no deployment {prefix!r} was made by `carapace deploy` in "
+                f"{project}; destroy a stack deployed by hand with "
+                "`pulumi destroy` (docs/SELF_HOST.md)"
+            )
+        target = Target(
+            project=project,
+            project_number="",
+            region=existing.region,
+            zone=existing.zone,
+            prefix=prefix,
+            alert_emails=existing.alert_emails,
+        )
+        ctx.say(destroy_warning(project, prefix))
+        if not interview.confirm_typed(
+            f"Type the project id ({project}) to destroy this deployment",
+            expected=project,
+            flag="--confirm-project",
+            value=args.confirm_project,
+        ):
+            ctx.say("Aborted. Nothing was changed.")
+            return EXIT_DECLINED
+        stack = services.stack(target, state_backend_for(target), ctx)
+        check_stack_config(stack.config(), target, is_existing=True)
+        run_destroy(stack, say=ctx.say)
+        delete_record(api, project, prefix)
+    ctx.say(
+        f"Destroyed. The session and enclave pin in {ctx.config_dir} belong to "
+        "the deleted deployment; use another --config-dir for a new one."
+    )
     return 0
 
 
@@ -383,3 +480,15 @@ def add_deploy_commands(sub: argparse._SubParsersAction) -> None:
         "--yes", "-y", action="store_true", help="skip the final confirmation"
     )
     deploy.set_defaults(handler=cmd_deploy)
+
+    destroy = sub.add_parser(
+        "destroy", help="destroy a deployment made by `carapace deploy`"
+    )
+    add_interview_flags(destroy)
+    destroy.add_argument("--prefix", help="resource name prefix (default: carapace)")
+    destroy.add_argument(
+        "--confirm-project",
+        metavar="PROJECT",
+        help="the project id again, to confirm without a prompt",
+    )
+    destroy.set_defaults(handler=cmd_destroy)

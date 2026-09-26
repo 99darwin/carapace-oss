@@ -80,8 +80,8 @@ def test_bad_prefixes_rejected(bad: str) -> None:
 
 def test_interactive_preflight_happy_path() -> None:
     google = healthy_project()
-    # project 1 of the list, region by value, emails, default prefix
-    interview = scripted("1", "europe-west1", EMAIL, "")
+    # project 1 of the list, default prefix, region by value, emails
+    interview = scripted("1", "", "europe-west1", EMAIL)
     target, report = run_preflight(google.api(), interview, Flags())
     assert target == Target(
         project=PROJECT,
