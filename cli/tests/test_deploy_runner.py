@@ -21,6 +21,7 @@ from carapace_cli.deploy.pulumi_runner import (
     Completed,
     PulumiError,
     PulumiStack,
+    StateResource,
     find_pulumi,
     locate_infra,
     open_stack,
@@ -32,6 +33,9 @@ REPO = Path(__file__).resolve().parents[2]
 INFRA = REPO / "infra" / "pulumi"
 TARGET = Target(PROJECT, PROJECT_NUMBER, REGION, f"{REGION}-a", PREFIX, ("a@b.io",))
 BACKEND = state_backend_for(TARGET)
+ROOT_URN = f"urn:pulumi:{PREFIX}::carapace::pulumi:pulumi:Stack::s"
+KEY_URN = f"urn:pulumi:{PREFIX}::carapace::gcp:kms/cryptoKey:CryptoKey::k"
+DB_URN = f"urn:pulumi:{PREFIX}::carapace::gcp:sql/databaseInstance:DatabaseInstance::d"
 
 
 @dataclass
@@ -131,6 +135,9 @@ def test_no_command_ever_shows_secrets() -> None:
     handle.set_config({"carapace:prefix": PREFIX})
     assert handle.up() == {"server_url": "https://s"}
     handle.has_resources()
+    handle.resources()
+    handle.up_targets([DB_URN])
+    handle.unprotect_all()
     handle.destroy()
     assert fake.calls
     assert not any("--show-secrets" in call.argv for call in fake.calls)
@@ -150,6 +157,104 @@ def test_has_resources_reads_the_state_export() -> None:
         {"version": 3, "deployment": {"manifest": {}, "resources": []}},
     ):
         assert not stack(FakePulumi(export=empty)).has_resources()
+
+
+def test_up_targets_passes_each_urn_and_nothing_else() -> None:
+    lines: list[str] = []
+    fake = FakePulumi()
+    stack(fake, lines).up_targets([KEY_URN, DB_URN])
+    (call,) = fake.calls
+    assert call.argv == [
+        "/bin/pulumi",
+        "up",
+        "--yes",
+        "--skip-preview",
+        "--target",
+        KEY_URN,
+        "--target",
+        DB_URN,
+        "--non-interactive",
+        "--stack",
+        PREFIX,
+    ]
+    assert call.streamed and lines == ["progress\n"]
+    assert "--target-dependents" not in call.argv
+    assert "--show-secrets" not in call.argv
+
+
+def test_up_targets_refuses_no_targets_a_non_urn_or_a_glob() -> None:
+    fake = FakePulumi()
+    with pytest.raises(PulumiError, match="at least one target"):
+        stack(fake).up_targets([])
+    with pytest.raises(PulumiError, match="not a Pulumi URN"):
+        stack(fake).up_targets(["--target-dependents"])
+    # A `*` makes --target a glob, which can match, and so create, what
+    # the state lacks.
+    for glob in ("urn:pulumi:*", f"urn:pulumi:{PREFIX}::carapace::gcp:*::*"):
+        with pytest.raises(PulumiError, match="not a Pulumi URN"):
+            stack(fake).up_targets([DB_URN, glob])
+    assert not fake.calls, "an untargeted up ran"
+
+
+def test_unprotect_all_edits_the_state_without_the_program() -> None:
+    lines: list[str] = []
+    fake = FakePulumi()
+    stack(fake, lines).unprotect_all()
+    (call,) = fake.calls
+    assert call.argv == [
+        "/bin/pulumi",
+        "state",
+        "unprotect",
+        "--all",
+        "--yes",
+        "--non-interactive",
+        "--stack",
+        PREFIX,
+    ]
+    assert call.cwd == INFRA and not call.streamed and not lines
+    assert call.env["PULUMI_BACKEND_URL"] == f"gs://{PROJECT}-carapace-state"
+
+
+def test_failed_unprotect_is_a_resumable_error_that_names_it() -> None:
+    fake = FakePulumi(fail="state unprotect")
+    with pytest.raises(PulumiError, match="state unprotect failed: .*run the same"):
+        stack(fake).unprotect_all()
+
+
+def test_state_resource_repr_leaves_the_outputs_out() -> None:
+    # Outputs hold ciphertext and plain values alike; neither belongs in a
+    # traceback or an error message that shows the resource.
+    resource = StateResource(DB_URN, "t", True, {"ciphertext": "AAAA", "ip": "1"})
+    assert "AAAA" not in repr(resource) and "ip" not in repr(resource)
+    assert DB_URN in repr(resource)
+
+
+def test_failed_targeted_up_is_a_resumable_error() -> None:
+    fake = FakePulumi(fail="up")
+    with pytest.raises(PulumiError, match="pulumi up failed: .*run the same"):
+        stack(fake).up_targets([DB_URN])
+
+
+def test_resources_reads_type_protect_and_outputs_from_the_export() -> None:
+    db = {
+        "urn": DB_URN,
+        "type": "gcp:sql/databaseInstance:DatabaseInstance",
+        "protect": True,
+        "outputs": {"deletionProtection": True},
+    }
+    plain = {"urn": ROOT_URN, "type": "pulumi:pulumi:Stack"}
+    fake = FakePulumi(export={"version": 3, "deployment": {"resources": [db, plain]}})
+    assert stack(fake).resources() == [
+        StateResource(DB_URN, db["type"], True, {"deletionProtection": True}),
+        StateResource(ROOT_URN, "pulumi:pulumi:Stack", False, {}),
+    ]
+    export = fake.argv("stack export")
+    assert "--show-secrets" not in export
+    assert stack(FakePulumi()).resources() == []
+    for garbled in ([{"urn": DB_URN}], ["x"], {"a": 1}):
+        bad = FakePulumi(export={"version": 3, "deployment": {"resources": garbled}})
+        with pytest.raises(PulumiError, match="malformed"):
+            stack(bad).resources()
 
 
 def test_has_resources_fails_on_garbled_export() -> None:

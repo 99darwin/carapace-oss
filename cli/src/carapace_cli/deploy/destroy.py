@@ -1,9 +1,15 @@
 """``carapace destroy``: tear a deployment down, after an explicit warning.
 
-The stack's deletion protection (``protect_kms_key``,
-``db_deletion_protection``) is turned off with one ``up`` and then
-``pulumi destroy`` runs. The state bucket and state key are not Pulumi
-resources and are kept, so the same project can be deployed again.
+The stack's deletion protection is turned off in two steps, and then
+``pulumi destroy`` runs. ``protect``, whatever resource carries it, is
+cleared in the state (``pulumi state unprotect --all``: no program runs).
+The Cloud SQL instance's own deletion protection fields follow
+``db_deletion_protection`` and only change through the program, so they
+are turned off with an ``up`` that targets the instance alone. A full
+``up`` is never run: on a half-created stack it would try to create what
+is missing, and a destroy must never create anything. The state bucket
+and state key are not Pulumi resources and are kept, so the same project
+can be deployed again.
 
 After a successful destroy the CLI cleans up what only the dead deployment
 used: the empty Pulumi stack with its local config file, and the session
@@ -13,13 +19,13 @@ server and enclave. The owner key is never removed.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from carapace_cli.deploy.orchestrate import FALSE, FRESH_STACK, PROTECTED
-from carapace_cli.deploy.pulumi_runner import StackHandle
+from carapace_cli.deploy.pulumi_runner import StackHandle, StateResource
 from carapace_cli.deploy.summary import state_bucket_name
 from carapace_cli.errors import CarapaceError, StorageError
 from carapace_cli.files import (
@@ -68,16 +74,63 @@ def destroy_warning(project: str, prefix: str) -> str:
     )
 
 
+# The one resource whose deletion protection is more than `protect` (see
+# infra/pulumi/components/server.py): the instance's deletion_protection
+# input, which the provider refuses to delete against, and its
+# settings.deletion_protection_enabled, which the API enforces. Both follow
+# carapace:db_deletion_protection and change only when the program runs.
+DATABASE_INSTANCE_TYPE = "gcp:sql/databaseInstance:DatabaseInstance"
+
+
+def _database_protected(outputs: Mapping[str, Any]) -> bool:
+    """Whether either deletion protection field may still be on.
+
+    Anything but an exported ``false`` (a missing field, or one exported
+    as a secret) counts as on, so the protection up runs again.
+    """
+    settings = outputs.get("settings")
+    enabled = (
+        settings.get("deletionProtectionEnabled")
+        if isinstance(settings, dict)
+        else None
+    )
+    return outputs.get("deletionProtection") is not False or enabled is not False
+
+
+def protected_database_urns(resources: Sequence[StateResource]) -> list[str]:
+    """The Cloud SQL instances in the state whose deletion protection is on."""
+    urns: list[str] = []
+    for resource in resources:
+        if (
+            resource.type == DATABASE_INSTANCE_TYPE
+            and _database_protected(resource.outputs)
+            and resource.urn not in urns
+        ):
+            urns.append(resource.urn)
+    return urns
+
+
 def run_destroy(stack: StackHandle, *, say: Callable[[str], None]) -> None:
     """Lift deletion protection, then destroy every resource of the stack.
 
-    Both steps are idempotent, so a failed destroy is resumed by running
-    the same command again.
+    ``protect`` is cleared in the state for every resource that carries
+    it, of any type, without running the program. The database instance's
+    deletion protection fields are turned off with an ``up`` that targets
+    it alone, so nothing the state lacks is created; with none of either
+    left, neither step runs. Both are idempotent, and the state decides
+    what is still protected, so a failed destroy is resumed by running the
+    same command again.
     """
-    if any(stack.config().get(key) != value for key, value in UNPROTECTED.items()):
-        say("Turning off deletion protection on the KMS key and database...")
-        stack.set_config(UNPROTECTED)
-        stack.up()
+    resources = stack.resources()
+    if any(resource.protect for resource in resources):
+        say("Unprotecting the stack's resources in its state...")
+        stack.unprotect_all()
+    instances = protected_database_urns(resources)
+    if instances:
+        say("Turning off deletion protection on the database...")
+        if any(stack.config().get(key) != value for key, value in UNPROTECTED.items()):
+            stack.set_config(UNPROTECTED)
+        stack.up_targets(instances)
     say("Destroying the stack...")
     stack.destroy()
 

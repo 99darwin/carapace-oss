@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import io
 import json
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from typing import Any
 from urllib.parse import unquote
 
@@ -18,6 +18,7 @@ import httpx
 from carapace_cli.deploy.gcp import GcpApi
 from carapace_cli.deploy.interview import Interview
 from carapace_cli.deploy.polling import Clock
+from carapace_cli.deploy.pulumi_runner import StateResource
 from carapace_cli.errors import CarapaceError
 
 PROJECT = "carapace-selfhost"
@@ -257,6 +258,52 @@ def _healthy_bucket() -> dict[str, Any]:
     }
 
 
+def urn(type_: str, name: str) -> str:
+    return f"urn:pulumi:{PREFIX}::carapace::{type_}::{name}"
+
+
+KEY_RING_URN = urn("gcp:kms/keyRing:KeyRing", f"{PREFIX}-keyring")
+CRYPTO_KEY_URN = urn("gcp:kms/cryptoKey:CryptoKey", f"{PREFIX}-secrets-key")
+DB_INSTANCE_URN = urn("gcp:sql/databaseInstance:DatabaseInstance", f"{PREFIX}-db")
+DB_URN = urn("gcp:sql/database:Database", f"{PREFIX}-db-carapace")
+DB_USER_URN = urn("gcp:sql/user:User", f"{PREFIX}-db-user")
+KMS_URNS = (KEY_RING_URN, CRYPTO_KEY_URN)
+DB_URNS = (DB_INSTANCE_URN, DB_URN, DB_USER_URN)
+# Resources no deletion protection applies to.
+UNPROTECTED_URNS = (
+    urn("gcp:projects/service:Service", f"{PREFIX}-api-sqladmin"),
+    urn("gcp:serviceaccount/account:Account", f"{PREFIX}-enclave"),
+)
+
+
+def state_resources(
+    urns: Sequence[str], *, kms_protected: bool = True, db_protected: bool = True
+) -> list[StateResource]:
+    """The state entries of ``urns``, protected as the flags say."""
+    resources: list[StateResource] = []
+    for resource_urn in urns:
+        type_ = resource_urn.split("::")[2]
+        protected = kms_protected if resource_urn in KMS_URNS else db_protected
+        outputs: dict[str, Any] = {"name": resource_urn.split("::")[-1]}
+        if resource_urn == DB_INSTANCE_URN:
+            outputs |= {
+                "deletionProtection": db_protected,
+                "settings": {"deletionProtectionEnabled": db_protected},
+            }
+        resources.append(
+            StateResource(
+                urn=resource_urn,
+                type=type_,
+                protect=protected and resource_urn not in UNPROTECTED_URNS,
+                outputs=outputs,
+            )
+        )
+    return resources
+
+
+FULL_STACK_URNS = (*UNPROTECTED_URNS, *KMS_URNS, *DB_URNS)
+
+
 @dataclass
 class FakeStack:
     """A Pulumi stack in memory: local config, backend state, every ``up``.
@@ -273,15 +320,37 @@ class FakeStack:
     initial: dict[str, str] = field(default_factory=dict)
     state: dict[str, str] | None = None
     half_created: bool = False
+    # The resources in the state; a live stack has every one of them.
+    resources_in_state: list[StateResource] | None = None
     fail_on_up: int | None = None
+    fail_on_up_targets: bool = False
+    fail_on_unprotect: bool = False
     fail_on_remove: bool = False
     ups: list[dict[str, str]] = field(default_factory=list)
+    # The URNs of each targeted up, with the config it ran with.
+    targeted_ups: list[tuple[list[str], dict[str, str]]] = field(default_factory=list)
+    # How many times `pulumi state unprotect --all` ran.
+    unprotects: int = 0
     destroyed: bool = False
     removed: bool = False
 
     def __post_init__(self) -> None:
         self._config = dict(self.initial)
         self._state = dict(self.initial if self.state is None else self.state)
+        if self.resources_in_state is not None:
+            self._resources = list(self.resources_in_state)
+        elif self._state and not self.half_created:
+            self._resources = self._program_resources(FULL_STACK_URNS)
+        else:
+            self._resources = []
+
+    def _program_resources(self, urns: Sequence[str]) -> list[StateResource]:
+        """``urns`` as the program declares them with the current config."""
+        return state_resources(
+            urns,
+            kms_protected=self._config.get("carapace:protect_kms_key") != "false",
+            db_protected=self._config.get("carapace:db_deletion_protection") != "false",
+        )
 
     def config(self) -> dict[str, str]:
         return dict(self._config)
@@ -295,12 +364,65 @@ class FakeStack:
             raise CarapaceError("pulumi failed: simulated")
         self.ups.append(self.config())
         self._state = self.config()
+        self._resources = self._program_resources(FULL_STACK_URNS)
         self.half_created = False
         return self.outputs()
 
+    def up_targets(self, urns: Sequence[str]) -> None:
+        """Only the targets change; nothing missing from the state is made.
+
+        The program declares FULL_STACK_URNS: a target it does not declare
+        would be deleted by the real engine, so the fake refuses it too.
+        """
+        if self.fail_on_up_targets:
+            self.fail_on_up_targets = False
+            raise CarapaceError("pulumi up failed: simulated")
+        tracked = {resource.urn for resource in self._resources}
+        missing = [target for target in urns if target not in tracked]
+        assert not missing, f"a targeted up would create {missing}"
+        undeclared = [target for target in urns if target not in FULL_STACK_URNS]
+        assert not undeclared, f"a targeted up would delete {undeclared}"
+        self.targeted_ups.append((list(urns), self.config()))
+        declared = {
+            resource.urn: resource
+            for resource in self._program_resources(FULL_STACK_URNS)
+        }
+        self._resources = [
+            replace(
+                resource,
+                protect=declared[resource.urn].protect,
+                outputs=declared[resource.urn].outputs,
+            )
+            if resource.urn in urns
+            else resource
+            for resource in self._resources
+        ]
+
+    def unprotect_all(self) -> None:
+        """``pulumi state unprotect --all``: a state edit, no program run."""
+        if self.fail_on_unprotect:
+            self.fail_on_unprotect = False
+            raise CarapaceError("pulumi state unprotect failed: simulated")
+        self.unprotects += 1
+        self._resources = [
+            replace(resource, protect=False) for resource in self._resources
+        ]
+
+    def resources(self) -> list[StateResource]:
+        return list(self._resources)
+
     def destroy(self) -> None:
+        """Refused, like ``pulumi destroy``, while anything is protected."""
+        still_protected = [
+            resource.urn
+            for resource in self._resources
+            if resource.protect or resource.outputs.get("deletionProtection") is True
+        ]
+        if still_protected:
+            raise CarapaceError(f"pulumi destroy failed: {still_protected} protected")
         self.destroyed = True
         self._state = {}
+        self._resources = []
         self.half_created = False
 
     def has_resources(self) -> bool:

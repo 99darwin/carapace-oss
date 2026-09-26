@@ -196,10 +196,11 @@ def create_database(
         opts=pulumi.ResourceOptions(protect=deletion_protection, depends_on=depends_on),
     )
     # deletion_protection only guards the instance at delete time, after its
-    # dependents are gone. protect makes Pulumi refuse the whole plan up
-    # front, so a protected stack can neither be half-destroyed nor have its
-    # role or database replaced (ABANDON, below, would strand the old one).
-    # carapace destroy lifts both with one up (cli deploy/destroy.py).
+    # dependents are gone. protect makes Pulumi refuse to delete or replace
+    # the resource itself, so the role and database cannot be replaced
+    # (ABANDON, below, would strand the old one). carapace destroy clears
+    # protect in the state and turns the instance's two fields off with an
+    # up targeted at the instance alone (cli deploy/destroy.py).
     protected = pulumi.ResourceOptions(protect=deletion_protection)
     # Both are removed with the instance. Deleting them first fails: the
     # role owns the migrated tables, and the server holds connections.
