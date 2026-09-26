@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -34,6 +35,10 @@ SAMPLES = [
     "CorrectHorse99",
     "Correct Horse 9",
     "Ünïcode-Horse-9",
+    "Aa٣-xxxxxxxxx",  # an Arabic-Indic digit satisfies \d on both sides
+    "Aa1 xxxxxxxx",  # no-break space is a special character on both
+    "Aa1-\x00xxxxxxxx",
+    "Aa1-\udcffxxxxxxx",  # an undecodable byte from stdin, as surrogateescape
     "Aa1-" + "x" * (PASSWORD_MAX_CHARS - 4),
     "Aa1-" + "x" * (PASSWORD_MAX_CHARS - 3),
 ]
@@ -46,14 +51,30 @@ def test_rules_are_the_servers() -> None:
     assert PASSWORD_RULES == schemas._PASSWORD_RULES
 
 
+def server_accepts(password: str) -> bool:
+    """Whether the server's schema takes ``password`` off the wire.
+
+    The body goes through JSON as the CLI sends it: text that cannot be
+    encoded is refused by the parser, before the password rules.
+    """
+    body = json.dumps({"email": "a@example.com", "password": password})
+    try:
+        schemas.RegisterRequest.model_validate_json(body)
+    except pydantic.ValidationError:
+        return False
+    return True
+
+
 @pytest.mark.parametrize("password", SAMPLES)
 def test_cli_accepts_exactly_what_the_server_accepts(password: str) -> None:
-    try:
-        schemas.RegisterRequest(email="a@example.com", password=password)
-        server_accepts = True
-    except pydantic.ValidationError:
-        server_accepts = False
-    assert (password_problem(password) is None) == server_accepts
+    assert (password_problem(password) is None) == server_accepts(password)
+
+
+def test_undecodable_input_is_refused_without_reaching_the_server() -> None:
+    assert not server_accepts("Aa1-\udcffxxxxxxx")
+    assert password_problem("Aa1-\udcffxxxxxxx") == (
+        "the account password is not valid UTF-8 text"
+    )
 
 
 def test_every_missing_rule_is_named_but_never_the_value() -> None:

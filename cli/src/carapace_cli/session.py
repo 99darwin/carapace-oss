@@ -8,7 +8,6 @@ pair is written back atomically. Tokens never appear in messages or logs.
 from __future__ import annotations
 
 import contextlib
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,8 +26,7 @@ from carapace_cli.urls import normalize_base_url
 SESSION_FILE = "session.json"
 REQUEST_TIMEOUT_SECONDS = 30.0
 MAX_DETAIL_CHARS = 300
-# C0 and C1 controls and DEL: a server must not drive the terminal.
-CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+REPLACEMENT_CHAR = "?"
 
 
 @dataclass
@@ -87,8 +85,15 @@ def _session_from_tokens(server_url: str, body: Any) -> Session:
 
 
 def _printable(text: str) -> str:
-    """``text`` with control characters (terminal escapes) replaced."""
-    return CONTROL_CHARS.sub("?", text)
+    """``text`` with every character that is not printable replaced.
+
+    A server must not drive the terminal (C0 and C1 controls, DEL) nor
+    reorder or hide what the user reads: the Unicode format characters
+    (bidi overrides, zero-width joiners), line and paragraph separators,
+    and unassigned or private code points. ``str.isprintable`` is exactly
+    that set, keeping only the ASCII space among the separators.
+    """
+    return "".join(char if char.isprintable() else REPLACEMENT_CHAR for char in text)
 
 
 def _validation_error(item: Any) -> str | None:

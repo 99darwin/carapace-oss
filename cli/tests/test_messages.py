@@ -69,6 +69,32 @@ def test_details_are_stripped_of_control_characters_and_truncated() -> None:
 
 
 @pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("run ‮--build‬ now", "run ?--build? now"),  # bidi override
+        ("a⁦b⁩", "a?b?"),  # isolates
+        ("zero​width‍", "zero?width?"),
+        ("line sep ", "line?sep?"),
+        ("byte﻿ order", "byte? order"),
+        ("tab\tand nbsp", "tab?and?nbsp"),
+        ("Ünïcode és ok: 1 + 1 ≠ 3", "Ünïcode és ok: 1 + 1 ≠ 3"),
+    ],
+)
+def test_details_keep_only_printable_characters(text: str, expected: str) -> None:
+    assert server_error(400, detail=text).detail == expected
+    assert server_error(400, detail=[{"loc": [text], "msg": "m"}]).detail == (
+        f"{expected}: m"
+    )
+
+
+def test_reason_phrase_is_made_printable() -> None:
+    response = httpx.Response(599, extensions={"reason_phrase": b"Bad\x1b[2J"})
+    with pytest.raises(ServerError) as caught:
+        raise_for_status(response)
+    assert caught.value.detail == "Bad?[2J"
+
+
+@pytest.mark.parametrize(
     "detail",
     [None, 42, {"msg": "x"}, [], [{"loc": ["body"], "input": SECRET}], ["text"]],
 )

@@ -33,6 +33,12 @@ def password_problem(value: str) -> str | None:
 
     The message names the rules only, never the value.
     """
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        # Undecodable bytes on stdin or the terminal become lone surrogates,
+        # which cannot be sent as JSON; the server rejects them as text.
+        return "the account password is not valid UTF-8 text"
     if not PASSWORD_MIN_CHARS <= len(value) <= PASSWORD_MAX_CHARS:
         return (
             f"the account password must be {PASSWORD_MIN_CHARS} to "
