@@ -22,7 +22,7 @@ import re
 import shutil
 import subprocess
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
@@ -53,6 +53,23 @@ class PulumiError(CarapaceError):
     """The Pulumi CLI or program could not run."""
 
 
+URN_PREFIX = "urn:pulumi:"
+
+
+@dataclass(frozen=True)
+class StateResource:
+    """One resource as the backend's state tracks it (``stack export``).
+
+    ``outputs`` are as exported: a secret output is ciphertext, never its
+    value.
+    """
+
+    urn: str
+    type: str
+    protect: bool
+    outputs: Mapping[str, Any]
+
+
 class StackHandle(Protocol):
     """What the deploy needs from a stack; faked in tests."""
 
@@ -62,6 +79,8 @@ class StackHandle(Protocol):
 
     def up(self) -> dict[str, Any]: ...
 
+    def up_targets(self, urns: Sequence[str]) -> None: ...
+
     def destroy(self) -> None: ...
 
     def remove(self) -> None: ...
@@ -69,6 +88,8 @@ class StackHandle(Protocol):
     def outputs(self) -> dict[str, Any]: ...
 
     def has_resources(self) -> bool: ...
+
+    def resources(self) -> list[StateResource]: ...
 
 
 @dataclass(frozen=True)
@@ -247,6 +268,24 @@ class PulumiStack:
         self._pulumi("up", "--yes", "--skip-preview", stream=True)
         return self.outputs()
 
+    def up_targets(self, urns: Sequence[str]) -> None:
+        """``pulumi up`` on exactly ``urns``, which the state already tracks.
+
+        The program still runs, but the engine only steps the targets:
+        every untargeted resource missing from the state is a "skipped
+        create" and is never created, and a target that would need one
+        fails the update instead (no ``--target-dependents``). The
+        targets get their new resource options, ``protect`` included.
+        """
+        if not urns:
+            raise PulumiError("a targeted pulumi up needs at least one target")
+        targets: list[str] = []
+        for urn in urns:
+            if not urn.startswith(URN_PREFIX):
+                raise PulumiError(f"{urn!r} is not a Pulumi URN")
+            targets += ["--target", urn]
+        self._pulumi("up", "--yes", "--skip-preview", *targets, stream=True)
+
     def destroy(self) -> None:
         self._pulumi(
             "destroy",
@@ -290,15 +329,49 @@ class PulumiStack:
         Outputs are exported only by an ``up`` that finished, but every
         resource an ``up`` created is checkpointed even when it fails, so
         this tells a stack that owns half a deployment from one that owns
-        nothing. ``stack export`` prints the deployment to stdout (it has
-        no ``--json``) with secrets as ciphertext; ``--show-secrets`` is
-        never passed.
+        nothing.
+        """
+        return bool(self._exported_resources())
+
+    def resources(self) -> list[StateResource]:
+        """Every resource the state in the backend tracks."""
+        resources: list[StateResource] = []
+        for entry in self._exported_resources():
+            if not isinstance(entry, dict):
+                raise PulumiError("pulumi stack export printed a malformed resource")
+            urn, type_ = entry.get("urn"), entry.get("type")
+            outputs = entry.get("outputs") or {}
+            if (
+                not isinstance(urn, str)
+                or not isinstance(type_, str)
+                or not isinstance(outputs, dict)
+            ):
+                raise PulumiError("pulumi stack export printed a malformed resource")
+            resources.append(
+                StateResource(
+                    urn=urn,
+                    type=type_,
+                    protect=entry.get("protect") is True,
+                    outputs=outputs,
+                )
+            )
+        return resources
+
+    def _exported_resources(self) -> list[Any]:
+        """``stack export`` prints the deployment to stdout (it has no
+        ``--json``) with secrets as ciphertext; ``--show-secrets`` is never
+        passed.
         """
         export = _decode(self._pulumi("stack", "export"), command="stack export")
         deployment = export.get("deployment")
         if not isinstance(deployment, dict):
-            return False
-        return bool(deployment.get("resources"))
+            return []
+        resources = deployment.get("resources")
+        if resources is None:
+            return []
+        if not isinstance(resources, list):
+            raise PulumiError("pulumi stack export printed malformed resources")
+        return resources
 
 
 def _decode(output: str, *, command: str) -> dict[str, Any]:

@@ -1,8 +1,11 @@
 """``carapace destroy``: tear a deployment down, after an explicit warning.
 
 The stack's deletion protection (``protect_kms_key``,
-``db_deletion_protection``) is turned off with one ``up`` and then
-``pulumi destroy`` runs. The state bucket and state key are not Pulumi
+``db_deletion_protection``) is turned off with an ``up`` that targets only
+the protected resources the state already tracks, and then
+``pulumi destroy`` runs. A full ``up`` is never run: on a half-created
+stack it would try to create what is missing, and a destroy must never
+create anything. The state bucket and state key are not Pulumi
 resources and are kept, so the same project can be deployed again.
 
 After a successful destroy the CLI cleans up what only the dead deployment
@@ -19,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from carapace_cli.deploy.orchestrate import FALSE, FRESH_STACK, PROTECTED
-from carapace_cli.deploy.pulumi_runner import StackHandle
+from carapace_cli.deploy.pulumi_runner import StackHandle, StateResource
 from carapace_cli.deploy.summary import state_bucket_name
 from carapace_cli.errors import CarapaceError, StorageError
 from carapace_cli.files import (
@@ -68,16 +71,72 @@ def destroy_warning(project: str, prefix: str) -> str:
     )
 
 
+# The resources whose deletion protection UNPROTECTED lifts (see
+# infra/pulumi/components): `protect` on the key ring and the key follows
+# carapace:protect_kms_key; `protect` on the Cloud SQL instance, database
+# and user, and the instance's deletion_protection fields, follow
+# carapace:db_deletion_protection.
+DATABASE_INSTANCE_TYPE = "gcp:sql/databaseInstance:DatabaseInstance"
+PROTECTED_TYPES = frozenset(
+    {
+        "gcp:kms/keyRing:KeyRing",
+        "gcp:kms/cryptoKey:CryptoKey",
+        DATABASE_INSTANCE_TYPE,
+        "gcp:sql/database:Database",
+        "gcp:sql/user:User",
+    }
+)
+
+
+def _database_protected(outputs: Mapping[str, Any]) -> bool:
+    """Whether either deletion protection field may still be on.
+
+    Anything but an exported ``false`` (a missing field, or one exported
+    as a secret) counts as on, so the protection up runs again.
+    """
+    settings = outputs.get("settings")
+    enabled = (
+        settings.get("deletionProtectionEnabled")
+        if isinstance(settings, dict)
+        else None
+    )
+    return outputs.get("deletionProtection") is not False or enabled is not False
+
+
+def _needs_unprotecting(resource: StateResource) -> bool:
+    if resource.type not in PROTECTED_TYPES:
+        return False
+    if resource.protect:
+        return True
+    return resource.type == DATABASE_INSTANCE_TYPE and _database_protected(
+        resource.outputs
+    )
+
+
+def protected_urns(stack: StackHandle) -> list[str]:
+    """The URNs in the state whose deletion protection is still on."""
+    urns: list[str] = []
+    for resource in stack.resources():
+        if _needs_unprotecting(resource) and resource.urn not in urns:
+            urns.append(resource.urn)
+    return urns
+
+
 def run_destroy(stack: StackHandle, *, say: Callable[[str], None]) -> None:
     """Lift deletion protection, then destroy every resource of the stack.
 
-    Both steps are idempotent, so a failed destroy is resumed by running
-    the same command again.
+    Protection is lifted with an ``up`` that targets only the protected
+    resources in the state, so nothing the state lacks is created; with
+    none left, no ``up`` runs at all. Both steps are idempotent, and the
+    state decides what is still protected, so a failed destroy is resumed
+    by running the same command again.
     """
-    if any(stack.config().get(key) != value for key, value in UNPROTECTED.items()):
+    urns = protected_urns(stack)
+    if urns:
         say("Turning off deletion protection on the KMS key and database...")
-        stack.set_config(UNPROTECTED)
-        stack.up()
+        if any(stack.config().get(key) != value for key, value in UNPROTECTED.items()):
+            stack.set_config(UNPROTECTED)
+        stack.up_targets(urns)
     say("Destroying the stack...")
     stack.destroy()
 
