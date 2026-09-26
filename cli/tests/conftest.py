@@ -40,7 +40,11 @@ from carapace_enclave.server import EnclaveServices
 from carapace_enclave.server import create_app as create_enclave
 from carapace_enclave.tls import server_ssl_context
 from carapace_enclave_mock import MOCK_KMS_KEY_VERSION, LocalRsaDecrypter, MockLauncher
-from carapace_enclave_mock.launcher import MOCK_IMAGE_DIGEST
+from carapace_enclave_mock.launcher import (
+    MOCK_IMAGE_DIGEST,
+    MOCK_PROJECT_ID,
+    MOCK_SERVICE_ACCOUNT,
+)
 from carapace_server.app import create_app as create_server
 from carapace_server.config import MOCK_ATTESTATION_ISSUER, Settings
 from carapace_server.db import create_engine, create_sessionmaker
@@ -50,6 +54,7 @@ T = TypeVar("T")
 PUBLIC_IP = "93.184.216.34"
 PASSWORD = "Correct-Horse-9-Battery"
 STARTUP_TIMEOUT_SECONDS = 20.0
+MOCK_WIF_AUDIENCE = "carapace-sts-test"
 
 
 class Upstream:
@@ -125,6 +130,13 @@ class Stack:
             self.enclave_url,
             "--allow-digest",
             MOCK_IMAGE_DIGEST,
+            "--project-id",
+            MOCK_PROJECT_ID,
+            "--service-account",
+            MOCK_SERVICE_ACCOUNT,
+            "--kms-key",
+            MOCK_KMS_KEY_VERSION,
+            # Last, so tests can drop them from the end.
             "--insecure-mock",
             "--mock-issuer-key",
             str(self.mock_key_path),
@@ -182,7 +194,14 @@ def stack(
     server_sock, enclave_sock = _bound_socket(), _bound_socket()
     server_url = f"http://127.0.0.1:{server_sock.getsockname()[1]}"
     enclave_url = f"https://127.0.0.1:{enclave_sock.getsockname()[1]}"
-    launcher = MockLauncher(signing_key=launcher_key)
+    launcher = MockLauncher(
+        signing_key=launcher_key,
+        env={
+            "CONTROL_PLANE_URL": server_url,
+            "KMS_KEY_NAME": MOCK_KMS_KEY_VERSION,
+            "WIF_AUDIENCE": MOCK_WIF_AUDIENCE,
+        },
+    )
     mock_key_path = tmp_path / "mock-issuer.pem"
     mock_key_path.write_text(launcher.public_pem)
     settings = Settings(

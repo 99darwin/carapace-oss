@@ -71,6 +71,8 @@ def deploy(cfg: StackConfig) -> dict[str, pulumi.Input[object]]:
         allowed_digests=cfg.allowed_digests,
         audience=cfg.wif_audience,
         control_plane_url=control_plane_url,
+        # The version the enclave is launched with as KMS_KEY_NAME (below).
+        kms_key_name=kms_key.key_version_name,
         depends_on=apis,
     )
     key_policy = bind_key_policy(

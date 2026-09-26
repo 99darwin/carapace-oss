@@ -108,13 +108,13 @@ Each guarantee below assumes the TCB is intact.
 
 | # | Guarantee | Enforced by |
 |---|---|---|
-| G1 | Only an attested enclave running an allowed image digest can unwrap a DEK. | KMS key IAM policy (authoritative) grants decrypt only to WIF principal sets keyed on `image_digest`; the WIF condition also requires the STS audience, `swname = CONFIDENTIAL_SPACE`, `hwmodel = GCP_AMD_SEV`, `dbgstat = disabled-since-boot`, secure boot, the `STABLE` support attribute, the project id, the enclave service account, and `submods.container.env.CONTROL_PLANE_URL` equal to the configured URL. The key ring policy is authoritative and empty. (`infra/pulumi/components/wif.py`, `kms.py`) |
+| G1 | Only an attested enclave running an allowed image digest can unwrap a DEK. | KMS key IAM policy (authoritative) grants decrypt only to WIF principal sets keyed on `image_digest`; the WIF condition also requires the STS audience, `swname = CONFIDENTIAL_SPACE`, `hwmodel = GCP_AMD_SEV`, `dbgstat = disabled-since-boot`, secure boot, the `STABLE` support attribute, the project id, the enclave service account, and the container env's `CONTROL_PLANE_URL`, `KMS_KEY_NAME` and `WIF_AUDIENCE` equal to the values the VM is launched with. The key ring policy is authoritative and empty. (`infra/pulumi/components/wif.py`, `kms.py`) |
 | G2 | The server cannot read secrets. | Client-side sealing to the KMS public key (`packages/crypto`); the server never holds decrypt permission. |
 | G3 | The server cannot substitute a secret, widen a policy, or attach a secret to a key the owner did not authorize. | Ed25519 owner signatures over envelopes (policy bound into signature and AES-GCM AAD) and grants; the enclave verifies both against the owner fingerprint embedded in the API key. (`packages/crypto`, `enclave/.../broker.py`) |
 | G4 | An API key record the server invents is useless. | A grant binds `key_bind = bind_hash(raw key)`. The server stores only the separately-tagged `lookup_hash`, so it cannot compute `bind_hash` for a key it did not see, and cannot move a grant from one key to another. |
 | G5 | An agent can use a secret only within its policy. | Enclave policy check: HTTPS only, host/suffix allowlist, method and port lists, DNS resolved once with private/link-local addresses blocked and the connection pinned to the resolved IP, agent headers that could redirect or impersonate the credential rejected (`Host`, `Forwarded`, `X-Forwarded-*`, `Proxy-*`, framing headers, the injected header itself), no redirects, size caps, per-owner and per-policy rate limits. |
 | G6 | The agent does not receive the raw secret in responses. | Redaction of raw, base64 (standard and URL-safe, any alignment), percent-encoded, JSON-escaped and hex forms from response headers and body. **Best-effort:** see [residual risks](#residual-risks). |
-| G7 | The client talks to the enclave it verified, not a man in the middle. | `carapace verify` checks the Google-signed token (RS256 via Google's OIDC JWKS, audience `carapace-attestation`, `eat_nonce = boot_id`), the platform claims, the image digest against `--allow-digest`, and that the attested TLS key equals the peer's certificate; later calls trust only the pinned certificate. |
+| G7 | The client talks to the enclave it verified, not a man in the middle. | `carapace verify` checks the Google-signed token (RS256 via Google's OIDC JWKS, audience `carapace-attestation`, `eat_nonce = boot_id`), the platform claims, the image digest against `--allow-digest`, the deployment (project id, enclave service account, and the container env's `CONTROL_PLANE_URL` and `KMS_KEY_NAME`) against the values the user passes or `carapace deploy` takes from the stack, and that the attested TLS key equals the peer's certificate; later calls trust only the pinned certificate, and `audit verify` checks past boots against the same pinned deployment. |
 | G8 | Every authorized use leaves a signed, hash-chained receipt that the server cannot forge or reorder undetected. | Per-boot Ed25519 receipt key bound into the attestation nonce; receipts chain by `prev_hash`; `carapace audit verify` checks each boot's token, signatures, chain links and `owner_fp`. The enclave stops serving if it cannot hand receipts to the server (fails closed at a 1 000-receipt backlog or on a 409/422). |
 | G9 | A malicious server's replay of old owner-signed objects is bounded in time. | Grant expiry (default 30 days, max 90), per-secret version floors in grants, and a best-effort per-boot monotonic cache. See [design/owner-signing.md](design/owner-signing.md#freshness-rollback-and-revocation). |
 | G10 | The VM host cannot roll the enclave's clock back to revive an expired grant. | `now = max(VM clock, iat of the latest attestation token)`, monotonic within a boot; tokens refresh every 15 minutes and gate KMS access, so an enclave cut off from refresh loses KMS within about an hour. |
@@ -297,8 +297,11 @@ mocks. They need confirmation on real Confidential Space hardware before
 v0.1 is tagged. If one is wrong, the system should **fail closed** (nothing
 decrypts), except where noted.
 
-- The attestation token carries `submods.container.env.CONTROL_PLANE_URL`
-  in the form the WIF condition expects. If it does not, nothing can decrypt.
+- The attestation token carries `submods.container.env.CONTROL_PLANE_URL`,
+  `KMS_KEY_NAME` and `WIF_AUDIENCE` in the form the WIF condition and
+  `carapace verify` expect (a map from name to value, including launch-time
+  overrides). If it does not, nothing can decrypt and `carapace verify`
+  refuses every enclave; both fail closed.
 - The `image_digest` claim is the platform manifest digest (the digest of
   record), not an index digest.
 - The `principalSubject` recorded in Data Access logs for federated callers

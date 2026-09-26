@@ -43,6 +43,7 @@ STS_AUDIENCE = (
     "/workloadIdentityPools/cptest-attest/providers/confidential-space"
 )
 KEY_RING_ID = "projects/example-project/locations/us-central1/keyRings/cptest-keyring"
+KMS_KEY_VERSION = f"{KEY_RING_ID}/cryptoKeys/cptest-secrets/cryptoKeyVersions/1"
 SERVER_URL = f"https://cptest-server-{PROJECT_NUMBER}.us-central1.run.app"
 REPOSITORY_IAM = "gcp:artifactregistry/repositoryIamMember:RepositoryIamMember"
 # Pulumi's wire encoding of a secret value: {SECRET_SIG: SECRET_SIG_VALUE, ...}.
@@ -302,6 +303,8 @@ def test_wif_condition_requires_every_attestation_clause(stack) -> None:
         f"assertion.submods.container.image_digest in ['{DIGEST_A}', '{DIGEST_B}']",
         f"'cptest-enclave@{PROJECT_ID}.iam.gserviceaccount.com'"
         " in assertion.google_service_accounts",
+        f"assertion.submods.container.env.KMS_KEY_NAME == '{KMS_KEY_VERSION}'",
+        f"assertion.submods.container.env.WIF_AUDIENCE == '{STS_AUDIENCE}'",
     ):
         assert clause in condition
     assert condition.startswith(f"assertion.aud == '{STS_AUDIENCE}' && ")
@@ -327,7 +330,12 @@ def test_wif_audience_override_is_used_verbatim() -> None:
     mocks, outputs = run_stack(make_config(wif_audience="carapace-sts-selfhost"))
     provider = mocks.one(PROVIDER).inputs
     assert provider["oidc"]["allowedAudiences"] == ["carapace-sts-selfhost"]
-    assert "assertion.aud == 'carapace-sts-selfhost'" in provider["attributeCondition"]
+    condition = provider["attributeCondition"]
+    assert "assertion.aud == 'carapace-sts-selfhost'" in condition
+    assert (
+        "assertion.submods.container.env.WIF_AUDIENCE == 'carapace-sts-selfhost'"
+        in condition
+    )
     assert outputs["wif_audience"] == "carapace-sts-selfhost"
 
 
@@ -504,6 +512,21 @@ def test_control_plane_url_override_is_used_everywhere() -> None:
     assert mocks.one(INSTANCE).inputs["metadata"]["tee-env-CONTROL_PLANE_URL"] == url
     assert _pins_control_plane(mocks.one(PROVIDER).inputs["attributeCondition"], url)
     assert outputs["control_plane_url"] == url
+
+
+def test_wif_pins_the_launch_env_the_enclave_gets(stack) -> None:
+    """Every tee-env override on the VM is pinned by the WIF condition."""
+    mocks, _ = stack
+    metadata = mocks.one(INSTANCE).inputs["metadata"]
+    condition = mocks.one(PROVIDER).inputs["attributeCondition"]
+    env = {
+        k.removeprefix("tee-env-"): v
+        for k, v in metadata.items()
+        if k.startswith("tee-env-")
+    }
+    assert set(env) == {"CONTROL_PLANE_URL", "KMS_KEY_NAME", "WIF_AUDIENCE"}
+    for name, value in env.items():
+        assert f"assertion.submods.container.env.{name} == '{value}'" in condition
 
 
 def test_bootstrap_still_pins_the_control_plane_url() -> None:

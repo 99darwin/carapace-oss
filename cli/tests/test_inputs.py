@@ -100,6 +100,10 @@ def _pin() -> EnclavePin:
         insecure_mock=False,
         mock_key_pem=None,
         verified_at=0,
+        project_id="",
+        service_account="",
+        control_plane_url="",
+        kms_key_name="",
     )
 
 

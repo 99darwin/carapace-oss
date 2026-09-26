@@ -16,8 +16,13 @@ from cryptography.x509.oid import NameOID
 
 from carapace_cli import Client, EnclaveError, InsecureMockWarning, PinError
 from carapace_cli.files import write_private_json
-from carapace_cli.pin import load_pin, pin_path
-from carapace_enclave_mock.launcher import MOCK_IMAGE_DIGEST
+from carapace_cli.pin import IDENTITY_FIELDS, load_pin, pin_path
+from carapace_enclave_mock import MOCK_KMS_KEY_VERSION
+from carapace_enclave_mock.launcher import (
+    MOCK_IMAGE_DIGEST,
+    MOCK_PROJECT_ID,
+    MOCK_SERVICE_ACCOUNT,
+)
 from carapace_server.apikeys.models import ApiKey
 from carapace_server.apikeys.service import is_tombstone
 
@@ -205,12 +210,88 @@ def test_verify_prints_the_insecure_mock_banner(owner) -> None:
 
 
 def test_verify_without_insecure_mock_refuses_the_mock_enclave(owner) -> None:
-    code, _, err = owner.cli(
-        "verify", "--enclave", owner.enclave_url, "--allow-digest", MOCK_IMAGE_DIGEST
-    )
+    args = owner.verify_args()
+    mock_flag = args.index("--insecure-mock")
+    del args[mock_flag : mock_flag + 3]  # and --mock-issuer-key <path>
+    code, _, err = owner.cli(*args)
     assert code == 1
     assert "--insecure-mock" in err
     assert not pin_path(owner.config_dir).exists()
+
+
+def test_verify_pins_the_deployment_identity(verified) -> None:
+    pin = load_pin(verified.config_dir)
+    assert pin.project_id == MOCK_PROJECT_ID
+    assert pin.service_account == MOCK_SERVICE_ACCOUNT
+    assert pin.control_plane_url == verified.server_url
+    assert pin.kms_key_name == pin.kms_key_version == MOCK_KMS_KEY_VERSION
+    assert pin_path(verified.config_dir).read_text().count('"v": 2') == 1
+
+
+@pytest.mark.parametrize("flag", ["--project-id", "--service-account", "--kms-key"])
+def test_verify_without_an_identity_flag_fails_closed(owner, flag) -> None:
+    args = owner.verify_args()
+    del args[args.index(flag) : args.index(flag) + 2]
+    code, _, err = owner.cli(*args)
+    assert code == 1
+    assert "deployment identity" in err
+    assert not pin_path(owner.config_dir).exists()
+
+
+def test_verify_with_an_empty_control_plane_url_fails_closed(owner) -> None:
+    """An empty flag is refused, not silently replaced by the server URL."""
+    code, _, err = owner.cli(*owner.verify_args(), "--control-plane-url", "")
+    assert code == 1
+    assert "invalid URL ''" in err
+    assert not pin_path(owner.config_dir).exists()
+
+
+@pytest.mark.parametrize(
+    ("flag", "value", "message"),
+    [
+        ("--project-id", "attacker-project", "GCP project"),
+        ("--service-account", "enclave@attacker.iam.gserviceaccount.com", "run as"),
+        ("--kms-key", MOCK_KMS_KEY_VERSION[:-1] + "2", "KMS key"),
+        ("--control-plane-url", "https://evil.example.com", "control plane URL"),
+    ],
+)
+def test_verify_refuses_another_deployment(owner, flag, value, message) -> None:
+    code, _, err = owner.cli(*owner.verify_args(), flag, value)
+    assert code == 1
+    assert message in err
+    assert not pin_path(owner.config_dir).exists()
+
+
+def test_verify_refuses_an_enclave_reporting_another_kms_key(owner) -> None:
+    """The token names one key but the enclave serves with another."""
+    other = MOCK_KMS_KEY_VERSION[:-1] + "2"
+    owner.launcher.env["KMS_KEY_NAME"] = other
+    args = owner.verify_args()
+    args[args.index(MOCK_KMS_KEY_VERSION)] = other
+    code, _, err = owner.cli(*args)
+    assert code == 1
+    assert "the enclave reports KMS key" in err
+    assert not pin_path(owner.config_dir).exists()
+
+
+def test_v1_pin_is_refused_with_a_reverify_hint(verified) -> None:
+    data = load_pin(verified.config_dir).to_dict() | {"v": 1}
+    for name in IDENTITY_FIELDS:
+        del data[name]
+    write_private_json(pin_path(verified.config_dir), data)
+    code, _, err = verified.cli("audit", "verify")
+    assert code == 1
+    assert "re-run carapace verify" in err
+    with pytest.raises(PinError, match="predates deployment identity"):
+        load_pin(verified.config_dir)
+
+
+@pytest.mark.parametrize("name", ["project_id", "kms_key_name"])
+def test_v2_pin_without_identity_is_malformed(verified, name) -> None:
+    data = load_pin(verified.config_dir).to_dict() | {name: None}
+    write_private_json(pin_path(verified.config_dir), data)
+    with pytest.raises(PinError, match="malformed"):
+        load_pin(verified.config_dir)
 
 
 def test_verify_without_a_digest_fails_closed(owner) -> None:

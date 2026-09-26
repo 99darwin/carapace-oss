@@ -5,6 +5,13 @@ checks pass. Every later call to the enclave trusts exactly that one
 self-signed certificate: it is the only trust anchor in the TLS context
 (hostname checking is off because the certificate names no host), and each
 response is checked again against the pinned DER before its body is read.
+
+The pin also records the deployment identity ``verify`` enforced (GCP
+project, enclave service account, control plane URL, KMS key version), so
+``audit verify`` checks past boots against the same deployment. Version 1
+pins predate those checks and are refused rather than upgraded: nothing in
+them says which deployment was verified, and filling the fields in now
+would claim a check that never ran.
 """
 
 from __future__ import annotations
@@ -28,7 +35,9 @@ from carapace_cli.errors import PinError, StorageError, network_errors
 from carapace_cli.files import read_private_json, write_private_json
 
 PIN_FILE = "enclave.json"
-PIN_VERSION = 1
+PIN_VERSION = 2
+PIN_VERSION_WITHOUT_IDENTITY = 1
+IDENTITY_FIELDS = ("project_id", "service_account", "control_plane_url", "kms_key_name")
 DEFAULT_HTTPS_PORT = 443
 CONNECT_TIMEOUT_SECONDS = 10.0
 REQUEST_TIMEOUT_SECONDS = 150.0
@@ -47,6 +56,10 @@ class EnclavePin:
     insecure_mock: bool
     mock_key_pem: str | None
     verified_at: int
+    project_id: str
+    service_account: str
+    control_plane_url: str
+    kms_key_name: str
 
     @property
     def cert_der(self) -> bytes:
@@ -66,10 +79,19 @@ class EnclavePin:
             "insecure_mock": self.insecure_mock,
             "mock_key_pem": self.mock_key_pem,
             "verified_at": self.verified_at,
+            "project_id": self.project_id,
+            "service_account": self.service_account,
+            "control_plane_url": self.control_plane_url,
+            "kms_key_name": self.kms_key_name,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> EnclavePin:
+        if data.get("v") == PIN_VERSION_WITHOUT_IDENTITY:
+            raise PinError(
+                "this enclave pin predates deployment identity checks; re-run "
+                "carapace verify with --project-id, --service-account and --kms-key"
+            )
         if data.get("v") != PIN_VERSION:
             raise PinError("unsupported enclave pin version")
         try:
@@ -85,6 +107,7 @@ class EnclavePin:
                 insecure_mock=data["insecure_mock"] is True,
                 mock_key_pem=data.get("mock_key_pem"),
                 verified_at=int(data["verified_at"]),
+                **{name: _required_str(data, name) for name in IDENTITY_FIELDS},
             )
         except (KeyError, TypeError, ValueError):
             raise PinError("enclave pin file is malformed") from None
@@ -92,6 +115,13 @@ class EnclavePin:
             raise PinError("enclave pin file is inconsistent")
         pin.cert_der  # noqa: B018 - parse now so a bad pin fails early
         return pin
+
+
+def _required_str(data: dict[str, Any], name: str) -> str:
+    value = data[name]
+    if not isinstance(value, str) or not value:
+        raise ValueError(name)
+    return value
 
 
 def pin_path(config_dir: Path) -> Path:

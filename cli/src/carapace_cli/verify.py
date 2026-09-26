@@ -5,8 +5,11 @@
 2. The attested ``tls_cert_pem`` must be that same certificate.
 3. ``boot_id`` must equal ``sha256(tls_spki_der || receipt_pubkey)``.
 4. The attestation token must verify (see :mod:`carapace_cli.attestation`)
-   with audience ``carapace-attestation`` and nonce ``boot_id``.
-5. The KMS public key the server hands out must equal the one the enclave
+   with audience ``carapace-attestation`` and nonce ``boot_id``, including
+   the deployment identity: project, service account, control plane URL and
+   KMS key. A policy without all four is refused.
+5. The KMS key version the enclave reports must be the pinned one, and the
+   KMS public key the server hands out must equal the one the enclave
    reported over the attested channel, version included.
 
 Only then is the pin written. Any failure raises and nothing is saved.
@@ -176,11 +179,19 @@ def verify_enclave(
     enclave_url: str, server: ServerClient, policy: TrustPolicy
 ) -> EnclavePin:
     """Run every check and return the pin to save. Raises on any failure."""
+    project_id, service_account, control_plane_url, kms_key_name = _required_identity(
+        policy
+    )
     enclave_url = normalize_base_url(
         enclave_url, what="enclave", allow_loopback_http=False
     )
     peer_der, document = fetch_attestation(enclave_url)
     image_digest = check_attestation(document, peer_der, policy)
+    if document.kms_key_version != kms_key_name:
+        raise VerificationError(
+            f"the enclave reports KMS key {document.kms_key_version!r}, "
+            f"not {kms_key_name!r}"
+        )
     check_server_kms_key(
         server,
         attested_pem=document.kms_public_key_pem,
@@ -198,10 +209,36 @@ def verify_enclave(
         insecure_mock=policy.insecure_mock,
         mock_key_pem=policy.mock_key_pem,
         verified_at=now_seconds(),
+        project_id=project_id,
+        service_account=service_account,
+        control_plane_url=control_plane_url,
+        kms_key_name=kms_key_name,
     )
+
+
+def _required_identity(policy: TrustPolicy) -> tuple[str, str, str, str]:
+    """The four deployment identity values; a pin is never made without them."""
+    project_id, service_account = policy.project_id, policy.service_account
+    control_plane_url, kms_key_name = policy.control_plane_url, policy.kms_key_name
+    if (
+        project_id is None
+        or service_account is None
+        or control_plane_url is None
+        or kms_key_name is None
+    ):
+        raise VerificationError(
+            "a pin needs the deployment identity: pass --project-id, "
+            "--service-account, --kms-key and --control-plane-url"
+        )
+    return project_id, service_account, control_plane_url, kms_key_name
 
 
 def trust_policy_from_pin(pin: EnclavePin) -> TrustPolicy:
     return TrustPolicy(
-        allowed_digests=frozenset(pin.allowed_digests), mock_key_pem=pin.mock_key_pem
+        allowed_digests=frozenset(pin.allowed_digests),
+        mock_key_pem=pin.mock_key_pem,
+        project_id=pin.project_id,
+        service_account=pin.service_account,
+        control_plane_url=pin.control_plane_url,
+        kms_key_name=pin.kms_key_name,
     )

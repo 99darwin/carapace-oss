@@ -7,7 +7,8 @@ After the stack is up, ``carapace deploy`` leaves the CLI ready to use:
    The owner key is registered before the session is saved, so a saved
    session always means a registered key.
 3. ``verify`` against the enclave, trusting exactly the image digest this
-   deploy published, retried while the VM and Cloud Run start.
+   deploy published, in this deploy's project, service account, control
+   plane and KMS key, retried while the VM and Cloud Run start.
 4. The pin saved only if the attested KMS key version is the one the stack
    created.
 
@@ -48,7 +49,7 @@ from carapace_cli.ownerkey_store import (
     owner_key_path,
     save_owner_key,
 )
-from carapace_cli.pin import EnclavePin, pin_path, save_pin
+from carapace_cli.pin import IDENTITY_FIELDS, EnclavePin, pin_path, save_pin
 from carapace_cli.prompts import prompt_hidden, read_password
 from carapace_cli.session import (
     ServerClient,
@@ -112,14 +113,19 @@ class DeploymentIdentity:
 
 
 def trust_policy_for(enclave_digest: str, identity: DeploymentIdentity) -> TrustPolicy:
-    """What ``verify`` accepts for this deployment: the published digest.
+    """What ``verify`` accepts for this deployment.
 
-    ``identity`` is checked against the pin by :func:`check_pin_identity`.
-    When :class:`TrustPolicy` can require the project, the enclave service
-    account, the control plane URL and the KMS key, they are set here.
+    The published digest, run in this project as this deploy's enclave
+    service account, reporting to this control plane with this KMS key
+    version (the value the enclave is launched with as ``KMS_KEY_NAME``).
     """
-    del identity  # Not yet expressible in TrustPolicy; see the docstring.
-    return TrustPolicy(allowed_digests=frozenset({enclave_digest}))
+    return TrustPolicy(
+        allowed_digests=frozenset({enclave_digest}),
+        project_id=identity.project,
+        service_account=identity.enclave_service_account,
+        control_plane_url=identity.control_plane_url,
+        kms_key_name=identity.kms_key_version_name,
+    )
 
 
 def check_pin_identity(
@@ -128,7 +134,8 @@ def check_pin_identity(
     """Refuse a pin that is not this deployment's enclave.
 
     Raises:
-        VerificationError: The attested image or KMS key version differs.
+        VerificationError: The attested image, KMS key version, or any of the
+            pinned deployment identity fields differs.
     """
     if pin.image_digest != enclave_digest:
         raise VerificationError(
@@ -139,6 +146,13 @@ def check_pin_identity(
             "the enclave's KMS key version is not the one this deploy created; "
             "refusing to pin it"
         )
+    expected = trust_policy_for(enclave_digest, identity)
+    for name in IDENTITY_FIELDS:
+        if getattr(pin, name) != getattr(expected, name):
+            raise VerificationError(
+                f"the pin's {name} is {getattr(pin, name)!r}, not this "
+                f"deployment's {getattr(expected, name)!r}; refusing to pin it"
+            )
 
 
 class Authenticator(Protocol):

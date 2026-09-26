@@ -36,6 +36,9 @@ MAX_NONCE_LENGTH = 74
 class MockLauncher:
     """Mints Confidential Space-shaped tokens with a local RSA key.
 
+    ``env`` is the container environment reported in
+    ``submods.container.env``, as the real launcher reports the launch-time
+    overrides (``CONTROL_PLANE_URL``, ``KMS_KEY_NAME``, ``WIF_AUDIENCE``).
     ``overrides`` replaces claims in every token; tests use it to play a
     tampering launcher. ``requests`` records each request body.
     """
@@ -44,6 +47,7 @@ class MockLauncher:
     image_digest: str = MOCK_IMAGE_DIGEST
     project_id: str = MOCK_PROJECT_ID
     service_account: str = MOCK_SERVICE_ACCOUNT
+    env: dict[str, str] = field(default_factory=dict)
     clock: Callable[[], float] = time.time
     overrides: dict[str, Any] = field(default_factory=dict)
     requests: list[dict[str, Any]] = field(default_factory=list)
@@ -79,7 +83,10 @@ class MockLauncher:
             "google_service_accounts": [self.service_account],
             "submods": {
                 "confidential_space": {"support_attributes": ["LATEST", "STABLE"]},
-                "container": {"image_digest": self.image_digest},
+                "container": {
+                    "image_digest": self.image_digest,
+                    "env": dict(self.env),
+                },
                 "gce": {"project_id": self.project_id},
             },
         }

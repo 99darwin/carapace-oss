@@ -13,7 +13,10 @@ leaves this machine.
 carapace init                                   # owner key; passphrase prompt
 carapace signup --server https://carapace.example.com --email you@example.com
 carapace verify --enclave https://enclave.example.com:8443 \
-    --allow-digest sha256:...                   # the digest CI printed for the release
+    --allow-digest sha256:... \
+    --project-id my-project \
+    --service-account carapace-enclave@my-project.iam.gserviceaccount.com \
+    --kms-key projects/my-project/locations/us-central1/keyRings/.../cryptoKeyVersions/1
 printf %s "$TOKEN" | carapace secret add github --host api.github.com
 carapace key create my-agent --secret github --output agent.key
 carapace request github GET https://api.github.com/user --api-key-file agent.key
@@ -62,7 +65,10 @@ refuses to overwrite one.
    and the token must not be expired. `hwmodel`, `swname`, `dbgstat`,
    `secboot` and the `STABLE` support attribute are checked.
 3. The container image digest is in your allowlist (`--allow-digest`).
-   With no allowlist it fails.
+   With no allowlist it fails. The project, enclave service account,
+   `CONTROL_PLANE_URL` and `KMS_KEY_NAME` claims must equal `--project-id`,
+   `--service-account`, `--control-plane-url` (default: the logged-in
+   server) and `--kms-key`.
 4. `eat_nonce` is `sha256(TLS SPKI || receipt public key)`, which binds both
    keys to this boot.
 5. The server's `/v1/kms/public-key` must equal the attested KMS key and

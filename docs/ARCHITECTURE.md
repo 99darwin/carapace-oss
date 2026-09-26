@@ -124,9 +124,13 @@ so it is never an allowed audience.
 3. Checks that the container image digest is one the user allowed
    (`--allow-digest`, compared by hand against the CI build output; release
    signature verification is not implemented yet).
-4. Checks that the nonce binds the served TLS certificate and receipt key.
-5. Pins the TLS certificate for all further enclave connections.
-6. Refuses to encrypt if the KMS public key from the server differs from the
+4. Checks the deployment: project id, enclave service account, and the
+   container env's `CONTROL_PLANE_URL` and `KMS_KEY_NAME`, against the values
+   the user passes (or `carapace deploy` takes from the stack).
+5. Checks that the nonce binds the served TLS certificate and receipt key.
+6. Pins the TLS certificate and the deployment for all further enclave
+   connections.
+7. Refuses to encrypt if the KMS public key from the server differs from the
    one in the attested response.
 
 ## Injection policy
