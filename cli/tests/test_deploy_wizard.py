@@ -45,6 +45,8 @@ from carapace_cli.main import main
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EMAIL = "ops@example.com"
+DIGEST = "sha256:" + "ab" * 32
+DIGEST_FLAGS = ("--enclave-digest", DIGEST, "--server-digest", DIGEST)
 FULL_FLAGS = Flags(project=PROJECT, region="europe-west1", alert_emails=(EMAIL,))
 
 
@@ -235,7 +237,14 @@ def test_deploy_without_yes_in_a_script_changes_nothing(
 ) -> None:
     google = healthy_project()
     code, output = _run(
-        monkeypatch, tmp_path, google, "--project", PROJECT, "--alert-email", EMAIL
+        monkeypatch,
+        tmp_path,
+        google,
+        "--project",
+        PROJECT,
+        "--alert-email",
+        EMAIL,
+        *DIGEST_FLAGS,
     )
     assert code == 1
     assert "pass --yes" in output
@@ -251,24 +260,6 @@ def test_deploy_script_missing_email_fails_fast(
     assert code == 1
     assert "--alert-email is required in non-interactive mode" in output
     assert _read_only(google)
-
-
-def test_deploy_with_yes_reaches_execute(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    code, output = _run(
-        monkeypatch,
-        tmp_path,
-        healthy_project(),
-        "--non-interactive",
-        "--project",
-        PROJECT,
-        "--alert-email",
-        EMAIL,
-        "--yes",
-    )
-    assert code == 1
-    assert "not implemented in this build yet" in output
 
 
 def test_deploy_declined_interactively(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -291,6 +282,8 @@ def test_deploy_declined_interactively(monkeypatch: pytest.MonkeyPatch) -> None:
         zone=None,
         prefix="c1x",
         alert_email=[EMAIL],
+        enclave_digest=DIGEST,
+        server_digest=DIGEST,
         non_interactive=False,
         yes=False,
     )
