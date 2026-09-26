@@ -66,6 +66,7 @@ from carapace_cli.deploy.preflight import (
     DEFAULT_PREFIX,
     Flags,
     Target,
+    check_prefix_unused,
     run_preflight,
     validate_prefix,
     validate_project_id,
@@ -85,12 +86,16 @@ from carapace_cli.deploy.record import (
 )
 from carapace_cli.deploy.state import (
     StateBackend,
+    ensure_services,
     ensure_state_backend,
     state_backend_for,
 )
 from carapace_cli.deploy.summary import render_summary, state_bucket_name
 
 EXIT_DECLINED = 1
+# The stack enables it too, but a new stack's prefix check reads a WIF
+# pool first, and a fresh project may not have the IAM API on yet.
+PREFIX_CHECK_SERVICES = ("iam.googleapis.com",)
 
 
 class CommandContext(Protocol):
@@ -324,6 +329,13 @@ def start_fresh_stack(
     stack.set_config(FRESH_STACK)
 
 
+def refuse_reused_prefix(api: GcpApi, target: Target, *, clock: Clock) -> None:
+    """For a new stack: stop if the prefix names a destroyed deployment's
+    key ring or WIF pool, before any ``up`` creates half a stack."""
+    ensure_services(api, target.project, clock=clock, names=PREFIX_CHECK_SERVICES)
+    check_prefix_unused(api, target)
+
+
 def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
     interview = make_interview(args, ctx)
     services = default_services()
@@ -367,6 +379,12 @@ def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
         has_state = bool(stack.outputs())
         config = stack.config()
         check_stack_config(config, target, is_existing=has_state)
+        # New: no outputs and no record. A record without outputs is a run
+        # that failed before its first `up` finished; the key ring and pool
+        # it may have made are this stack's own. The record is written only
+        # after this check, so it never vouches for a refused prefix.
+        if report.existing is None and not has_state:
+            refuse_reused_prefix(api, target, clock=services.clock)
         if report.existing is not None and not has_state:
             start_fresh_stack(stack, config, target, say=ctx.say)
         # The record is written once the stack has its config, so a re-run

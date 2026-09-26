@@ -188,7 +188,19 @@ only the enclave).
   failed before its first `up` finished) and no config on this machine
   starts a fresh stack: nothing runs, so nothing can be deleted, and the
   stack starts from the fresh values rather than an older config's
-  digests. The state survives the loss of the laptop, but the config file
+  digests.
+- A new stack (no outputs and no record) first checks that its prefix is
+  unused: a destroyed deployment leaves its key ring `<prefix>-keyring`
+  (never deletable) and its WIF pool `<prefix>-attest` (soft-deleted, id
+  reserved for 30 days), and `pulumi up` would create most of the stack
+  before failing with 409 on either. The CLI enables the IAM API if
+  needed, GETs both (a GET returns a pool in state `DELETED` too) and
+  refuses, naming the leftover, if either exists. 404 means free; any
+  other error, including a missing `cloudkms.keyRings.get` or
+  `iam.workloadIdentityPools.get` (both in the preflight permission
+  check), stops the deploy. The record is written only after this check,
+  so a record with no outputs is this stack's own failed run, not a
+  leftover, and is not checked. The state survives the loss of the laptop, but the config file
   has to be copied to the new machine first.
 - `Pulumi.<prefix>.yaml` is named after the prefix alone, so one machine
   holds one deployment per prefix. A config whose `gcp:project` is another

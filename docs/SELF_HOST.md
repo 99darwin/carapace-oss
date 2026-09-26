@@ -322,6 +322,13 @@ Things to know:
 - **WIF pools and providers are soft-deleted** and keep their IDs for 30
   days. Redeploying into the same project within that window needs a new
   `prefix`.
+- Because of both, `carapace deploy` checks a new stack's prefix before
+  its first `pulumi up`: if the key ring `<prefix>-keyring` or the pool
+  `<prefix>-attest` exists (the pool in any state, deleted included), it
+  refuses and names the leftover; pass another `--prefix`. It needs
+  `cloudkms.keyRings.get` and `iam.workloadIdentityPools.get` (an Owner
+  has both), and any error other than "not found" stops the deploy. A
+  re-run of an existing deployment is not checked: it owns both names.
 - Artifact Registry images, Cloud SQL backups and logs follow their own
   retention rules. Delete the project to be sure nothing is left.
 

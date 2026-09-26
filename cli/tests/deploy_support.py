@@ -168,6 +168,14 @@ KEY_NAME = (
     f"/cryptoKeys/{PREFIX}-secrets"
 )
 KEY_VERSION = f"{KEY_NAME}/cryptoKeyVersions/1"
+IAM = "https://iam.googleapis.com/v1"
+# What a destroyed deployment of PREFIX leaves behind. The ring's URL is
+# a prefix of KEY_NAME's; deployable_project adds the key's routes later,
+# and later routes win.
+KEY_RING_URL = f"{KMS}/projects/{PROJECT}/locations/{REGION}/keyRings/{PREFIX}-keyring"
+POOL_URL = (
+    f"{IAM}/projects/{PROJECT}/locations/global/workloadIdentityPools/{PREFIX}-attest"
+)
 SERVER_URL = "https://c1x-server-123.us-central1.run.app"
 ENCLAVE_URL = "https://203.0.113.7:8443"
 REGISTRY = f"{REGION}-docker.pkg.dev/{PROJECT}/{PREFIX}"
@@ -181,13 +189,20 @@ def deployable_project(google: FakeGoogle | None = None) -> FakeGoogle:
     google = healthy_project(google)
     location = f"{KMS}/projects/{PROJECT}/locations/{REGION}"
     (
-        google.on(
+        # The prefix was never used: no key ring, no pool (see leftovers).
+        google.on("GET", KEY_RING_URL, google_error(404, "KeyRing not found"))
+        .on("GET", POOL_URL, google_error(404, "pool not found"))
+        .on(
             "GET",
             f"{SERVICE_USAGE}/projects/{PROJECT}/services/",
             ok({"state": "ENABLED"}),
         )
         .on("GET", f"{STORAGE}/b/", ok(_healthy_bucket()))
-        .on("GET", f"{location}/keyRings/", ok({"purpose": "ENCRYPT_DECRYPT"}))
+        .on(
+            "GET",
+            f"{location}/keyRings/carapace-state",
+            ok({"purpose": "ENCRYPT_DECRYPT"}),
+        )
         .on("GET", f"{KMS}/{KEY_VERSION}", ok({"state": "ENABLED"}))
         .on(
             "GET",

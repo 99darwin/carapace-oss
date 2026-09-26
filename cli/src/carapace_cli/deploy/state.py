@@ -9,7 +9,7 @@ the HSM key.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -77,11 +77,17 @@ def state_backend_for(target: Target) -> StateBackend:
     )
 
 
-def ensure_services(api: GcpApi, project: str, *, clock: Clock) -> None:
+def ensure_services(
+    api: GcpApi,
+    project: str,
+    *,
+    clock: Clock,
+    names: Sequence[str] = STATE_SERVICES,
+) -> None:
     services = f"{SERVICE_USAGE}/projects/{project}/services"
     missing = [
         name
-        for name in STATE_SERVICES
+        for name in names
         if api.get(f"{services}/{name}").get("state") != "ENABLED"
     ]
     if not missing:
