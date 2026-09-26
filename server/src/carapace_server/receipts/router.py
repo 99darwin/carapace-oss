@@ -19,6 +19,8 @@ router = APIRouter(prefix="/v1/receipts", tags=["receipts"])
 DEFAULT_PAGE_SIZE = 200
 MAX_PAGE_SIZE = 1000
 CURSOR_PATTERN = r"^[0-9a-f]{64}:[0-9]{1,16}$"
+DEFAULT_BOOTS = 50
+MAX_BOOTS = 200
 
 
 def boot_out(boot: EnclaveBoot) -> BootOut:
@@ -68,3 +70,19 @@ async def list_receipts(
         receipts=[receipt_out(r) for r in receipts],
         next_cursor=next_cursor,
     )
+
+
+@router.get("/boots")
+async def list_boots(
+    user: CurrentUser,
+    db: DbSession,
+    limit: Annotated[int, Query(ge=1, le=MAX_BOOTS)] = DEFAULT_BOOTS,
+) -> list[BootOut]:
+    """The boots that signed the caller's receipts, with their attestation.
+
+    Only boots with a receipt for this owner are listed, so an owner cannot
+    enumerate enclaves that never served them. The server checked each
+    token when the boot registered, but it is untrusted: clients verify the
+    tokens themselves with ``carapace verify``.
+    """
+    return [boot_out(b) for b in await service.owner_boots(db, user.id, limit=limit)]
