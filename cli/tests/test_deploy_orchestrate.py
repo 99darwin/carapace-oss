@@ -30,6 +30,7 @@ from deploy_support import (
     instant_clock,
     ok,
 )
+from first_run_support import fake_first_run
 
 from carapace_cli.deploy import command
 from carapace_cli.deploy.orchestrate import (
@@ -56,7 +57,7 @@ def _deploy(google: FakeGoogle, stack: FakeStack) -> dict[str, Any]:
         images=PrebuiltImages(images=IMAGES),
         clock=instant_clock(),
         say=lambda _: None,
-    )
+    ).outputs
 
 
 def test_first_deploy_bootstraps_then_deploys_workloads() -> None:
@@ -206,7 +207,10 @@ def test_deploy_command_end_to_end(
         command,
         "default_services",
         lambda: command.Services(
-            gcp=google.api, stack=open_stack, clock=instant_clock()
+            gcp=google.api,
+            stack=open_stack,
+            clock=instant_clock(),
+            first_run=fake_first_run(),
         ),
     )
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
@@ -226,6 +230,8 @@ def test_deploy_command_end_to_end(
             NEW_DIGEST,
             "--server-digest",
             SERVER_DIGEST,
+            "--password-stdin",
+            "--no-passphrase",
             "--yes",
         ],
         out=out,
@@ -237,3 +243,5 @@ def test_deploy_command_end_to_end(
     assert target.zone == f"{REGION}-a"
     assert backend.bucket == f"{PROJECT}-carapace-state"
     assert len(stack.ups) == 2
+    assert (tmp_path / "enclave.json").exists()
+    assert "Verified and pinned the enclave" in err.getvalue()

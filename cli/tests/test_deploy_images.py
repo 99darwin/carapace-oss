@@ -25,6 +25,7 @@ from deploy_support import (
     deployable_project,
     instant_clock,
 )
+from first_run_support import fake_first_run
 from registry_support import (
     AR_HOST,
     FakeRegistry,
@@ -280,11 +281,13 @@ def deploy(
             transport=world.transport(),
             verify=verifier or FakeVerifier(),
             which=lambda _name: None,
+            first_run=fake_first_run(),
         ),
     )
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
     out, err = io.StringIO(), io.StringIO()
     base = ["--project", PROJECT, "--prefix", PREFIX, "--alert-email", "a@b.io"]
+    base += ["--password-stdin", "--no-passphrase"]
     code = main(
         ["--config-dir", str(tmp_path), "deploy", *base, *argv], out=out, err=err
     )
@@ -305,6 +308,9 @@ def test_deploy_defaults_to_the_latest_verified_release(
     ]
     assert stack.ups[-1]["carapace:server_image_digest"] == world.server.digest
     assert (f"{DEST}/server", world.server.digest) in world.ar.manifests
+    # The CLI pinned the enclave running exactly the verified release digest.
+    pin = json.loads((tmp_path / "enclave.json").read_text())
+    assert pin["image_digest"] == world.enclave.digest
 
 
 def test_unverified_release_changes_nothing(

@@ -265,6 +265,7 @@ def test_deploy_script_missing_email_fails_fast(
 def test_deploy_declined_interactively(monkeypatch: pytest.MonkeyPatch) -> None:
     class Ctx:
         def __init__(self) -> None:
+            self.config_dir = Path("unused")
             self.err = io.StringIO()
             self.lines: list[str] = []
 

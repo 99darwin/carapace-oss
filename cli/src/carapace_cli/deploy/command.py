@@ -14,13 +14,19 @@ import shutil
 import tempfile
 from collections.abc import Callable
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, TextIO
 
 import httpx
 
 from carapace_cli.deploy import pulumi_runner
+from carapace_cli.deploy.first_run import (
+    AccountFlags,
+    FirstRunServices,
+    complete_first_run,
+    prepare_account,
+)
 from carapace_cli.deploy.gcp import AdcTokenSource, GcpApi
 from carapace_cli.deploy.images import (
     DEFAULT_RELEASE_REPO,
@@ -60,6 +66,9 @@ EXIT_DECLINED = 1
 
 class CommandContext(Protocol):
     @property
+    def config_dir(self) -> Path: ...
+
+    @property
     def err(self) -> TextIO: ...
 
     def say(self, message: str) -> None: ...
@@ -87,6 +96,7 @@ class Services:
     verify: SignatureVerifier = sigstore_verify
     run: ProcessRunner = run_process
     which: Callable[[str], str | None] = shutil.which
+    first_run: FirstRunServices = field(default_factory=FirstRunServices)
 
 
 def default_services() -> Services:
@@ -99,6 +109,14 @@ def make_interview(args: argparse.Namespace, ctx: CommandContext) -> Interview:
     )
     interview.stream_out = ctx.err
     return interview
+
+
+def account_flags(args: argparse.Namespace) -> AccountFlags:
+    return AccountFlags(
+        email=args.account_email,
+        password_stdin=args.password_stdin,
+        no_passphrase=args.no_passphrase,
+    )
 
 
 def flags_from(args: argparse.Namespace) -> Flags:
@@ -260,12 +278,23 @@ def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
             args, interview, services, api, ctx=ctx, cleanup=cleanup
         )
         ctx.say(render_summary(target, report, images=description))
+        ctx.say(
+            "Then the CLI signs up (or logs in) on the new server, verifies the "
+            f"enclave and saves its config in {ctx.config_dir}."
+        )
         if not interview.confirm(f"Deploy to {target.project} now?"):
             ctx.say("Aborted. Nothing was changed.")
             return EXIT_DECLINED
+        account = prepare_account(
+            ctx.config_dir,
+            account_flags(args),
+            interview,
+            services.first_run,
+            default_email=target.alert_emails[0],
+        )
         backend = ensure_state_backend(api, target, say=ctx.say, clock=services.clock)
         stack = services.stack(target, backend, ctx)
-        outputs = run_deploy(
+        deployment = run_deploy(
             target,
             api=api,
             stack=stack,
@@ -275,7 +304,17 @@ def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
         )
     ctx.say("Deployed.")
     for name in ("enclave_url", "server_url", "kms_key_version_name"):
-        ctx.say(f"  {name}: {outputs.get(name, '?')}")
+        ctx.say(f"  {name}: {deployment.outputs.get(name, '?')}")
+    complete_first_run(
+        account,
+        project=target.project,
+        outputs=deployment.outputs,
+        enclave_digest=deployment.images.enclave_digest,
+        services=services.first_run,
+        clock=services.clock,
+        say=ctx.say,
+    )
+    ctx.say("Ready: add a secret with `carapace secret add`.")
     return 0
 
 
@@ -324,6 +363,21 @@ def add_deploy_commands(sub: argparse._SubParsersAction) -> None:
     deploy.add_argument(
         "--server-digest",
         help="use a server image already in the stack's registry, by digest",
+    )
+    deploy.add_argument(
+        "--account-email",
+        help="email of your account on the new server (default: the first "
+        "--alert-email)",
+    )
+    deploy.add_argument(
+        "--password-stdin",
+        action="store_true",
+        help="read the account password from the first line of stdin",
+    )
+    deploy.add_argument(
+        "--no-passphrase",
+        action="store_true",
+        help="if a new owner key is created, leave it unencrypted",
     )
     deploy.add_argument(
         "--yes", "-y", action="store_true", help="skip the final confirmation"

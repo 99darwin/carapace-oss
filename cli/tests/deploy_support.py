@@ -160,10 +160,13 @@ SERVICE_USAGE = "https://serviceusage.googleapis.com/v1"
 RUN = "https://run.googleapis.com/v2"
 REGION = "us-central1"
 PREFIX = "c1x"
-KEY_VERSION = (
+KEY_NAME = (
     f"projects/{PROJECT}/locations/{REGION}/keyRings/{PREFIX}-keyring"
-    f"/cryptoKeys/{PREFIX}-secrets/cryptoKeyVersions/1"
+    f"/cryptoKeys/{PREFIX}-secrets"
 )
+KEY_VERSION = f"{KEY_NAME}/cryptoKeyVersions/1"
+SERVER_URL = "https://c1x-server-123.us-central1.run.app"
+ENCLAVE_URL = "https://203.0.113.7:8443"
 REGISTRY = f"{REGION}-docker.pkg.dev/{PROJECT}/{PREFIX}"
 OLD_DIGEST = "sha256:" + "01" * 32
 NEW_DIGEST = "sha256:" + "02" * 32
@@ -232,14 +235,19 @@ class FakeStack:
 
     def outputs(self) -> dict[str, Any]:
         outputs: dict[str, Any] = {
+            "kms_key_name": KEY_NAME,
             "kms_key_version_name": KEY_VERSION,
             "image_registry": REGISTRY,
+            "enclave_service_account": (
+                f"{PREFIX}-enclave@{PROJECT}.iam.gserviceaccount.com"
+            ),
+            "server_url": SERVER_URL,
+            "control_plane_url": SERVER_URL,
         }
         if self._config.get("carapace:deploy_workloads") == "true":
             outputs |= {
                 "migration_job": f"{PREFIX}-migrate",
-                "enclave_url": "https://203.0.113.7:8443",
-                "server_url": "https://c1x-server-123.us-central1.run.app",
+                "enclave_url": ENCLAVE_URL,
             }
         return outputs
 
