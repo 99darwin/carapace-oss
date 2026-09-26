@@ -304,9 +304,12 @@ class FakeStack:
             "control_plane_url": SERVER_URL,
         }
         if self._state.get("carapace:deploy_workloads") == "true":
+            digest = self._state.get("carapace:enclave_image_digest", "")
             outputs |= {
                 "migration_job": f"{PREFIX}-migrate",
                 "enclave_url": ENCLAVE_URL,
+                # As the program exports it: the reference the VM boots.
+                "enclave_image_reference": f"{REGISTRY}/enclave@{digest}",
             }
         return outputs
 
