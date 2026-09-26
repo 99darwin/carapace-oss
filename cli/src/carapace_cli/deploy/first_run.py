@@ -49,6 +49,7 @@ from carapace_cli.ownerkey_store import (
     owner_key_path,
     save_owner_key,
 )
+from carapace_cli.passwords import ask_new_password, check_password
 from carapace_cli.pin import IDENTITY_FIELDS, EnclavePin, pin_path, save_pin
 from carapace_cli.prompts import prompt_hidden, read_password
 from carapace_cli.session import (
@@ -66,8 +67,6 @@ from carapace_crypto import OwnerKey
 # The VM boots, pulls and attests in a few minutes; Cloud Run cold-starts.
 READY_TIMEOUT_SECONDS = 900.0
 READY_POLL_SECONDS = 15.0
-PASSWORD_MIN_CHARS = 12  # the server's rule (auth/schemas.py)
-PASSWORD_MAX_CHARS = 128
 HTTP_BAD_REQUEST = 400
 HTTP_UNAUTHORIZED = 401
 HTTP_TOO_MANY_REQUESTS = 429
@@ -211,15 +210,6 @@ def _load_owner_key(config_dir: Path, services: FirstRunServices) -> OwnerKey:
     )
 
 
-def validate_password(value: str) -> str:
-    if not PASSWORD_MIN_CHARS <= len(value) <= PASSWORD_MAX_CHARS:
-        raise InvalidInputError(
-            f"the account password must be {PASSWORD_MIN_CHARS} to "
-            f"{PASSWORD_MAX_CHARS} characters"
-        )
-    return value
-
-
 def _new_passphrase(
     flags: AccountFlags, interview: Interview, services: FirstRunServices
 ) -> str | None:
@@ -242,11 +232,14 @@ def _password(
     flags: AccountFlags, interview: Interview, services: FirstRunServices
 ) -> str:
     if flags.password_stdin:
-        return validate_password(services.password_from_stdin())
+        return check_password(services.password_from_stdin())
     if not interview.interactive:
         raise MissingInputError("--password-stdin is required in non-interactive mode")
-    return validate_password(
-        services.prompt("Account password (new, or the existing one): ", confirm=True)
+    return ask_new_password(
+        lambda: services.prompt(
+            "Account password (new, or the existing one): ", confirm=True
+        ),
+        interview.say,
     )
 
 
