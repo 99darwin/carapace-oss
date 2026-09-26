@@ -275,8 +275,14 @@ region `us-east1`), from a checkout with `carapace deploy --build`:
 - `carapace audit verify` passed with 2 receipts from 1 attested boot.
 - The KMS key's IAM policy held only the digest principal set (decrypter)
   and the server service account (`publicKeyViewer`). `roles/editor` has
-  no `cloudkms.cryptoKeyVersions.useToDecrypt`, so the Editor grant GCP
-  gives the default Compute Engine service account cannot decrypt.
+  no `cloudkms.cryptoKeyVersions.useToDecrypt`, no
+  `cloudkms.cryptoKeys.setIamPolicy` and no write permission on workload
+  identity pools or their providers, so the Editor grant GCP gives the
+  default Compute Engine service account can neither decrypt nor loosen
+  the WIF condition. It can change, stop or replace the enclave VM
+  (`compute.instances.setMetadata`, `iam.serviceAccounts.actAs`), which
+  fails closed for decrypt: see
+  [THREAT_MODEL.md, R1](../THREAT_MODEL.md#r1-a-gcp-project-owner-can-decrypt).
 
 That run found the problems fixed since: a private repository's release
 download failed with a bare 404, `--build` failed on Docker's default

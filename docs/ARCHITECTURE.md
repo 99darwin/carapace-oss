@@ -188,7 +188,10 @@ full list:
   inherited by the key, and a project Owner can grant one to anyone. Its
   holder can call `AsymmetricDecrypt` without an attested enclave and so
   unwrap any envelope's data key. The basic Editor role cannot: it has no
-  KMS decrypt permission and cannot change IAM. The stack enables KMS Data
+  KMS decrypt permission and cannot change IAM or the WIF pool (checked on
+  a live project; it can stop or replace the enclave VM, which fails closed
+  for decrypt, see [THREAT_MODEL.md, R1](THREAT_MODEL.md#r1-a-gcp-project-owner-can-decrypt)).
+  The stack enables KMS Data
   Access logs, so every such call is logged, and the `foreign_decrypt`
   clause of the decrypt-path alert (on unless `enable_iam_alerts` is
   `false`) fires on any `AsymmetricDecrypt` against the key ring from a

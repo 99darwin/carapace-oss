@@ -44,7 +44,7 @@ freshness), [VERIFY.md](VERIFY.md) (checking an enclave and receipts),
 | **Network attacker** | No | Can observe, drop, delay and modify traffic between any two parties |
 | **VM host operator** | No | Controls the hypervisor, guest clock, disk and network of the enclave VM, but not its encrypted memory (AMD SEV) |
 | **Other tenants** | No | Their own owner keys and API keys; can send traffic to the shared enclave |
-| **GCP project Owner/Editor** | Partly: see [residual risks](#residual-risks) | An Owner can change IAM, including on the KMS key, and so grant itself decrypt. An Editor cannot change IAM and holds no KMS decrypt permission. Self-hosters are their own project owner |
+| **GCP project Owner/Editor** | Partly: see [residual risks](#residual-risks) | An Owner can change IAM, including on the KMS key, and so grant itself decrypt. An Editor cannot change IAM and holds no KMS decrypt permission; it can reconfigure, stop or replace the enclave VM, which costs availability, not secrets. Self-hosters are their own project owner |
 | **Upstream API** (the service a secret authenticates to) | No, beyond holding the secret legitimately | Sees the secret on every request, by design |
 
 ## Trusted computing base
@@ -131,27 +131,44 @@ reports unless you show they are worse than stated.
 
 The KMS key's IAM policy is authoritative, so `pulumi up` removes any extra
 binding on the key. It does **not** remove roles inherited from the project,
-folder or organization. Neither basic role carries decrypt itself:
-`roles/owner` and `roles/editor` do not include
-`cloudkms.cryptoKeyVersions.useToDecrypt`. But an Owner can change IAM: it
-can grant itself (or anyone) a Cloud KMS role that decrypts, on the key or
-on the project, and then call `AsymmetricDecrypt` without an attested
-enclave. A project Owner can also loosen the WIF condition, add an image
-digest, or create a new key version. Each of those IAM or key changes is an
-Admin Activity audit log entry, which cannot be turned off, and any decrypt
-by a caller outside the stack's WIF pool is a Data Access log entry that
-matches the alert's foreign-decrypt clause (below).
+folder or organization. The basic Editor role carries no decrypt permission
+(checked, below). Whether `roles/owner` itself carries
+`cloudkms.cryptoKeyVersions.useToDecrypt` was not checked, and does not
+matter: an Owner can change IAM, so it can grant itself (or anyone) a Cloud
+KMS role that decrypts, on the key or on the project, and then call
+`AsymmetricDecrypt` without an attested enclave. A project Owner can also
+loosen the WIF condition, add an image digest, or create a new key version.
+Each of those IAM or key changes is an Admin Activity audit log entry, which
+cannot be turned off, and any decrypt by a caller outside the stack's WIF
+pool is a Data Access log entry that matches the alert's foreign-decrypt
+clause (below).
 
 An Editor cannot change IAM policies, so it cannot decrypt unless it also
 holds a Cloud KMS role that allows it (granted directly, or inherited from a
 folder or organization). This matters because GCP grants the default
 Compute Engine service account Editor on new projects: that grant alone
-does not reach the key. Checked on real GCP on 2026-09-26: the key's IAM
-policy held only the attested digest principal set
+does not reach the key. Checked on real GCP on 2026-09-26, with `gcloud iam
+roles describe roles/editor` and the key's IAM policy: `roles/editor` has
+no `cloudkms.cryptoKeyVersions.useToDecrypt`, no
+`cloudkms.cryptoKeys.setIamPolicy`, and no write permission on workload
+identity pools or their providers (no `iam.workloadIdentityPools.*` write
+and no `iam.workloadIdentityPoolProviders.create`, `.update` or `.delete`),
+so it cannot loosen the WIF condition, its attribute mapping or its issuer
+either. The key's policy held only the attested digest principal set
 (`roles/cloudkms.cryptoKeyDecrypter`) and the server service account
-(`roles/cloudkms.publicKeyViewer`). Not checked: whether an Editor's
-permissions on the workload identity pool (its provider's issuer, attribute
-mapping or condition) open an indirect path to the key.
+(`roles/cloudkms.publicKeyViewer`).
+
+What an Editor can reach is the enclave VM. `roles/editor` does carry
+`compute.instances.setMetadata` and `iam.serviceAccounts.actAs`, so it can
+change the VM's launcher metadata, stop it, or replace it with a VM of its
+own running as the enclave service account. None of that reaches the key:
+a different image has a different digest, outside the principal set; a
+different `CONTROL_PLANE_URL`, `KMS_KEY_NAME` or `WIF_AUDIENCE` fails the
+WIF condition; and the launcher refuses env overrides the image's launch
+policy does not list. Decrypt fails closed, and `carapace verify` refuses
+an enclave that is not the pinned one. The effect is on availability only.
+(The same role can redeploy the control plane and its database, which this
+model already treats as untrusted: see the server operator row above.)
 
 Detection, not prevention: when `enable_iam_alerts` is on (the default), a
 log-based alert emails `alert_emails` on KMS `SetIamPolicy`,
@@ -326,8 +343,6 @@ decrypts), except where noted.
   push and cosign path in `enclave-image.yml` has not yet run. The release
   download and sigstore verification in `carapace deploy` have not run
   against a real release either (the repository was private).
-- Whether a project Editor's permissions on the workload identity pool give
-  an indirect path to the key (see R1).
 
 ### Verified on real GCP
 
@@ -350,6 +365,12 @@ region `us-east1`), with images built from source by `carapace deploy
 - `carapace audit verify` passed with 2 receipts from 1 attested boot.
 - The KMS key's IAM policy held only the digest principal set
   (`roles/cloudkms.cryptoKeyDecrypter`) and the server service account
-  (`roles/cloudkms.publicKeyViewer`). `roles/editor` has no
-  `cloudkms.cryptoKeyVersions.useToDecrypt`, so the Editor grant GCP gives
-  the default Compute Engine service account cannot decrypt.
+  (`roles/cloudkms.publicKeyViewer`).
+- `gcloud iam roles describe roles/editor` on the live project: the role
+  has no `cloudkms.cryptoKeyVersions.useToDecrypt`, no
+  `cloudkms.cryptoKeys.setIamPolicy`, and no write permission on workload
+  identity pools or their providers, so the Editor grant GCP gives the
+  default Compute Engine service account can neither decrypt nor loosen
+  the WIF condition. It does have `iam.serviceAccounts.actAs` and
+  `compute.instances.setMetadata`: an Editor can reconfigure, stop or
+  replace the enclave VM, which fails closed for decrypt (see R1).
