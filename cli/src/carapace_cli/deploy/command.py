@@ -379,11 +379,11 @@ def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
         has_state = bool(stack.outputs())
         config = stack.config()
         check_stack_config(config, target, is_existing=has_state)
-        # New: no outputs and no record. A record without outputs is a run
-        # that failed before its first `up` finished; the key ring and pool
-        # it may have made are this stack's own. The record is written only
-        # after this check, so it never vouches for a refused prefix.
-        if report.existing is None and not has_state:
+        # New: the state tracks nothing, so no key ring or pool is this
+        # stack's own. A first `up` that failed leaves its resources in the
+        # state, and is resumed; a record alone vouches for nothing, since
+        # a destroy whose record delete failed leaves one behind.
+        if not has_state and not stack.has_resources():
             refuse_reused_prefix(api, target, clock=services.clock)
         if report.existing is not None and not has_state:
             start_fresh_stack(stack, config, target, say=ctx.say)

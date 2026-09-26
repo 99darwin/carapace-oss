@@ -24,6 +24,7 @@ from deploy_support import (
     PROJECT_NUMBER,
     REGION,
     SERVER_DIGEST,
+    STORAGE,
     FakeGoogle,
     FakeStack,
     deployable_project,
@@ -70,6 +71,24 @@ DEPLOY_ARGS = [
     "--no-passphrase",
     "--yes",
 ]
+DESTROY_ARGS = [
+    "destroy",
+    "--project",
+    PROJECT,
+    "--prefix",
+    PREFIX,
+    "--confirm-project",
+    PROJECT,
+]
+STATE_OBJECTS = f"{STORAGE}/b/{PROJECT}-carapace-state/o/"
+STACK_CONFIG = {
+    "gcp:project": PROJECT,
+    "gcp:region": REGION,
+    "gcp:zone": ZONE,
+    "carapace:prefix": PREFIX,
+    "carapace:deploy_workloads": "true",
+    "carapace:enclave_image_digest": NEW_DIGEST,
+}
 
 
 def run_deploy_cli(
@@ -77,6 +96,7 @@ def run_deploy_cli(
     tmp_path: Path,
     google: FakeGoogle,
     stack: FakeStack,
+    argv: list[str] = DEPLOY_ARGS,
 ) -> tuple[int, str]:
     monkeypatch.setattr(
         command,
@@ -90,7 +110,7 @@ def run_deploy_cli(
     )
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
     out, err = io.StringIO(), io.StringIO()
-    code = main(["--config-dir", str(tmp_path), *DEPLOY_ARGS], out=out, err=err)
+    code = main(["--config-dir", str(tmp_path), *argv], out=out, err=err)
     return code, err.getvalue()
 
 
@@ -217,7 +237,8 @@ def test_new_stack_with_leftover_prefix_is_refused_before_any_up(
     assert code != 0
     assert re.search(rf"pool {PREFIX}-attest is soft-deleted", err)
     assert not stack.ups
-    # No record: a later run is still treated as new and checked again.
+    # Neither config nor record: a later run is treated as new and checked.
+    assert stack.config() == {}
     assert record_name(PREFIX) not in google.objects
 
 
@@ -232,6 +253,8 @@ def test_new_stack_with_forbidden_lookup_is_refused(
     assert code != 0
     assert KEY_RING_GET_PERMISSION in err
     assert not stack.ups
+    assert stack.config() == {}
+    assert record_name(PREFIX) not in google.objects
 
 
 def test_new_stack_with_free_prefix_deploys(
@@ -277,16 +300,7 @@ def test_existing_deployment_is_not_checked(
     # A live stack owns its key ring and pool; both exist and that is fine.
     google = with_leftovers(ring=KEY_RING, pool=ACTIVE_POOL)
     write_record(google.api(), TARGET)
-    stack = FakeStack(
-        initial={
-            "gcp:project": PROJECT,
-            "gcp:region": REGION,
-            "gcp:zone": ZONE,
-            "carapace:prefix": PREFIX,
-            "carapace:deploy_workloads": "true",
-            "carapace:enclave_image_digest": NEW_DIGEST,
-        }
-    )
+    stack = FakeStack(initial=STACK_CONFIG)
     code, err = run_deploy_cli(monkeypatch, tmp_path, google, stack)
     assert code == 0, err
     assert not looked_up(google)
@@ -297,16 +311,7 @@ def test_live_state_without_a_record_is_not_checked(
 ) -> None:
     # The backend's outputs, not the record, say the stack exists.
     google = with_leftovers(ring=KEY_RING)
-    stack = FakeStack(
-        initial={
-            "gcp:project": PROJECT,
-            "gcp:region": REGION,
-            "gcp:zone": ZONE,
-            "carapace:prefix": PREFIX,
-            "carapace:deploy_workloads": "true",
-            "carapace:enclave_image_digest": NEW_DIGEST,
-        }
-    )
+    stack = FakeStack(initial=STACK_CONFIG)
     code, err = run_deploy_cli(monkeypatch, tmp_path, google, stack)
     assert code == 0, err
     assert not looked_up(google)
@@ -316,10 +321,67 @@ def test_resume_of_a_failed_first_run_is_not_checked(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     # The first `up` made the key ring and pool, then failed before any
-    # outputs: they are this stack's own, and the record says so.
+    # outputs: the state tracks them, so they are this stack's own.
     google = with_leftovers(ring=KEY_RING, pool=ACTIVE_POOL)
     write_record(google.api(), TARGET)
-    stack = FakeStack()
+    stack = FakeStack(half_created=True)
     code, err = run_deploy_cli(monkeypatch, tmp_path, google, stack)
     assert code == 0, err
     assert not looked_up(google)
+    assert len(stack.ups) == 2
+
+
+def test_unreadable_record_does_not_refuse_a_resumable_first_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The record read is only a warning; the state still says the ring
+    # and pool were made by this stack's failed first `up`.
+    google = with_leftovers(ring=KEY_RING, pool=ACTIVE_POOL).on(
+        "GET",
+        f"{STATE_OBJECTS}carapace%2Fdeployments%2F{PREFIX}.json",
+        google_error(500, "backend error"),
+    )
+    stack = FakeStack(half_created=True)
+    code, err = run_deploy_cli(monkeypatch, tmp_path, google, stack)
+    assert code == 0, err
+    assert "could not look for an earlier deployment" in err
+    assert not looked_up(google)
+
+
+def test_record_without_any_state_behind_it_is_checked(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # A record vouches for nothing: with no resource in the state, the
+    # ring and pool belong to someone else (say, a destroyed deployment).
+    google = with_leftovers(ring=KEY_RING, pool=DELETED_POOL)
+    write_record(google.api(), TARGET)
+    stack = FakeStack()
+    code, err = run_deploy_cli(monkeypatch, tmp_path, google, stack)
+    assert code != 0
+    assert f"{PREFIX}-keyring" in err and f"{PREFIX}-attest is soft-deleted" in err
+    assert not stack.ups
+    assert stack.config() == {}
+
+
+def test_record_outliving_a_destroy_does_not_skip_the_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # `carapace destroy` deletes the record after the stack; if that
+    # delete fails, the record survives a destroyed deployment whose ring
+    # and pool are now leftovers. The next deploy must still refuse.
+    google, stack = deployable_project(), FakeStack()
+    code, err = run_deploy_cli(monkeypatch, tmp_path, google, stack)
+    assert code == 0, err
+    google.on("DELETE", STATE_OBJECTS, google_error(500, "backend error"))
+    code, err = run_deploy_cli(monkeypatch, tmp_path, google, stack, DESTROY_ARGS)
+    assert code != 0 and stack.destroyed
+    assert record_name(PREFIX) in google.objects
+    # What the destroy left behind; the key's route stays in front of the
+    # ring's, whose URL prefixes it.
+    google.on("GET", KEY_RING_URL, ok(KEY_RING)).on("GET", POOL_URL, ok(DELETED_POOL))
+    google.on("GET", f"{KMS}/{KEY_VERSION}", ok({"state": "ENABLED"}))
+    ups_before = len(stack.ups)
+    code, err = run_deploy_cli(monkeypatch, tmp_path, google, stack)
+    assert code != 0
+    assert f"{PREFIX}-attest is soft-deleted" in err
+    assert len(stack.ups) == ups_before

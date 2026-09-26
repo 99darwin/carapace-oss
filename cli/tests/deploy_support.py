@@ -265,11 +265,14 @@ class FakeStack:
     ``state`` is given (a stack deployed from another machine has state
     but no local config). Outputs come from the state, as
     ``pulumi stack output`` reads them from the backend, and a stack that
-    was never ``up`` has none.
+    was never ``up`` has none. ``half_created`` is a first ``up`` that
+    failed after creating resources: the state tracks them, but exports
+    no outputs until an ``up`` finishes.
     """
 
     initial: dict[str, str] = field(default_factory=dict)
     state: dict[str, str] | None = None
+    half_created: bool = False
     fail_on_up: int | None = None
     fail_on_remove: bool = False
     ups: list[dict[str, str]] = field(default_factory=list)
@@ -292,11 +295,16 @@ class FakeStack:
             raise CarapaceError("pulumi failed: simulated")
         self.ups.append(self.config())
         self._state = self.config()
+        self.half_created = False
         return self.outputs()
 
     def destroy(self) -> None:
         self.destroyed = True
         self._state = {}
+        self.half_created = False
+
+    def has_resources(self) -> bool:
+        return self.half_created or bool(self._state)
 
     def remove(self) -> None:
         """``pulumi stack rm``: the local config file goes with the stack."""
@@ -306,7 +314,7 @@ class FakeStack:
         self._config = {}
 
     def outputs(self) -> dict[str, Any]:
-        if not self._state:
+        if not self._state or self.half_created:
             return {}
         outputs: dict[str, Any] = {
             "kms_key_name": KEY_NAME,

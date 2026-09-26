@@ -189,19 +189,23 @@ only the enclave).
   starts a fresh stack: nothing runs, so nothing can be deleted, and the
   stack starts from the fresh values rather than an older config's
   digests.
-- A new stack (no outputs and no record) first checks that its prefix is
-  unused: a destroyed deployment leaves its key ring `<prefix>-keyring`
-  (never deletable) and its WIF pool `<prefix>-attest` (soft-deleted, id
-  reserved for 30 days), and `pulumi up` would create most of the stack
-  before failing with 409 on either. The CLI enables the IAM API if
-  needed, GETs both (a GET returns a pool in state `DELETED` too) and
-  refuses, naming the leftover, if either exists. 404 means free; any
-  other error, including a missing `cloudkms.keyRings.get` or
-  `iam.workloadIdentityPools.get` (both in the preflight permission
-  check), stops the deploy. The record is written only after this check,
-  so a record with no outputs is this stack's own failed run, not a
-  leftover, and is not checked. The state survives the loss of the laptop, but the config file
-  has to be copied to the new machine first.
+- A new stack (no outputs, and no resource in its state) first checks
+  that its prefix is unused: a destroyed deployment leaves its key ring
+  `<prefix>-keyring` (never deletable) and its WIF pool `<prefix>-attest`
+  (soft-deleted, id reserved for 30 days), and `pulumi up` would create
+  most of the stack before failing with 409 on either. The CLI enables
+  the IAM API if needed, GETs both (a GET returns a pool in state
+  `DELETED` too) and refuses, naming the leftover, if either exists. 404
+  means free; any other error, including a missing `cloudkms.keyRings.get`
+  or `iam.workloadIdentityPools.get` (both in the preflight permission
+  check), stops the deploy. Whether the stack is new is read from the
+  state (`pulumi stack export`), never from the record: a first `up` that
+  failed after creating the ring or pool checkpointed them, so the stack
+  owns them and the run resumes unchecked, while a record alone vouches
+  for nothing, since a destroy whose record delete failed leaves one
+  behind. The check runs before any config is set or record written. The
+  state survives the loss of the laptop, but the config file has to be
+  copied to the new machine first.
 - `Pulumi.<prefix>.yaml` is named after the prefix alone, so one machine
   holds one deployment per prefix. A config whose `gcp:project` is another
   project is refused by both `deploy` and `destroy`: an `up` with it would

@@ -328,7 +328,8 @@ Things to know:
   refuses and names the leftover; pass another `--prefix`. It needs
   `cloudkms.keyRings.get` and `iam.workloadIdentityPools.get` (an Owner
   has both), and any error other than "not found" stops the deploy. A
-  re-run of an existing deployment is not checked: it owns both names.
+  re-run of an existing deployment, or of a first run that failed after
+  creating either, is not checked: its Pulumi state owns both names.
 - Artifact Registry images, Cloud SQL backups and logs follow their own
   retention rules. Delete the project to be sure nothing is left.
 
