@@ -12,6 +12,12 @@ dependencies = [
     "pyjwt[crypto]>=2.9",
 ]
 
+[project.optional-dependencies]
+# `carapace deploy` / `destroy` only; see docs/design/deploy.md.
+deploy = [
+    "google-auth[requests]>=2.30,<3",
+]
+
 [project.scripts]
 carapace = "carapace_cli.main:main"
 
