@@ -33,14 +33,10 @@ value is an error. It never waits for input that cannot come.
    Pulumi runs the migration job and waits for it (the job is part of the
    stack). The CLI then checks that the job's latest execution succeeded.
 6. **First run.** Create the owner key if there is none, sign up the first
-   account, run the existing `verify` flow against the new enclave with the
-   deployed digest as the only allowed one, and save the pin, so
-   `carapace secret add` works next. The deploy knows the whole deployment
-   identity (project id, enclave service account, control plane URL and
-   KMS key name), so it passes all four to `verify` and into the pin once
-   `TrustPolicy` enforces them (branch security/pin-deployment-identity).
-   The deploy code only calls `verify`; it does not change
-   `attestation.py` or `verify.py`.
+   account (or log in, if it exists), register the owner key, run the
+   existing `verify` flow against the new enclave with the deployed digest
+   as the only allowed one, and save the pin, so `carapace secret add`
+   works next. See [First run](#first-run).
 
 Every step is idempotent. After a failure, running the same command again
 finds the existing stack in the state bucket, reads its config back as the
@@ -184,6 +180,31 @@ only the enclave).
   signature verified before the summary, so the summary shows the
   verified digest and commit, and a bad release changes nothing.
 
+### First run
+
+- Every input it needs (account email, password, owner key passphrase) is
+  collected right after the confirmation, before anything is created. A
+  script without `--password-stdin`, or without `--no-passphrase` when a
+  new owner key is needed, fails in seconds, not after the deploy.
+  `--account-email` defaults to the first alert email.
+- A saved session means a registered owner key: the key is registered
+  before the session is written. A re-run reuses the session, asks for no
+  password and registers the key only if the server does not list it (read
+  from the key file's public half, so no passphrase is needed).
+- It never replaces a session or pin in the config directory that belongs
+  to another server or enclave; it asks for another `--config-dir`.
+- Sign-up, owner key registration and `verify` are retried every 15s for
+  up to 15 minutes on network errors, 5xx, 429 and enclave errors, while
+  Cloud Run and the VM start. Any verification failure is final.
+- Deployment identity. `verify` trusts only the digest this deploy
+  published. The pin is then refused unless the attested KMS key version
+  is exactly the stack's `kms_key_version_name`, which must be a version of
+  `kms_key_name`. The project id, enclave service account and control
+  plane URL are gathered into `DeploymentIdentity` and handed to
+  `trust_policy_for`, the one place to set them once `TrustPolicy` enforces
+  them (branch security/pin-deployment-identity, not merged yet). The
+  deploy does not change `attestation.py` or `verify.py`.
+
 ## Unverified
 
 These are exercised only with mocked HTTP and a fake `pulumi` process.
@@ -208,7 +229,10 @@ They need a real project:
   `rewrite-timestamp=true` on a developer machine, and whether its
   digest matches the release build (it needs the same pinned BuildKit).
 - The time it takes the HSM key version to reach `ENABLED`, and for the
-  enclave to boot and register.
+  enclave to boot and register, against the 15 minute first-run limit.
+- The first run against a real server and enclave: sign-up on a fresh
+  database, the 400-then-login path for an existing account, and a real
+  attestation whose KMS key version equals the stack output.
 - `pulumi stack select --create --secrets-provider gcpkms://...` against
   a `gs://` backend, `pulumi install` creating the Python 3.12 venv, and
   recovery of `Pulumi.<prefix>.yaml` from state on a second machine.

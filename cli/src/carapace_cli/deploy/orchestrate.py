@@ -208,6 +208,14 @@ def check_migration(api: GcpApi, target: Target, job: str, *, clock: Clock) -> N
         )
 
 
+@dataclass(frozen=True)
+class Deployment:
+    """The stack's outputs and the images it now runs."""
+
+    outputs: dict[str, Any]
+    images: Images
+
+
 def run_deploy(
     target: Target,
     *,
@@ -216,7 +224,7 @@ def run_deploy(
     images: ImageSource,
     clock: Clock,
     say: Callable[[str], None],
-) -> dict[str, Any]:
+) -> Deployment:
     """Bootstrap, key wait, images, workloads, migration check. Resumable."""
     outputs = bootstrap(
         stack, target, enclave_digest=images.enclave_digest_hint(), say=say
@@ -225,7 +233,7 @@ def run_deploy(
     published = images.publish(str(outputs["image_registry"]))
     outputs = deploy_workloads(stack, target, published, say=say)
     check_migration(api, target, str(outputs["migration_job"]), clock=clock)
-    return outputs
+    return Deployment(outputs=outputs, images=published)
 
 
 @dataclass(frozen=True)
