@@ -182,20 +182,31 @@ only the enclave).
   another region or zone (say, one deployed by hand), and refuses an
   existing deployment whose `Pulumi.<prefix>.yaml` is not on this machine:
   with an empty config, the bootstrap would run on a live stack and delete
-  its workloads. A stack counts as existing when the record says so or
-  when the backend already has stack outputs, so an unreadable or deleted
-  record cannot turn a re-run into a first deploy. The state survives the
-  loss of the laptop, but the config file has to be copied to the new
-  machine first.
+  its workloads. A stack counts as existing when the backend already has
+  stack outputs, so an unreadable or deleted record cannot turn a re-run
+  into a first deploy. A record with no outputs behind it (a run that
+  failed before its first `up` finished) and no config on this machine
+  starts a fresh stack: nothing runs, so nothing can be deleted, and the
+  stack starts from the fresh values rather than an older config's
+  digests. The state survives the loss of the laptop, but the config file
+  has to be copied to the new machine first.
 - `Pulumi.<prefix>.yaml` is named after the prefix alone, so one machine
   holds one deployment per prefix. A config whose `gcp:project` is another
   project is refused by both `deploy` and `destroy`: an `up` with it would
   act on that project's stack. A second project needs another prefix.
 - A re-run never bootstraps a stack whose workloads are live: that `up`
   would delete the VM and Cloud Run. It goes straight to the workloads
-  step. Whether they are live is decided by the local config and, as a
-  last check before the bootstrap `up`, by the state's `enclave_url`
-  output, which exists only while `deploy_workloads` is true.
+  step. Whether they are live is decided by the state's `enclave_url`
+  output, which exists only while `deploy_workloads` is true, and never
+  by the local config alone. A config that says the workloads run over a
+  state with outputs is resumed by the workloads step whether or not
+  `enclave_url` is among them, so a missing output cannot turn a resume
+  into a bootstrap; over an empty state it is stale (a destroy that left
+  the file behind), and its digests are dropped before the bootstrap.
+- The rollout's starting digest is the one the state runs (its
+  `enclave_image_reference` output), never the local config's: a config
+  file older than the stack would otherwise move the live VM onto a dead
+  deployment's image and allow it to decrypt again.
 - The bootstrap `up` needs a non-empty `allowed_digests`. It uses the
   enclave digest when it is already known (release images, or
   `--enclave-digest`), and otherwise an all-zero placeholder that no image

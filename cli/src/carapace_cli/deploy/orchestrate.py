@@ -41,6 +41,21 @@ PROTECTED = {
     "carapace:protect_kms_key": TRUE,
     "carapace:db_deletion_protection": TRUE,
 }
+# The config of a stack with nothing deployed in its state: a new, protected
+# stack that bootstraps. Set after a destroy whose ``stack rm`` failed, and
+# when a deploy finds a config file that outlived its stack. The digests
+# are cleared because a bootstrap reuses the allowed ones (to resume after
+# a failure), and a dead deployment's enclave must never be trusted by a
+# new one.
+FRESH_STACK = {
+    **PROTECTED,
+    "carapace:deploy_workloads": FALSE,
+    "carapace:allowed_digests": "[]",
+    "carapace:enclave_image_digest": "",
+}
+# The outputs run_deploy reads after each step.
+BOOTSTRAP_OUTPUTS = ("kms_key_version_name", "image_registry")
+WORKLOADS_OUTPUTS = ("migration_job",)
 
 
 class DeployStepError(CarapaceError):
@@ -110,26 +125,50 @@ def bootstrap(
     enclave_digest: str | None,
     say: Callable[[str], None],
 ) -> dict[str, Any]:
-    """``up`` with ``deploy_workloads=false``, unless workloads already run.
+    """``up`` with ``deploy_workloads=false``, unless workloads may run.
 
     A bootstrap on a live stack would delete the VM and Cloud Run, so an
     update goes straight to the workloads step. Whether the workloads run
-    is decided by the state in the backend, not only by the local config:
+    is decided by the state in the backend, not by the local config alone:
     a machine without ``Pulumi.<prefix>.yaml`` must not bootstrap a live
-    stack.
+    stack, and a config file that outlived its stack (say, after a destroy
+    that did not remove it) must not skip the bootstrap or carry the dead
+    deployment's digests into the new one.
+
+    The bootstrap ``up`` never runs while the config says the workloads
+    run and the state has any outputs. Without ``enclave_url`` among them
+    the first workloads ``up`` failed, and the workloads step resumes it:
+    it creates what is missing and deletes nothing, so a merely missing
+    output cannot turn the resume into a bootstrap that deletes a live VM.
     """
     current = stack.config()
-    if workloads_live(current):
-        say("Workloads are already deployed; skipping the bootstrap.")
-        return stack.outputs()
-    if state_has_workloads(stack.outputs()):
+    outputs = stack.outputs()
+    is_live = state_has_workloads(outputs)
+    if is_live and not workloads_live(current):
         raise DeployStepError(
             f"stack {target.prefix!r} runs workloads, but the config on this "
             "machine does not say so; a bootstrap would delete them. Copy "
             f"infra/pulumi/Pulumi.{target.prefix}.yaml from the machine that "
             "deployed, then run the same command again"
         )
-    allowed = allowed_digests(current) or [enclave_digest or PLACEHOLDER_DIGEST]
+    if workloads_live(current) and outputs:
+        say(
+            "Workloads are already deployed; skipping the bootstrap."
+            if is_live
+            else "The last deploy stopped before the workloads ran; resuming "
+            "the workloads step."
+        )
+        return outputs
+    if workloads_live(current):
+        say(
+            f"infra/pulumi/Pulumi.{target.prefix}.yaml says workloads run, but "
+            "the stack's state is empty; ignoring its stale digests."
+        )
+        stack.set_config(FRESH_STACK)
+        current = stack.config()
+    allowed = _resumable_digests(current, outputs) or [
+        enclave_digest or PLACEHOLDER_DIGEST
+    ]
     say("Bootstrap: KMS, identity, database, registry and network...")
     stack.set_config(
         {
@@ -139,6 +178,28 @@ def bootstrap(
         }
     )
     return stack.up()
+
+
+def _resumable_digests(config: dict[str, str], outputs: Mapping[str, Any]) -> list[str]:
+    """The config's allowed digests, if a bootstrap to resume is in the state.
+
+    An empty state has nothing to resume, so digests in the config file
+    are left over from another stack and are not trusted.
+    """
+    return allowed_digests(config) if outputs else []
+
+
+def require_outputs(
+    outputs: Mapping[str, Any], names: tuple[str, ...], *, step: str
+) -> None:
+    """Fail with a clear error if ``step`` left any of ``names`` unset."""
+    missing = [name for name in names if not outputs.get(name)]
+    if missing:
+        raise DeployStepError(
+            f"the {step} finished without the stack outputs "
+            f"{', '.join(missing)}; check `pulumi stack output` and the "
+            "Pulumi log above, then run the same command again"
+        )
 
 
 def wait_for_key(
@@ -164,18 +225,32 @@ def wait_for_key(
     )
 
 
-def rollout_steps(
-    current: dict[str, str], new_digest: str
-) -> list[tuple[list[str], str]]:
+def running_enclave_digest(outputs: Mapping[str, Any]) -> str | None:
+    """The digest of the enclave the state runs; None while none does.
+
+    Read from the state's ``enclave_image_reference`` output, never from
+    the local config: ``Pulumi.<prefix>.yaml`` can be older than the stack
+    (copied from another machine, or kept across a destroy and redeploy),
+    and a rollout that started from its digest would move the live VM
+    onto a dead deployment's image and let it decrypt again.
+    """
+    if not state_has_workloads(outputs):
+        return None
+    reference = str(outputs.get("enclave_image_reference") or "")
+    digest = reference.rpartition("@")[2]
+    return digest if DIGEST_PATTERN.fullmatch(digest) else None
+
+
+def rollout_steps(previous: str | None, new_digest: str) -> list[tuple[list[str], str]]:
     """``(allowed_digests, enclave_image_digest)`` for each ``up``.
 
     Switching a live enclave takes three, as in SELF_HOST.md: allow the new
     digest, move the VM to it, then drop the old one. The old enclave keeps
     decrypting until the new one runs. Each step is safe to repeat.
+    ``previous`` is the digest the state runs, or None without workloads.
     """
-    previous = current.get("carapace:enclave_image_digest") or ""
     steps: list[tuple[list[str], str]] = []
-    if workloads_live(current) and previous != new_digest:
+    if previous and previous != new_digest:
         both = [previous, new_digest]
         steps += [(both, previous), (both, new_digest)]
     steps.append(([new_digest], new_digest))
@@ -190,7 +265,9 @@ def deploy_workloads(
     say: Callable[[str], None],
 ) -> dict[str, Any]:
     outputs: dict[str, Any] = {}
-    steps = rollout_steps(stack.config(), images.enclave_digest)
+    steps = rollout_steps(
+        running_enclave_digest(stack.outputs()), images.enclave_digest
+    )
     for number, (allowed, enclave) in enumerate(steps, start=1):
         say(f"Workloads ({number}/{len(steps)}): enclave {enclave[:19]}...")
         stack.set_config(
@@ -258,9 +335,11 @@ def run_deploy(
     outputs = bootstrap(
         stack, target, enclave_digest=images.enclave_digest_hint(), say=say
     )
+    require_outputs(outputs, BOOTSTRAP_OUTPUTS, step="bootstrap")
     wait_for_key(api, str(outputs["kms_key_version_name"]), clock=clock, say=say)
     published = images.publish(str(outputs["image_registry"]))
     outputs = deploy_workloads(stack, target, published, say=say)
+    require_outputs(outputs, WORKLOADS_OUTPUTS, step="workloads step")
     check_migration(api, target, str(outputs["migration_job"]), clock=clock)
     return Deployment(outputs=outputs, images=published)
 
