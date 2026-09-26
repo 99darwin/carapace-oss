@@ -97,6 +97,11 @@ def canonical_url(url: str) -> str:
         raise VerificationError(f"invalid URL {url!r}")
     if parts.username or parts.password or parts.query or parts.fragment:
         raise VerificationError(f"URL must be a plain base URL: {url!r}")
+    if ":" in host:
+        # ``hostname`` strips the brackets of an IPv6 literal. Without them
+        # ``[::1]:8443`` and ``[::1:8443]`` (another address, port 443)
+        # would canonicalise to the same string.
+        host = f"[{host}]"
     netloc = host if port in (None, DEFAULT_PORTS[scheme]) else f"{host}:{port}"
     return f"{scheme}://{netloc}{parts.path.rstrip('/')}"
 

@@ -87,6 +87,9 @@ class FakeEnclave:
 
     booting: int = 0
     kms_key_version: str = KEY_VERSION
+    # Pin identity fields to report instead of the policy's (a ``verify``
+    # that pins something other than what it was asked to accept).
+    identity: dict[str, str] = field(default_factory=dict)
     policies: list[TrustPolicy] = field(default_factory=list)
 
     def __call__(
@@ -97,6 +100,12 @@ class FakeEnclave:
             self.booting -= 1
             raise EnclaveError(503, "attestation_unavailable")
         (digest,) = policy.allowed_digests
+        identity = {
+            "project_id": str(policy.project_id),
+            "service_account": str(policy.service_account),
+            "control_plane_url": str(policy.control_plane_url),
+            "kms_key_name": str(policy.kms_key_name),
+        } | self.identity
         return EnclavePin(
             enclave_url=enclave_url,
             tls_cert_pem="cert",
@@ -109,10 +118,7 @@ class FakeEnclave:
             insecure_mock=False,
             mock_key_pem=None,
             verified_at=0,
-            project_id=str(policy.project_id),
-            service_account=str(policy.service_account),
-            control_plane_url=str(policy.control_plane_url),
-            kms_key_name=str(policy.kms_key_name),
+            **identity,
         )
 
 

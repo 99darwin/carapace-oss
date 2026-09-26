@@ -49,7 +49,7 @@ from carapace_cli.ownerkey_store import (
     owner_key_path,
     save_owner_key,
 )
-from carapace_cli.pin import EnclavePin, pin_path, save_pin
+from carapace_cli.pin import IDENTITY_FIELDS, EnclavePin, pin_path, save_pin
 from carapace_cli.prompts import prompt_hidden, read_password
 from carapace_cli.session import (
     ServerClient,
@@ -134,7 +134,8 @@ def check_pin_identity(
     """Refuse a pin that is not this deployment's enclave.
 
     Raises:
-        VerificationError: The attested image or KMS key version differs.
+        VerificationError: The attested image, KMS key version, or any of the
+            pinned deployment identity fields differs.
     """
     if pin.image_digest != enclave_digest:
         raise VerificationError(
@@ -145,6 +146,13 @@ def check_pin_identity(
             "the enclave's KMS key version is not the one this deploy created; "
             "refusing to pin it"
         )
+    expected = trust_policy_for(enclave_digest, identity)
+    for name in IDENTITY_FIELDS:
+        if getattr(pin, name) != getattr(expected, name):
+            raise VerificationError(
+                f"the pin's {name} is {getattr(pin, name)!r}, not this "
+                f"deployment's {getattr(expected, name)!r}; refusing to pin it"
+            )
 
 
 class Authenticator(Protocol):

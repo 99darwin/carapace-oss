@@ -187,7 +187,12 @@ def cmd_verify(args: argparse.Namespace, ctx: Context) -> int:
             project_id=args.project_id,
             service_account=args.service_account,
             # The deployment's CONTROL_PLANE_URL is the server's public URL.
-            control_plane_url=args.control_plane_url or server.server_url,
+            # Only an omitted flag defaults; an empty one is refused.
+            control_plane_url=(
+                server.server_url
+                if args.control_plane_url is None
+                else args.control_plane_url
+            ),
             kms_key_name=args.kms_key,
         )
         pin = verify_enclave(args.enclave, server, policy)

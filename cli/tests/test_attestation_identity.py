@@ -239,6 +239,24 @@ def test_canonical_url_keeps_non_default_ports() -> None:
     assert canonical_url("http://127.0.0.1:8000/") == "http://127.0.0.1:8000"
 
 
+def test_canonical_url_keeps_ipv6_brackets() -> None:
+    """``[::1]:8443`` and ``[::1:8443]`` are different hosts, not one string."""
+    assert canonical_url("https://[::1]:8443/") == "https://[::1]:8443"
+    assert canonical_url("https://[::1:8443]") == "https://[::1:8443]"
+    assert canonical_url("https://[::1]:443") == "https://[::1]"
+    assert canonical_url("https://[::1]:8443") != canonical_url("https://[::1:8443]")
+
+
+def test_another_ipv6_host_that_collides_without_brackets_is_refused(
+    launcher,
+) -> None:
+    claims = _claims(launcher)
+    claims["submods"]["container"]["env"]["CONTROL_PLANE_URL"] = "https://[::1:8443]"
+    policy = _policy(launcher, control_plane_url="https://[::1]:8443")
+    with pytest.raises(VerificationError, match="control plane URL"):
+        _verify(launcher.sign(claims), policy)
+
+
 # -- policy values -------------------------------------------------------------------
 
 

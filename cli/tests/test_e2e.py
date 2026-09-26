@@ -238,6 +238,14 @@ def test_verify_without_an_identity_flag_fails_closed(owner, flag) -> None:
     assert not pin_path(owner.config_dir).exists()
 
 
+def test_verify_with_an_empty_control_plane_url_fails_closed(owner) -> None:
+    """An empty flag is refused, not silently replaced by the server URL."""
+    code, _, err = owner.cli(*owner.verify_args(), "--control-plane-url", "")
+    assert code == 1
+    assert "invalid URL ''" in err
+    assert not pin_path(owner.config_dir).exists()
+
+
 @pytest.mark.parametrize(
     ("flag", "value", "message"),
     [

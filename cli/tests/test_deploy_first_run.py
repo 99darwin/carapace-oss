@@ -170,6 +170,25 @@ def test_another_kms_key_version_is_never_pinned(tmp_path: Path) -> None:
     assert not pin_path(tmp_path).exists()
 
 
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("project_id", "other-project"),
+        ("service_account", "enclave@other-project.iam.gserviceaccount.com"),
+        ("control_plane_url", "https://other.example"),
+        ("kms_key_name", f"{KEY_NAME}/cryptoKeyVersions/2"),
+    ],
+)
+def test_a_pin_for_another_deployment_is_never_kept(
+    tmp_path: Path, name: str, value: str
+) -> None:
+    """A ``verify`` that pins another identity than asked is not trusted."""
+    enclave = FakeEnclave(identity={name: value})
+    with pytest.raises(VerificationError, match=f"the pin's {name} is"):
+        run(tmp_path, fake_first_run(enclave=enclave))
+    assert not pin_path(tmp_path).exists()
+
+
 def test_another_deployments_config_is_not_replaced(tmp_path: Path) -> None:
     other = Session("https://other.example", "u", "a", "r")
     save_session(tmp_path, other)
