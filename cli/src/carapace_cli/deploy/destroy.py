@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from carapace_cli.deploy.orchestrate import FALSE, PROTECTED
+from carapace_cli.deploy.orchestrate import FALSE, FRESH_STACK, PROTECTED
 from carapace_cli.deploy.pulumi_runner import StackHandle
 from carapace_cli.deploy.summary import state_bucket_name
 from carapace_cli.errors import CarapaceError, StorageError
@@ -39,16 +39,6 @@ class DestroyError(CarapaceError):
 
 
 UNPROTECTED = {key: FALSE for key in PROTECTED}
-# A stack that could not be removed keeps its config file; these values
-# make the next deploy with its prefix bootstrap a new, protected stack.
-# The allowed digests are cleared too: a bootstrap reuses them (to resume
-# after a failure), and the dead deployment's enclave must not be trusted
-# by the new one.
-FRESH_STACK = {
-    **PROTECTED,
-    "carapace:deploy_workloads": FALSE,
-    "carapace:allowed_digests": "[]",
-}
 
 # From docs/SELF_HOST.md, "Teardown".
 DESTROY_WARNING = """\

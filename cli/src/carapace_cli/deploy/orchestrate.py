@@ -41,6 +41,21 @@ PROTECTED = {
     "carapace:protect_kms_key": TRUE,
     "carapace:db_deletion_protection": TRUE,
 }
+# The config of a stack with nothing deployed in its state: a new, protected
+# stack that bootstraps. Set after a destroy whose ``stack rm`` failed, and
+# when a deploy finds a config file that outlived its stack. The digests
+# are cleared because a bootstrap reuses the allowed ones (to resume after
+# a failure), and a dead deployment's enclave must never be trusted by a
+# new one.
+FRESH_STACK = {
+    **PROTECTED,
+    "carapace:deploy_workloads": FALSE,
+    "carapace:allowed_digests": "[]",
+    "carapace:enclave_image_digest": "",
+}
+# The outputs run_deploy reads after each step.
+BOOTSTRAP_OUTPUTS = ("kms_key_version_name", "image_registry")
+WORKLOADS_OUTPUTS = ("migration_job",)
 
 
 class DeployStepError(CarapaceError):
@@ -114,22 +129,35 @@ def bootstrap(
 
     A bootstrap on a live stack would delete the VM and Cloud Run, so an
     update goes straight to the workloads step. Whether the workloads run
-    is decided by the state in the backend, not only by the local config:
+    is decided by the state in the backend, not by the local config alone:
     a machine without ``Pulumi.<prefix>.yaml`` must not bootstrap a live
-    stack.
+    stack, and a config file that outlived its stack (say, after a destroy
+    that did not remove it) must not skip the bootstrap or carry the dead
+    deployment's digests into the new one.
     """
     current = stack.config()
-    if workloads_live(current):
+    outputs = stack.outputs()
+    is_live = state_has_workloads(outputs)
+    if workloads_live(current) and is_live:
         say("Workloads are already deployed; skipping the bootstrap.")
-        return stack.outputs()
-    if state_has_workloads(stack.outputs()):
+        return outputs
+    if is_live:
         raise DeployStepError(
             f"stack {target.prefix!r} runs workloads, but the config on this "
             "machine does not say so; a bootstrap would delete them. Copy "
             f"infra/pulumi/Pulumi.{target.prefix}.yaml from the machine that "
             "deployed, then run the same command again"
         )
-    allowed = allowed_digests(current) or [enclave_digest or PLACEHOLDER_DIGEST]
+    if workloads_live(current):
+        say(
+            f"infra/pulumi/Pulumi.{target.prefix}.yaml says workloads run, but "
+            "the stack's state has none; ignoring its stale digests."
+        )
+        stack.set_config(FRESH_STACK)
+        current = stack.config()
+    allowed = _resumable_digests(current, outputs) or [
+        enclave_digest or PLACEHOLDER_DIGEST
+    ]
     say("Bootstrap: KMS, identity, database, registry and network...")
     stack.set_config(
         {
@@ -139,6 +167,28 @@ def bootstrap(
         }
     )
     return stack.up()
+
+
+def _resumable_digests(config: dict[str, str], outputs: Mapping[str, Any]) -> list[str]:
+    """The config's allowed digests, if a bootstrap to resume is in the state.
+
+    An empty state has nothing to resume, so digests in the config file
+    are left over from another stack and are not trusted.
+    """
+    return allowed_digests(config) if outputs else []
+
+
+def require_outputs(
+    outputs: Mapping[str, Any], names: tuple[str, ...], *, step: str
+) -> None:
+    """Fail with a clear error if ``step`` left any of ``names`` unset."""
+    missing = [name for name in names if not outputs.get(name)]
+    if missing:
+        raise DeployStepError(
+            f"the {step} finished without the stack outputs "
+            f"{', '.join(missing)}; check `pulumi stack output` and the "
+            "Pulumi log above, then run the same command again"
+        )
 
 
 def wait_for_key(
@@ -258,9 +308,11 @@ def run_deploy(
     outputs = bootstrap(
         stack, target, enclave_digest=images.enclave_digest_hint(), say=say
     )
+    require_outputs(outputs, BOOTSTRAP_OUTPUTS, step="bootstrap")
     wait_for_key(api, str(outputs["kms_key_version_name"]), clock=clock, say=say)
     published = images.publish(str(outputs["image_registry"]))
     outputs = deploy_workloads(stack, target, published, say=say)
+    require_outputs(outputs, WORKLOADS_OUTPUTS, step="workloads step")
     check_migration(api, target, str(outputs["migration_job"]), clock=clock)
     return Deployment(outputs=outputs, images=published)
 
