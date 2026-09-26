@@ -176,8 +176,13 @@ only the enclave).
   only the new one. The running enclave keeps KMS access until the new one
   has booted. Each step reads the stack config first, so a failure in the
   middle resumes at the right step.
-- Until the image copy lands, `--enclave-digest` and `--server-digest`
-  name images already pushed to the stack's registry.
+- Image flags: the default is the latest release of
+  `--release-repo` (default `99darwin/carapace-oss`); `--release <tag>`
+  picks one. `--build` builds from the checkout. `--enclave-digest` and
+  `--server-digest` name images already pushed to the stack's registry.
+  These three are mutually exclusive. A release is downloaded and its
+  signature verified before the summary, so the summary shows the
+  verified digest and commit, and a bad release changes nothing.
 
 ## Unverified
 
@@ -193,7 +198,15 @@ They need a real project:
   an explicit `Content-Length`, push by digest, and the
   `Docker-Content-Digest` it returns. Also ghcr.io's anonymous token
   endpoint and its blob redirect.
-- The sigstore bundle format that cosign v3 `sign-blob --bundle` emits.
+- That the sigstore bundle cosign v3 `sign-blob --bundle` emits in the
+  release workflow verifies with `sigstore` 4.x against the workflow
+  identity (only a malformed bundle is tested, offline), and the GitHub
+  release download redirect.
+- `cosign verify` of the server image with the `server-image.yml`
+  identity.
+- `--build`: `docker buildx` writing the OCI layout with
+  `rewrite-timestamp=true` on a developer machine, and whether its
+  digest matches the release build (it needs the same pinned BuildKit).
 - The time it takes the HSM key version to reach `ENABLED`, and for the
   enclave to boot and register.
 - `pulumi stack select --create --secrets-provider gcpkms://...` against
