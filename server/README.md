@@ -34,6 +34,14 @@ enclave reports; anything else is refused at startup). They are served at
 `GET /v1/kms/public-key` for the CLI, which seals only if they equal the
 KMS key the attested enclave reports. Without them `carapace verify` fails.
 
+Optional: `CARAPACE_WEB_DIR` points at a built web UI (`web/dist`), which is
+then served at `/`, never under a path the API owns (`/v1`, `/healthz`), so
+enabling it changes no API response. Only those static responses carry
+the UI's security headers (a strict CSP with Trusted Types, `nosniff`,
+`DENY` framing, `no-referrer`, COOP/CORP `same-origin`, a Permissions-Policy
+and, for an https public URL, HSTS). Hashed `assets/*` are cached as
+immutable and everything else is `no-cache`. There is no CORS.
+
 Rate limits (and the address stored with a session) key on the client IP;
 IPv6 clients are bucketed by /64. Behind a reverse proxy the client IP is
 the proxy's address, so every caller shares one bucket and one client can
@@ -59,6 +67,12 @@ uv export --package carapace-server --no-dev --frozen --no-emit-workspace \
   --no-header --no-annotate --format requirements-txt -o server/requirements.lock
 docker buildx build -f server/Dockerfile --platform linux/amd64 -t carapace-server .
 ```
+
+A `web` build stage (a node image pinned by digest, like the others)
+installs the UI's dependencies from `web/package-lock.json` with
+`npm ci --ignore-scripts` and runs `npm run build`; only the resulting
+`dist/` is copied into the final image, at `/app/web`, and the image sets
+`CARAPACE_WEB_DIR` to it, so the service serves the UI at `/`.
 
 The entrypoint, `python3 -m carapace_server`, serves on `$PORT` (default
 8080) as uid 65532 and needs no writable path. Migrations run from the same
@@ -204,7 +218,9 @@ are safe.
 
 `GET /v1/receipts?secret_id=&cursor=&limit=` returns an owner's receipts
 verbatim, with the boots (attestation token, TLS cert, receipt key) needed to
-verify them offline. A receipt belongs to the signed `payload.owner_id`,
+verify them offline. `GET /v1/receipts/boots` lists the boots that signed at
+least one of the caller's receipts, newest first, for the web UI's
+attestation page. A receipt belongs to the signed `payload.owner_id`,
 which the enclave reads from the AAD-bound envelope; this stays correct
 after the secret is deleted, or its id re-created by another account. Only
 a receipt without `owner_id` falls back to the current owner of
