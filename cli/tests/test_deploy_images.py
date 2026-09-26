@@ -38,11 +38,13 @@ from registry_support import (
 from carapace_cli.deploy import command
 from carapace_cli.deploy.images import (
     ACTIONS_ISSUER,
+    BUILDKIT_IMAGE,
     BuiltImages,
     GitHubReleases,
     ImageError,
     Registries,
     ReleaseImages,
+    buildx_driver,
     fetch_release,
     sigstore_verify,
 )
@@ -58,6 +60,7 @@ ENCLAVE_IDENTITY = (
 )
 ASSET_HOST = "release-assets.githubusercontent.com"
 DEST = REGISTRY.partition("/")[2]
+DOCKER_BUILD = ["/bin/docker", "buildx", "build"]
 
 
 def release_json(digest: str, *, tag: str = TAG, commit: str = COMMIT) -> bytes:
@@ -201,13 +204,45 @@ def test_server_signature_is_optional_but_never_ignored() -> None:
         release_source(World(), lambda _args: False, []).publish(REGISTRY)
 
 
+def inspect_output(name: str, driver: str) -> str:
+    return (
+        f"Name:          {name}\nDriver:        {driver}\n"
+        f"Last Activity: 2026-09-26 00:00:00 +0000 UTC\n\n"
+        f"Nodes:\nName:             {name}0\nStatus:           running\n"
+    )
+
+
 @dataclass
 class FakeDocker:
-    """Answers ``git log`` and ``docker buildx`` by writing an OCI layout."""
+    """Answers ``git log`` and ``docker buildx`` by writing an OCI layout.
+
+    ``builders`` maps buildx builder names to drivers; ``current`` is the
+    one ``docker buildx inspect`` (no name) reports.
+    """
 
     images: dict[str, Image]
     fail: bool = False
+    builders: dict[str, str] = field(
+        default_factory=lambda: {"desktop-linux": "docker-container"}
+    )
+    current: str = "desktop-linux"
+    create_fails: bool = False
     calls: list[list[str]] = field(default_factory=list)
+
+    def _buildx(self, arguments: list[str]) -> Completed:
+        if arguments[0] == "inspect":
+            name = arguments[1] if len(arguments) > 1 else self.current
+            if name not in self.builders:
+                return Completed(1, f"ERROR: no builder {name!r} found\n")
+            return Completed(0, inspect_output(name, self.builders[name]))
+        if self.create_fails:
+            return Completed(1, "ERROR: permission denied\n")
+        name = arguments[arguments.index("--name") + 1]
+        self.builders[name] = arguments[arguments.index("--driver") + 1]
+        return Completed(0, f"{name}\n")
+
+    def builds(self) -> list[list[str]]:
+        return [argv for argv in self.calls if argv[:3] == DOCKER_BUILD]
 
     def __call__(
         self,
@@ -220,6 +255,8 @@ class FakeDocker:
         self.calls.append(argv)
         if argv[0] == "/bin/git":
             return Completed(0, "1700000000\n")
+        if argv[:3] != DOCKER_BUILD:
+            return self._buildx(argv[2:])
         if self.fail:
             return Completed(1, "ERROR: failed to solve\n")
         name = argv[argv.index("--file") + 1].split("/")[0]
@@ -250,8 +287,9 @@ def test_build_uploads_the_local_images(tmp_path: Path) -> None:
     images = source.publish(REGISTRY)
     assert images.server_digest == world.server.digest
     assert (f"{DEST}/enclave", world.enclave.digest) in world.ar.manifests
-    builds = [argv for argv in docker.calls if argv[0] == "/bin/docker"]
+    builds = docker.builds()
     assert len(builds) == 2  # the enclave is built once, not again on publish
+    assert "--builder" not in builds[0]  # the current builder exports OCI
     assert "SOURCE_DATE_EPOCH=1700000000" in builds[0]
     assert "--platform" in builds[0] and "linux/amd64" in builds[0]
     assert not world.ghcr.requests
@@ -261,6 +299,125 @@ def test_failed_build_is_reported(tmp_path: Path) -> None:
     docker = FakeDocker({}, fail=True)
     with pytest.raises(ImageError, match="docker buildx failed for the enclave"):
         built_source(World(), docker, tmp_path).enclave_digest_hint()
+
+
+def test_docker_driver_builds_with_a_created_carapace_builder(
+    tmp_path: Path,
+) -> None:
+    world = World()
+    docker = FakeDocker(
+        {"enclave": world.enclave, "server": world.server},
+        builders={"default": "docker"},
+        current="default",
+    )
+    source = built_source(world, docker, tmp_path)
+    source.publish(REGISTRY)
+    create = [argv for argv in docker.calls if argv[2:3] == ["create"]]
+    assert create == [
+        [
+            "/bin/docker",
+            "buildx",
+            "create",
+            "--name",
+            "carapace",
+            "--driver",
+            "docker-container",
+            "--driver-opt",
+            f"image={BUILDKIT_IMAGE}",
+        ]
+    ]
+    for build in docker.builds():
+        assert build[3:5] == ["--builder", "carapace"]
+    # The builder is chosen once, not per image.
+    inspects = [argv for argv in docker.calls if argv[2:3] == ["inspect"]]
+    assert len(inspects) == 2
+
+
+def test_existing_carapace_builder_is_reused(tmp_path: Path) -> None:
+    world = World()
+    docker = FakeDocker(
+        {"enclave": world.enclave, "server": world.server},
+        builders={"default": "docker", "carapace": "docker-container"},
+        current="default",
+    )
+    built_source(world, docker, tmp_path).enclave_digest_hint()
+    assert not any(argv[2:3] == ["create"] for argv in docker.calls)
+    assert docker.builds()[0][3:5] == ["--builder", "carapace"]
+
+
+def test_builder_that_cannot_be_created_names_the_command(tmp_path: Path) -> None:
+    docker = FakeDocker(
+        {}, builders={"default": "docker"}, current="default", create_fails=True
+    )
+    with pytest.raises(ImageError) as caught:
+        built_source(World(), docker, tmp_path).enclave_digest_hint()
+    expected = (
+        "`docker buildx create --name carapace --driver docker-container "
+        f"--driver-opt image={BUILDKIT_IMAGE}`"
+    )
+    assert expected in str(caught.value)
+    assert not docker.builds()
+
+
+def test_carapace_builder_with_the_docker_driver_is_refused(tmp_path: Path) -> None:
+    docker = FakeDocker(
+        {}, builders={"default": "docker", "carapace": "docker"}, current="default"
+    )
+    with pytest.raises(ImageError, match="docker buildx rm carapace"):
+        built_source(World(), docker, tmp_path).enclave_digest_hint()
+    assert not docker.builds()
+
+
+def test_missing_buildx_is_reported(tmp_path: Path) -> None:
+    docker = FakeDocker({}, builders={}, current="default")
+    with pytest.raises(ImageError, match="needs docker buildx"):
+        built_source(World(), docker, tmp_path).enclave_digest_hint()
+
+
+def test_created_builder_pins_the_release_workflows_buildkit() -> None:
+    action = Path(__file__).parents[2] / ".github/actions/build-enclave/action.yml"
+    assert f"driver-opts: image={BUILDKIT_IMAGE}\n" in action.read_text()
+
+
+@pytest.mark.parametrize(
+    ("output", "driver"),
+    [
+        (inspect_output("default", "docker"), "docker"),
+        (inspect_output("x", "docker-container"), "docker-container"),
+        ("Name: x\n", None),
+        ("", None),
+    ],
+)
+def test_buildx_driver_is_read_from_inspect(output: str, driver: str | None) -> None:
+    assert buildx_driver(output) == driver
+
+
+def not_found_releases() -> GitHubReleases:
+    """GitHub as an unauthenticated client sees a private repository."""
+    transport = httpx.MockTransport(lambda _request: httpx.Response(404))
+    return GitHubReleases(httpx.Client(transport=transport))
+
+
+@pytest.mark.parametrize(
+    ("fetch", "expected"),
+    [
+        (lambda github: github.latest_tag(REPO), "no published release of"),
+        (
+            lambda github: fetch_release(github, FakeVerifier(), repo=REPO, tag=TAG),
+            f"no {TAG}.json in release {TAG} of",
+        ),
+    ],
+    ids=["latest", "tagged"],
+)
+def test_missing_release_explains_private_repos_and_build(
+    fetch: Callable[[GitHubReleases], object], expected: str
+) -> None:
+    with pytest.raises(ImageError) as caught:
+        fetch(not_found_releases())
+    message = str(caught.value)
+    assert expected in message and REPO in message
+    assert "private" in message and "--build" in message
+    assert "404" not in message
 
 
 def deploy(
