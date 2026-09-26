@@ -11,6 +11,7 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import unquote
 
 import httpx
 
@@ -50,6 +51,8 @@ def disabled(service: str) -> httpx.Response:
 class FakeGoogle:
     routes: list[tuple[str, str, Handler]] = field(default_factory=list)
     requests: list[httpx.Request] = field(default_factory=list)
+    # Objects in the state bucket, by name (see with_state_objects).
+    objects: dict[str, Any] = field(default_factory=dict)
 
     def on(self, method: str, url_prefix: str, response: Handler | httpx.Response):
         handler = response if callable(response) else (lambda _r, _x=response: _x)
@@ -177,7 +180,7 @@ def deployable_project(google: FakeGoogle | None = None) -> FakeGoogle:
     """Preflight passes, state APIs are on, the key and migration succeed."""
     google = healthy_project(google)
     location = f"{KMS}/projects/{PROJECT}/locations/{REGION}"
-    return (
+    (
         google.on(
             "GET",
             f"{SERVICE_USAGE}/projects/{PROJECT}/services/",
@@ -191,6 +194,40 @@ def deployable_project(google: FakeGoogle | None = None) -> FakeGoogle:
             f"{RUN}/projects/{PROJECT}/locations/{REGION}/jobs/",
             ok({"latestCreatedExecution": {"completionStatus": "EXECUTION_SUCCEEDED"}}),
         )
+    )
+    return with_state_objects(google)
+
+
+STORAGE_UPLOAD = "https://storage.googleapis.com/upload/storage/v1"
+
+
+def with_state_objects(google: FakeGoogle) -> FakeGoogle:
+    """Objects in the state bucket, kept in ``google.objects``."""
+    objects = f"{STORAGE}/b/{PROJECT}-carapace-state/o/"
+
+    def name_of(request: httpx.Request) -> str:
+        return unquote(request.url.raw_path.decode().split("/o/", 1)[1].split("?")[0])
+
+    def read(request: httpx.Request) -> httpx.Response:
+        name = name_of(request)
+        if name not in google.objects:
+            return google_error(404, f"No such object: {name}")
+        return ok(google.objects[name])
+
+    def write(request: httpx.Request) -> httpx.Response:
+        name = request.url.params["name"]
+        google.objects[name] = json.loads(request.content)
+        return ok({"name": name})
+
+    def delete(request: httpx.Request) -> httpx.Response:
+        if google.objects.pop(name_of(request), None) is None:
+            return google_error(404, "No such object")
+        return ok(None, 204)
+
+    return (
+        google.on("GET", objects, read)
+        .on("POST", f"{STORAGE_UPLOAD}/b/{PROJECT}-carapace-state/o", write)
+        .on("DELETE", objects, delete)
     )
 
 
@@ -207,15 +244,24 @@ def _healthy_bucket() -> dict[str, Any]:
 
 @dataclass
 class FakeStack:
-    """A Pulumi stack in memory: config, and a log of every ``up``."""
+    """A Pulumi stack in memory: local config, backend state, every ``up``.
+
+    ``initial`` is the local config file, and also the state unless
+    ``state`` is given (a stack deployed from another machine has state
+    but no local config). Outputs come from the state, as
+    ``pulumi stack output`` reads them from the backend, and a stack that
+    was never ``up`` has none.
+    """
 
     initial: dict[str, str] = field(default_factory=dict)
+    state: dict[str, str] | None = None
     fail_on_up: int | None = None
     ups: list[dict[str, str]] = field(default_factory=list)
     destroyed: bool = False
 
     def __post_init__(self) -> None:
         self._config = dict(self.initial)
+        self._state = dict(self.initial if self.state is None else self.state)
 
     def config(self) -> dict[str, str]:
         return dict(self._config)
@@ -228,12 +274,15 @@ class FakeStack:
             self.fail_on_up = None
             raise CarapaceError("pulumi failed: simulated")
         self.ups.append(self.config())
+        self._state = self.config()
         return self.outputs()
 
     def destroy(self) -> None:
         self.destroyed = True
 
     def outputs(self) -> dict[str, Any]:
+        if not self._state:
+            return {}
         outputs: dict[str, Any] = {
             "kms_key_name": KEY_NAME,
             "kms_key_version_name": KEY_VERSION,
@@ -244,7 +293,7 @@ class FakeStack:
             "server_url": SERVER_URL,
             "control_plane_url": SERVER_URL,
         }
-        if self._config.get("carapace:deploy_workloads") == "true":
+        if self._state.get("carapace:deploy_workloads") == "true":
             outputs |= {
                 "migration_job": f"{PREFIX}-migrate",
                 "enclave_url": ENCLAVE_URL,

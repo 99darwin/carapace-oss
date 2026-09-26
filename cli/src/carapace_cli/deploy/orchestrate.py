@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -79,9 +79,19 @@ def allowed_digests(config: dict[str, str]) -> list[str]:
 
 
 def workloads_live(config: dict[str, str]) -> bool:
+    """Whether the local config says the workloads are deployed."""
     return config.get("carapace:deploy_workloads", TRUE) == TRUE and bool(
         config.get("carapace:enclave_image_digest")
     )
+
+
+def state_has_workloads(outputs: Mapping[str, Any]) -> bool:
+    """Whether the stack's state, in the backend, runs the workloads.
+
+    The enclave URL is an output only while ``deploy_workloads`` is true,
+    so it tells the truth even when the local config file is missing.
+    """
+    return bool(outputs.get("enclave_url"))
 
 
 def bootstrap(
@@ -94,12 +104,22 @@ def bootstrap(
     """``up`` with ``deploy_workloads=false``, unless workloads already run.
 
     A bootstrap on a live stack would delete the VM and Cloud Run, so an
-    update goes straight to the workloads step.
+    update goes straight to the workloads step. Whether the workloads run
+    is decided by the state in the backend, not only by the local config:
+    a machine without ``Pulumi.<prefix>.yaml`` must not bootstrap a live
+    stack.
     """
     current = stack.config()
     if workloads_live(current):
         say("Workloads are already deployed; skipping the bootstrap.")
         return stack.outputs()
+    if state_has_workloads(stack.outputs()):
+        raise DeployStepError(
+            f"stack {target.prefix!r} runs workloads, but the config on this "
+            "machine does not say so; a bootstrap would delete them. Copy "
+            f"infra/pulumi/Pulumi.{target.prefix}.yaml from the machine that "
+            "deployed, then run the same command again"
+        )
     allowed = allowed_digests(current) or [enclave_digest or PLACEHOLDER_DIGEST]
     say("Bootstrap: KMS, identity, database, registry and network...")
     stack.set_config(

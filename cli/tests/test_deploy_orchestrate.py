@@ -120,6 +120,19 @@ def test_live_update_never_bootstraps_and_rolls_in_three_steps() -> None:
     ]
 
 
+def test_live_state_without_local_config_is_never_bootstrapped() -> None:
+    # The backend runs the workloads; this machine's config does not know.
+    live = {
+        "carapace:deploy_workloads": "true",
+        "carapace:enclave_image_digest": OLD_DIGEST,
+    }
+    for local in ({}, {"carapace:deploy_workloads": "false"}):
+        stack = FakeStack(initial=local, state=live)
+        with pytest.raises(DeployStepError, match="a bootstrap would delete them"):
+            _deploy(deployable_project(), stack)
+        assert not stack.ups
+
+
 def test_same_digest_update_is_one_up() -> None:
     live = {
         "carapace:deploy_workloads": "true",

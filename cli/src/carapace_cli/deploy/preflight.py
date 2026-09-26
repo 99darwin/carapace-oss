@@ -9,6 +9,7 @@ stops the deploy.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from carapace_cli.deploy.gcp import GcpApi, GcpError
@@ -69,6 +70,10 @@ REQUIRED_PERMISSIONS: list[str] = [
 PROJECT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
 # Same rule as infra/pulumi/components/config.py (a test keeps them equal).
 PREFIX_PATTERN = re.compile(r"^[a-z][a-z0-9-]{1,18}[a-z0-9]$")
+# GCP zones: the region plus one letter. The zone goes into a Compute API
+# path and the stack config, so its characters are checked, not only the
+# region it names.
+ZONE_PATTERN = re.compile(r"^[a-z]+-[a-z]+[0-9]+-[a-z]$")
 # Deliberately plain: one address, no display name, no quoting.
 EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$")
 
@@ -90,6 +95,13 @@ def validate_region(value: str) -> str:
             f"Cloud KMS HSM; pick one of: {', '.join(sorted(REGION_ZONES))}"
         )
     return value
+
+
+def validate_zone(region: str, zone: str) -> str:
+    """A well-formed zone of ``region``."""
+    if not ZONE_PATTERN.fullmatch(zone) or not zone.startswith(f"{region}-"):
+        raise InvalidInputError(f"zone {zone!r} is not in region {region!r}")
+    return zone
 
 
 def validate_prefix(value: str) -> str:
@@ -127,9 +139,23 @@ class Target:
     alert_emails: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ExistingDeployment:
+    """Where an earlier deploy put the stack with this prefix."""
+
+    region: str
+    zone: str
+    alert_emails: tuple[str, ...]
+
+
+# (project, prefix) -> the earlier deployment, or None for a new one.
+ExistingLookup = Callable[[str, str], ExistingDeployment | None]
+
+
 @dataclass
 class PreflightReport:
     warnings: list[str] = field(default_factory=list)
+    existing: ExistingDeployment | None = None
 
     def warn(self, message: str) -> None:
         self.warnings.append(message)
@@ -227,10 +253,16 @@ def choose_location(
     project: str,
     report: PreflightReport,
 ) -> tuple[str, str]:
-    """The region and zone, with N2D confirmed in the zone when possible."""
+    """The region and zone, with N2D confirmed in the zone when possible.
+
+    An existing deployment's region and zone are the defaults, and cannot
+    be changed: the stack would replace every resource, and the state key
+    lives in the region.
+    """
+    existing = report.existing
     options = (
         _region_options(api, project, report)
-        if interview.interactive and flags.region is None
+        if interview.interactive and flags.region is None and existing is None
         else []
     )
     region = interview.choose(
@@ -238,12 +270,18 @@ def choose_location(
         flag="--region",
         value=flags.region,
         options=options,
-        default=DEFAULT_REGION,
+        default=existing.region if existing else DEFAULT_REGION,
         validate=validate_region,
     )
-    zone = flags.zone or REGION_ZONES[region]
-    if not zone.startswith(f"{region}-"):
-        raise InvalidInputError(f"zone {zone!r} is not in region {region!r}")
+    if existing:
+        zone = flags.zone or existing.zone
+        if (region, zone) != (existing.region, existing.zone):
+            raise PreflightError(
+                f"this deployment is in {existing.region} ({existing.zone}) and "
+                "cannot move; pass another --prefix for a new deployment"
+            )
+        return region, zone
+    zone = validate_zone(region, flags.zone or REGION_ZONES[region])
     try:
         available = api.machine_type_available(project, zone, ENCLAVE_MACHINE_TYPE)
     except GcpError as exc:
@@ -255,26 +293,42 @@ def choose_location(
 
 
 def run_preflight(
-    api: GcpApi, interview: Interview, flags: Flags
+    api: GcpApi,
+    interview: Interview,
+    flags: Flags,
+    *,
+    find_existing: ExistingLookup | None = None,
 ) -> tuple[Target, PreflightReport]:
-    """Ask every question and run every check. Changes nothing."""
+    """Ask every question and run every check. Changes nothing.
+
+    ``find_existing`` looks up an earlier deploy of the same prefix; its
+    settings become the defaults and the report's ``existing``.
+    """
     report = PreflightReport()
     project, number = choose_project(api, interview, flags, report)
     check_billing(api, project, report)
     check_permissions(api, project, report)
-    region, zone = choose_location(api, interview, flags, project, report)
-    emails = interview.ask(
-        "Email for security alerts (comma-separated for several)",
-        flag="--alert-email",
-        value=",".join(flags.alert_emails) if flags.alert_emails else None,
-        validate=validate_emails,
-    )
     prefix = interview.ask(
         "Resource name prefix",
         flag="--prefix",
         value=flags.prefix,
         default=DEFAULT_PREFIX,
         validate=validate_prefix,
+    )
+    if find_existing is not None:
+        try:
+            report.existing = find_existing(project, prefix)
+        except GcpError as exc:
+            # A fresh project may not have Cloud Storage enabled yet.
+            report.warn(f"could not look for an earlier deployment ({exc})")
+    region, zone = choose_location(api, interview, flags, project, report)
+    existing_emails = report.existing.alert_emails if report.existing else ()
+    emails = interview.ask(
+        "Email for security alerts (comma-separated for several)",
+        flag="--alert-email",
+        value=",".join(flags.alert_emails) if flags.alert_emails else None,
+        default=",".join(existing_emails) or None,
+        validate=validate_emails,
     )
     target = Target(
         project=project,
