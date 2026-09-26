@@ -328,9 +328,10 @@ def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
         )
         backend = ensure_state_backend(api, target, say=ctx.say, clock=services.clock)
         stack = services.stack(target, backend, ctx)
-        check_stack_config(
-            stack.config(), target, is_existing=report.existing is not None
-        )
+        # The record can be unreadable (or gone) while the stack is live;
+        # the backend's state, not the record, decides what exists.
+        is_existing = report.existing is not None or bool(stack.outputs())
+        check_stack_config(stack.config(), target, is_existing=is_existing)
         # The record is written once the stack has its config, so a re-run
         # that finds the record also finds the config.
         stack.set_config(base_config(target))

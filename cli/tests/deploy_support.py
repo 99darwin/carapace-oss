@@ -244,15 +244,24 @@ def _healthy_bucket() -> dict[str, Any]:
 
 @dataclass
 class FakeStack:
-    """A Pulumi stack in memory: config, and a log of every ``up``."""
+    """A Pulumi stack in memory: local config, backend state, every ``up``.
+
+    ``initial`` is the local config file, and also the state unless
+    ``state`` is given (a stack deployed from another machine has state
+    but no local config). Outputs come from the state, as
+    ``pulumi stack output`` reads them from the backend, and a stack that
+    was never ``up`` has none.
+    """
 
     initial: dict[str, str] = field(default_factory=dict)
+    state: dict[str, str] | None = None
     fail_on_up: int | None = None
     ups: list[dict[str, str]] = field(default_factory=list)
     destroyed: bool = False
 
     def __post_init__(self) -> None:
         self._config = dict(self.initial)
+        self._state = dict(self.initial if self.state is None else self.state)
 
     def config(self) -> dict[str, str]:
         return dict(self._config)
@@ -265,12 +274,15 @@ class FakeStack:
             self.fail_on_up = None
             raise CarapaceError("pulumi failed: simulated")
         self.ups.append(self.config())
+        self._state = self.config()
         return self.outputs()
 
     def destroy(self) -> None:
         self.destroyed = True
 
     def outputs(self) -> dict[str, Any]:
+        if not self._state:
+            return {}
         outputs: dict[str, Any] = {
             "kms_key_name": KEY_NAME,
             "kms_key_version_name": KEY_VERSION,
@@ -281,7 +293,7 @@ class FakeStack:
             "server_url": SERVER_URL,
             "control_plane_url": SERVER_URL,
         }
-        if self._config.get("carapace:deploy_workloads") == "true":
+        if self._state.get("carapace:deploy_workloads") == "true":
             outputs |= {
                 "migration_job": f"{PREFIX}-migrate",
                 "enclave_url": ENCLAVE_URL,

@@ -22,6 +22,7 @@ from deploy_support import (
     FakeStack,
     deployable_project,
     disabled,
+    google_error,
     healthy_project,
     instant_clock,
     scripted,
@@ -141,6 +142,7 @@ def test_record_round_trip() -> None:
         {"prefix": "other"},
         {"region": "mars-central1"},
         {"zone": "europe-west1-b"},
+        {"zone": f"{REGION}-a/../../b"},
         {"alert_emails": []},
     ],
 )
@@ -158,6 +160,52 @@ def test_missing_stack_config_is_refused() -> None:
     moved = {"carapace:prefix": PREFIX, "gcp:region": "us-east1"}
     with pytest.raises(RecordError, match="cannot move"):
         check_stack_config(moved, TARGET, is_existing=True)
+
+
+def test_stack_config_of_another_project_is_refused() -> None:
+    # Pulumi.<prefix>.yaml is shared across projects, so the same prefix in
+    # a second project would act on that file's project.
+    elsewhere = live_stack().config() | {"gcp:project": "other-project"}
+    for is_existing in (True, False):
+        with pytest.raises(RecordError, match="belongs to the deployment in"):
+            check_stack_config(elsewhere, TARGET, is_existing=is_existing)
+
+
+def test_deploy_with_another_projects_config_changes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    google = deployable_project()
+    stack = FakeStack(initial=live_stack().config() | {"gcp:project": "other-proj"})
+    code, output = run_cli(
+        monkeypatch, tmp_path, google, stack, "deploy", "--project", PROJECT,
+        "--prefix", PREFIX, "--alert-email", EMAIL, *DEPLOY_FLAGS,
+    )  # fmt: skip
+    assert code != 0
+    assert "belongs to the deployment in other-proj" in output
+    assert not stack.ups
+    assert stack.config()["gcp:project"] == "other-proj"
+    assert record_name(PREFIX) not in google.objects
+
+
+def test_live_stack_without_local_config_is_never_bootstrapped(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # Another machine: the backend has the live stack, this machine has no
+    # Pulumi.<prefix>.yaml, and the record cannot be read (or is gone).
+    google = deployable_project().on(
+        "GET",
+        f"{STORAGE}/b/{PROJECT}-carapace-state/o/",
+        google_error(403, "Permission denied on the object"),
+    )
+    stack = FakeStack(initial={}, state=live_stack().config())
+    code, output = run_cli(
+        monkeypatch, tmp_path, google, stack, "deploy", "--project", PROJECT,
+        "--prefix", PREFIX, "--alert-email", EMAIL, *DEPLOY_FLAGS,
+    )  # fmt: skip
+    assert code != 0
+    assert "not on this machine" in output
+    assert not stack.ups
+    assert stack.config() == {}
 
 
 # -- re-runs -------------------------------------------------------------------
@@ -265,6 +313,23 @@ def test_destroy_without_a_record_changes_nothing(
     assert code != 0
     assert "pulumi destroy" in output
     assert not stack.ups and not stack.destroyed
+
+
+def test_destroy_never_ups_with_another_projects_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # The same prefix deployed into two projects from one machine leaves
+    # Pulumi.<prefix>.yaml naming the second; a destroy of the first must
+    # not run the protection-lifting up with it.
+    google = recorded(deployable_project())
+    stack = FakeStack(initial=live_stack().config() | {"gcp:project": "other-proj"})
+    code, output = destroy(
+        monkeypatch, tmp_path, google, stack, "--confirm-project", PROJECT
+    )
+    assert code != 0
+    assert "belongs to the deployment in other-proj" in output
+    assert not stack.ups and not stack.destroyed
+    assert record_name(PREFIX) in google.objects
 
 
 def test_destroy_without_the_stack_config_changes_nothing(

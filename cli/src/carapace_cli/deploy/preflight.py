@@ -70,6 +70,10 @@ REQUIRED_PERMISSIONS: list[str] = [
 PROJECT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
 # Same rule as infra/pulumi/components/config.py (a test keeps them equal).
 PREFIX_PATTERN = re.compile(r"^[a-z][a-z0-9-]{1,18}[a-z0-9]$")
+# GCP zones: the region plus one letter. The zone goes into a Compute API
+# path and the stack config, so its characters are checked, not only the
+# region it names.
+ZONE_PATTERN = re.compile(r"^[a-z]+-[a-z]+[0-9]+-[a-z]$")
 # Deliberately plain: one address, no display name, no quoting.
 EMAIL_PATTERN = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$")
 
@@ -91,6 +95,13 @@ def validate_region(value: str) -> str:
             f"Cloud KMS HSM; pick one of: {', '.join(sorted(REGION_ZONES))}"
         )
     return value
+
+
+def validate_zone(region: str, zone: str) -> str:
+    """A well-formed zone of ``region``."""
+    if not ZONE_PATTERN.fullmatch(zone) or not zone.startswith(f"{region}-"):
+        raise InvalidInputError(f"zone {zone!r} is not in region {region!r}")
+    return zone
 
 
 def validate_prefix(value: str) -> str:
@@ -270,9 +281,7 @@ def choose_location(
                 "cannot move; pass another --prefix for a new deployment"
             )
         return region, zone
-    zone = flags.zone or REGION_ZONES[region]
-    if not zone.startswith(f"{region}-"):
-        raise InvalidInputError(f"zone {zone!r} is not in region {region!r}")
+    zone = validate_zone(region, flags.zone or REGION_ZONES[region])
     try:
         available = api.machine_type_available(project, zone, ENCLAVE_MACHINE_TYPE)
     except GcpError as exc:

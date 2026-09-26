@@ -176,11 +176,20 @@ only the enclave).
   another region or zone (say, one deployed by hand), and refuses an
   existing deployment whose `Pulumi.<prefix>.yaml` is not on this machine:
   with an empty config, the bootstrap would run on a live stack and delete
-  its workloads. The state survives the loss of the laptop, but the config
-  file has to be copied to the new machine first.
+  its workloads. A stack counts as existing when the record says so or
+  when the backend already has stack outputs, so an unreadable or deleted
+  record cannot turn a re-run into a first deploy. The state survives the
+  loss of the laptop, but the config file has to be copied to the new
+  machine first.
+- `Pulumi.<prefix>.yaml` is named after the prefix alone, so one machine
+  holds one deployment per prefix. A config whose `gcp:project` is another
+  project is refused by both `deploy` and `destroy`: an `up` with it would
+  act on that project's stack. A second project needs another prefix.
 - A re-run never bootstraps a stack whose workloads are live: that `up`
   would delete the VM and Cloud Run. It goes straight to the workloads
-  step.
+  step. Whether they are live is decided by the local config and, as a
+  last check before the bootstrap `up`, by the state's `enclave_url`
+  output, which exists only while `deploy_workloads` is true.
 - The bootstrap `up` needs a non-empty `allowed_digests`. It uses the
   enclave digest when it is already known (release images, or
   `--enclave-digest`), and otherwise an all-zero placeholder that no image

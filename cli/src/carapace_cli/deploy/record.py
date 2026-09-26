@@ -14,11 +14,13 @@ from typing import Any
 from urllib.parse import quote
 
 from carapace_cli.deploy.gcp import HTTP_NOT_FOUND, STORAGE, GcpApi, GcpError
+from carapace_cli.deploy.interview import InvalidInputError
 from carapace_cli.deploy.preflight import (
     REGION_ZONES,
     ExistingDeployment,
     Target,
     validate_emails,
+    validate_zone,
 )
 from carapace_cli.deploy.summary import state_bucket_name
 from carapace_cli.errors import CarapaceError
@@ -49,12 +51,16 @@ def parse_record(
     if (body.get("project"), body.get("prefix")) != (project, prefix):
         raise RecordError(f"{where} names another project or prefix")
     region, zone = str(body.get("region", "")), str(body.get("zone", ""))
-    if region not in REGION_ZONES or not zone.startswith(f"{region}-"):
-        raise RecordError(f"{where} has no valid region and zone")
     emails = body.get("alert_emails")
     if not isinstance(emails, list) or not emails:
         raise RecordError(f"{where} has no alert emails")
-    checked = validate_emails(",".join(str(email) for email in emails))
+    try:
+        if region not in REGION_ZONES:
+            raise InvalidInputError(f"{region!r} is not a supported region")
+        validate_zone(region, zone)
+        checked = validate_emails(",".join(str(email) for email in emails))
+    except InvalidInputError as exc:
+        raise RecordError(f"{where} is invalid: {exc}") from None
     return ExistingDeployment(region, zone, tuple(checked.split(",")))
 
 
@@ -102,12 +108,25 @@ def check_stack_config(
     ``Pulumi.<prefix>.yaml`` lives on the machine that deployed. Without
     it, an ``up`` would bootstrap a live stack and delete its workloads.
     A stack deployed elsewhere (say, by hand) cannot move either.
+
+    The file is named after the prefix alone, so one machine holds one
+    deployment per prefix: a config that names another project belongs to
+    that project's stack, and an ``up`` with it would act on the wrong
+    project.
     """
     if is_existing and config.get("carapace:prefix") != target.prefix:
         raise RecordError(
             f"infra/pulumi/Pulumi.{target.prefix}.yaml, the stack's config, is "
             "not on this machine; run the command where the deployment was "
             "made, or copy that file here first"
+        )
+    current_project = config.get("gcp:project")
+    if current_project and current_project != target.project:
+        raise RecordError(
+            f"infra/pulumi/Pulumi.{target.prefix}.yaml on this machine belongs "
+            f"to the deployment in {current_project}, not {target.project}; a "
+            "prefix's config file is shared across projects, so use another "
+            "--prefix for a second project"
         )
     for key, wanted in (("gcp:region", target.region), ("gcp:zone", target.zone)):
         current = config.get(key)

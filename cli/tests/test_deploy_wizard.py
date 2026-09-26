@@ -39,6 +39,7 @@ from carapace_cli.deploy.preflight import (
     run_preflight,
     validate_emails,
     validate_prefix,
+    validate_zone,
 )
 from carapace_cli.deploy.summary import render_summary
 from carapace_cli.main import main
@@ -73,6 +74,24 @@ def test_several_emails() -> None:
 def test_bad_prefixes_rejected(bad: str) -> None:
     with pytest.raises(InvalidInputError):
         validate_prefix(bad)
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "us-east1-b",
+        "us-central1-",
+        "us-central1-a/../b",
+        "us-central1-A",
+        "us-central1-a\n",
+        "us-central1-a --flag",
+    ],
+)
+def test_bad_zones_rejected(bad: str) -> None:
+    # The zone goes into a Compute API path and the stack config.
+    with pytest.raises(InvalidInputError, match="not in region"):
+        validate_zone("us-central1", bad)
+    assert validate_zone("us-central1", "us-central1-f") == "us-central1-f"
 
 
 # -- preflight -----------------------------------------------------------------
