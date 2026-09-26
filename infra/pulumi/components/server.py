@@ -195,8 +195,13 @@ def create_database(
         },
         opts=pulumi.ResourceOptions(depends_on=depends_on),
     )
+    # Both are removed with the instance. Deleting them first fails: the
+    # role owns the migrated tables, and the server holds connections.
     sql_database = gcp.sql.Database(
-        f"{prefix}-db-carapace", name=DB_NAME, instance=instance.name
+        f"{prefix}-db-carapace",
+        name=DB_NAME,
+        instance=instance.name,
+        deletion_policy="ABANDON",
     )
     password = random.RandomPassword(
         f"{prefix}-db-password", length=DB_PASSWORD_LENGTH, special=False
@@ -206,6 +211,7 @@ def create_database(
         name=DB_USER,
         instance=instance.name,
         password=password.result,
+        deletion_policy="ABANDON",
     )
     database_url = pulumi.Output.all(password.result, instance.connection_name).apply(
         lambda args: build_database_url(password=args[0], connection_name=args[1])

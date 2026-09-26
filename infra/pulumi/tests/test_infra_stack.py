@@ -567,6 +567,13 @@ def test_cloud_sql_is_small_and_zonal(stack) -> None:
     assert settings["ipConfiguration"].get("authorizedNetworks") in (None, [])
 
 
+def test_sql_user_and_database_go_with_the_instance(stack) -> None:
+    # Dropping the role first fails: it owns the migrated tables.
+    mocks, _ = stack
+    for type_ in ("gcp:sql/user:User", "gcp:sql/database:Database"):
+        assert mocks.one(type_).inputs["deletionPolicy"] == "ABANDON"
+
+
 def test_iam_change_alert_watches_decrypt_path(stack) -> None:
     mocks, outputs = stack
     policy = mocks.one("gcp:monitoring/alertPolicy:AlertPolicy").inputs
