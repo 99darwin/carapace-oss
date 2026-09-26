@@ -2,10 +2,21 @@
 # keeps the build context small and keeps local files (.env, databases,
 # virtualenvs) out of it.
 *
+!web/package.json
+!web/package-lock.json
+!web/index.html
+!web/tsconfig.json
+!web/vite.config.ts
+!web/public/
+!web/src/
 !server/requirements.lock
 !server/src/carapace_server/
 !packages/crypto/src/carapace_crypto/
 !server/alembic.ini
 !server/migrations/
+# Test code never enters the build context.
+web/src/**/*.test.ts
+web/src/**/*.test.tsx
+web/src/testing.ts
 **/__pycache__
 **/*.pyc

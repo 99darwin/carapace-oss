@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
@@ -33,6 +34,7 @@ from carapace_server.proxy import ForwardedClientMiddleware
 from carapace_server.ratelimit import limiter
 from carapace_server.receipts.router import router as receipts_router
 from carapace_server.store.router import router as secrets_router
+from carapace_server.web import SecureStaticFiles, WebMount, route_prefixes
 
 logger = logging.getLogger(__name__)
 
@@ -137,4 +139,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
+    if settings.web_dir is not None:
+        # Mounted last, and only for paths outside the prefixes the routes
+        # above own (/v1, /healthz, the dev docs), so enabling the UI
+        # changes no API response: see WebMount.
+        hsts = urlparse(settings.public_url).scheme == "https"
+        static = SecureStaticFiles(directory=settings.web_dir, hsts=hsts)
+        api_paths = [router.prefix for router in routers] + [
+            getattr(route, "path", "") for route in app.router.routes
+        ]
+        app.router.routes.append(WebMount(static, reserved=route_prefixes(api_paths)))
     return app
