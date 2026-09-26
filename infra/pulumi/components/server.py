@@ -193,10 +193,25 @@ def create_database(
                 "ssl_mode": "ENCRYPTED_ONLY",
             },
         },
-        opts=pulumi.ResourceOptions(depends_on=depends_on),
+        opts=pulumi.ResourceOptions(protect=deletion_protection, depends_on=depends_on),
     )
+    # deletion_protection only guards the instance at delete time, after its
+    # dependents are gone. protect makes Pulumi refuse the whole plan up
+    # front, so a protected stack can neither be half-destroyed nor have its
+    # role or database replaced (ABANDON, below, would strand the old one).
+    # carapace destroy lifts both with one up (cli deploy/destroy.py).
+    protected = pulumi.ResourceOptions(protect=deletion_protection)
+    # Both are removed with the instance. Deleting them first fails: the
+    # role owns the migrated tables, and the server holds connections.
+    # ABANDON also applies on replacement (a new DB_NAME, DB_USER or user
+    # type): the old database keeps its tables and the old role its password.
+    # Rotate the password by replacing the RandomPassword, never the User.
     sql_database = gcp.sql.Database(
-        f"{prefix}-db-carapace", name=DB_NAME, instance=instance.name
+        f"{prefix}-db-carapace",
+        name=DB_NAME,
+        instance=instance.name,
+        deletion_policy="ABANDON",
+        opts=protected,
     )
     password = random.RandomPassword(
         f"{prefix}-db-password", length=DB_PASSWORD_LENGTH, special=False
@@ -206,6 +221,8 @@ def create_database(
         name=DB_USER,
         instance=instance.name,
         password=password.result,
+        deletion_policy="ABANDON",
+        opts=protected,
     )
     database_url = pulumi.Output.all(password.result, instance.connection_name).apply(
         lambda args: build_database_url(password=args[0], connection_name=args[1])
