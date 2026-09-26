@@ -49,11 +49,18 @@ uv sync --all-packages --locked
 uv run carapace deploy --build
 ```
 
-`carapace deploy` asks for the project, region and alert email, prints what
-it will create and what it costs, and waits for confirmation. `--build`
-builds both images from your checkout; without it, the CLI deploys the
-latest signed release after verifying it. Only the `--build` path has run
-end to end so far. `uv run carapace destroy` removes the deployment.
+`carapace deploy` asks for the project, region, alert email, first account
+and owner-key passphrase, prints what it will create and what it costs, and
+waits for confirmation. It ends by running `carapace verify` against the new
+enclave, trusting only the digest it just deployed, and saving the pin.
+`--build` builds both images from your checkout, so what the enclave attests
+is your own build rather than a signed, reproducibly built release; without
+it, the CLI deploys the latest signed release after verifying its signature.
+Only the `--build` path has run end to end so far. Back up the owner key it
+writes (`owner-key.json` in the [CLI config directory](cli/README.md#local-state)):
+without it you cannot authorize new API keys, and recovery means re-entering
+and re-sealing every secret. `uv run carapace destroy` removes the
+deployment.
 
 ## Documentation
 
