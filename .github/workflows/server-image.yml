@@ -11,6 +11,7 @@ on:
     paths:
       - "server/**"
       - "packages/crypto/**"
+      - "web/**"
       - "uv.lock"
       - "scripts/oci_image_digest.py"
       - ".github/workflows/server-image.yml"

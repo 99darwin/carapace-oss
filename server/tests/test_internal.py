@@ -687,3 +687,34 @@ async def test_owner_receipts_bad_cursor(client, alice) -> None:
 
 async def test_owner_receipts_require_login(client) -> None:
     assert (await client.get("/v1/receipts")).status_code == 401
+
+
+async def test_owner_boots_are_scoped_to_caller(
+    client, enclave, mock_signer, alice, bob, new_secret
+) -> None:
+    other = FakeEnclave(mock_signer)
+    idle = FakeEnclave(mock_signer)
+    for boot in (enclave, other, idle):
+        await _register(client, boot)
+    alices = await new_secret(client, alice)
+    bobs = await new_secret(client, bob)
+    await _upload(client, enclave, enclave.receipt({"secret_id": alices["id"]}))
+    await _upload(client, enclave, enclave.receipt({"secret_id": bobs["id"]}))
+    await _upload(client, other, other.receipt({"secret_id": bobs["id"]}))
+
+    mine = (await client.get("/v1/receipts/boots", headers=alice.headers)).json()
+    assert [b["boot_id"] for b in mine] == [enclave.boot_id]
+    assert mine[0]["attestation_token"]
+    assert mine[0]["receipt_pubkey"] == _b64(enclave.receipt_pubkey)
+    theirs = (await client.get("/v1/receipts/boots", headers=bob.headers)).json()
+    assert {b["boot_id"] for b in theirs} == {enclave.boot_id, other.boot_id}
+
+
+async def test_owner_boots_limit_and_login(client, alice) -> None:
+    assert (await client.get("/v1/receipts/boots")).status_code == 401
+    too_many = await client.get(
+        "/v1/receipts/boots", params={"limit": 0}, headers=alice.headers
+    )
+    assert too_many.status_code == 422
+    empty = await client.get("/v1/receipts/boots", headers=alice.headers)
+    assert empty.json() == []
