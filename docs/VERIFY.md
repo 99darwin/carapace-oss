@@ -14,8 +14,11 @@ protect against.
 
 > **Status: pre-alpha.** No release has been tagged yet, so there are no
 > published release manifests, and the tag/sign path in CI has not run.
-> The attestation checks are tested against a mock issuer, not yet against
-> tokens from real Confidential Space hardware.
+> `carapace verify`, with the deployment identity pins, and
+> `carapace audit verify` have passed once against a real Confidential
+> Space enclave (2026-09-26, built from source); see [THREAT_MODEL.md,
+> Verified on real GCP](THREAT_MODEL.md#verified-on-real-gcp). The release
+> download and sigstore path is still unverified.
 
 ## 1. Decide which image digest to trust
 
@@ -183,7 +186,7 @@ an old pin was verified against, so it does not guess.
 - **That the values you pass are right.** The checks are only as good as
   the flags. Take them from the stack outputs, not from the server.
 - **Who can decrypt with that KMS key.** The CLI cannot see the key's IAM
-  policy. See [THREAT_MODEL.md, R1](THREAT_MODEL.md#r1-a-gcp-project-owner-or-editor-can-decrypt).
+  policy. See [THREAT_MODEL.md, R1](THREAT_MODEL.md#r1-a-gcp-project-owner-can-decrypt).
 
 ### When to run it again
 

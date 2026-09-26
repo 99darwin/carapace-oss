@@ -226,7 +226,7 @@ def test_summary_states_cost_risk_and_warnings() -> None:
     report = PreflightReport(warnings=["could not confirm billing"])
     text = render_summary(_target(), report, images="release v1.2.0")
     assert "$80/month" in text
-    assert "Owner or Editor" in text and "dedicated project" in text
+    assert "anyone with Owner" in text and "dedicated project" in text
     assert f"gs://{PROJECT}-carapace-state" in text
     assert "could not confirm billing" in text
     assert "release v1.2.0" in text

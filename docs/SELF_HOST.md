@@ -33,7 +33,7 @@ anyone you give access to the project).
   ciphertext, hashes, signed objects and receipts.
 - An Artifact Registry repository for your images.
 - Data Access audit logs for KMS, and a log-based alert on changes to who
-  can decrypt (see [THREAT_MODEL.md, R1](THREAT_MODEL.md#r1-a-gcp-project-owner-or-editor-can-decrypt)).
+  can decrypt (see [THREAT_MODEL.md, R1](THREAT_MODEL.md#r1-a-gcp-project-owner-can-decrypt)).
 
 The full list, and what is deliberately not created, is in the
 [infra README](../infra/pulumi/README.md).
@@ -41,8 +41,9 @@ The full list, and what is deliberately not created, is in the
 ## Prerequisites
 
 - A **new, dedicated GCP project** with billing enabled, and Owner on it.
-  Anyone with Owner or Editor on the project (or on its folder or
-  organization) can grant themselves decrypt, so keep that set small.
+  Anyone with Owner on the project (or on its folder or organization) can
+  grant themselves decrypt, so keep that set small. Editor alone cannot,
+  but anyone holding a Cloud KMS role there may.
 - A region where Cloud KMS HSM keys and N2D Confidential VMs are both
   available (the example uses `us-central1`).
 - `gcloud`, authenticated with `gcloud auth application-default login`.
@@ -190,8 +191,9 @@ gcloud run jobs execute <prefix>-migrate --region <region> --wait
 Migrations run before the new revision takes traffic, so the old revision
 serves against the new schema for a while. Keep each migration compatible
 with the previous server release (expand, then contract in a later release).
-**Unverified:** that Cloud Run runs the job and waits for it as described
-has been tested only with Pulumi mocks.
+The job ran and was waited for on a real deploy (2026-09-26, through
+`carapace deploy`); a failed migration blocking the rollout has been tested
+only with Pulumi mocks.
 
 **KMS public key.** `pulumi up` reads the public key of key version 1 at
 deploy time and sets `CARAPACE_KMS_PUBLIC_KEY_PEM` and
@@ -323,27 +325,21 @@ Things to know:
 
 ## Known gaps
 
-No gap is known to block a deployment, but the stack has not been run end
-to end.
+No gap is known to block a deployment. The stack has run end to end once,
+through `carapace deploy --build`, on 2026-09-26; what that run checked is
+listed in [THREAT_MODEL.md](THREAT_MODEL.md#verified-on-real-gcp).
 
 Not yet verified on real hardware, and fail closed if wrong unless noted
 (details in [THREAT_MODEL.md](THREAT_MODEL.md#unverified-assumptions)):
 
-- That the attestation token carries `submods.container.env.CONTROL_PLANE_URL`
-  as the WIF condition expects. If not, nothing can decrypt.
-- That the `image_digest` claim is the platform manifest digest.
-- That the default Cloud Run URL format matches the one the stack computes.
 - That `crane copy` into Artifact Registry keeps the published digest
-  (step 3), and that the migration job runs and is waited for on each
-  image change (step 5).
+  (step 3). The CLI's own copy into Artifact Registry has run.
 - The `principalSubject` format of federated principals in KMS Data Access
   logs. If it differs, every enclave decrypt alerts (noisy, safe).
 - That the KMS Data Access `methodName` is `AsymmetricDecrypt`. If it
   differs, unauthorized decrypts **do not alert**.
 - That STS-federated credentials with `publicKeyViewer` can read the public
-  key, and that a principal set keyed on a `sha256:` value works.
-- That the launcher accepts the image's launch policy, including
-  `log_redirect=always`, and that port 8443 is reachable.
+  key.
 - That the server service account and a non-confidential VM really get
   `PERMISSION_DENIED` from KMS.
 - Provider details: `invoker_iam_disabled` on Cloud Run, the Cloud SQL

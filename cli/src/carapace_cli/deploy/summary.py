@@ -12,11 +12,11 @@ MONTHLY_COST_USD = 80
 STOPPED_VM_MONTHLY_COST_USD = 40
 
 RESIDUAL_RISK = (
-    "Residual risk (THREAT_MODEL.md R1): anyone with Owner or Editor on this\n"
-    "project, or on its folder or organization, can decrypt every secret\n"
-    "without the enclave. An alert emails you when that happens, but it does\n"
-    "not prevent it. Deploy into a new, dedicated project and keep its Owners\n"
-    "and Editors to yourself."
+    "Residual risk (THREAT_MODEL.md R1): anyone with Owner on this project,\n"
+    "or on its folder or organization, can grant themselves a KMS role and\n"
+    "decrypt every secret without the enclave. An alert emails you when that\n"
+    "happens, but it does not prevent it. Deploy into a new, dedicated project\n"
+    "and keep its Owners, and any Cloud KMS roles, to yourself."
 )
 
 
