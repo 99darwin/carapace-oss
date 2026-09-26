@@ -11,9 +11,10 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from carapace_cli.attestation import PROJECT_ID_PATTERN
-from carapace_cli.deploy.gcp import GcpApi, GcpError
+from carapace_cli.deploy.gcp import HTTP_FORBIDDEN, GcpApi, GcpError
 from carapace_cli.deploy.interview import Interview, InvalidInputError
 from carapace_cli.errors import CarapaceError
 
@@ -44,6 +45,12 @@ DEFAULT_PREFIX = "carapace"
 ENCLAVE_MACHINE_TYPE = "n2d-standard-2"
 MAX_LISTED_PROJECTS = 30
 
+# Needed to tell a new stack's names from a destroyed deployment's
+# leftovers (see check_prefix_unused). Both work on deleted resources.
+KEY_RING_GET_PERMISSION = "cloudkms.keyRings.get"
+POOL_GET_PERMISSION = "iam.workloadIdentityPools.get"
+POOL_DELETED = "DELETED"
+
 # What the stack creates, one representative permission per kind of
 # resource. A project Owner has all of them.
 REQUIRED_PERMISSIONS: list[str] = [
@@ -56,6 +63,8 @@ REQUIRED_PERMISSIONS: list[str] = [
     "iam.serviceAccounts.create",
     "iam.serviceAccounts.actAs",
     "iam.workloadIdentityPools.create",
+    KEY_RING_GET_PERMISSION,
+    POOL_GET_PERMISSION,
     "compute.instances.create",
     "compute.addresses.create",
     "compute.firewalls.create",
@@ -110,6 +119,16 @@ def validate_prefix(value: str) -> str:
             "or '-', start with a letter, and not start with 'gcp-'"
         )
     return value
+
+
+def key_ring_id(prefix: str) -> str:
+    """The stack's key ring (infra/pulumi/components/kms.py; a test checks)."""
+    return f"{prefix}-keyring"
+
+
+def attestation_pool_id(prefix: str) -> str:
+    """The stack's WIF pool (infra/pulumi/components/wif.py; a test checks)."""
+    return f"{prefix}-attest"
 
 
 def validate_email(value: str) -> str:
@@ -230,6 +249,69 @@ def check_permissions(api: GcpApi, project: str, report: PreflightReport) -> Non
         raise PreflightError(
             f"you lack permissions on {project!r} that the deploy needs "
             f"(Owner has them all): {', '.join(missing)}"
+        )
+
+
+def _lookup_reserved(
+    lookup: Callable[[], dict[str, Any] | None], *, what: str, permission: str
+) -> dict[str, Any] | None:
+    """The resource, or None when Google says 404. Any other error stops."""
+    try:
+        return lookup()
+    except GcpError as exc:
+        hint = (
+            f"; the deploy needs {permission} on the project"
+            if exc.status == HTTP_FORBIDDEN
+            else ""
+        )
+        raise PreflightError(
+            f"could not check whether {what} is left over from an earlier "
+            f"deployment ({exc}){hint}. A new stack is not deployed without "
+            "this check"
+        ) from None
+
+
+def check_prefix_unused(api: GcpApi, target: Target) -> None:
+    """Refuse a new stack whose prefix names what a new stack cannot reuse.
+
+    A destroyed deployment leaves its KMS key ring (key rings and their
+    keys can never be deleted) and its workload identity pool (soft-deleted
+    for 30 days, its id reserved meanwhile). ``pulumi up`` would create
+    most of the stack and then fail with 409 on either, so a new stack
+    checks for both first. Only for a new stack: an existing one owns them.
+    """
+    ring = key_ring_id(target.prefix)
+    pool_id = attestation_pool_id(target.prefix)
+    found: list[str] = []
+    ring_what = f"KMS key ring {ring} in {target.region}"
+    if (
+        _lookup_reserved(
+            lambda: api.get_key_ring(target.project, target.region, ring),
+            what=ring_what,
+            permission=KEY_RING_GET_PERMISSION,
+        )
+        is not None
+    ):
+        found.append(f"{ring_what} exists (key rings can never be deleted)")
+    pool_what = f"workload identity pool {pool_id}"
+    pool = _lookup_reserved(
+        lambda: api.get_workload_identity_pool(target.project, pool_id),
+        what=pool_what,
+        permission=POOL_GET_PERMISSION,
+    )
+    if pool is not None:
+        if pool.get("state") == POOL_DELETED:
+            found.append(
+                f"{pool_what} is soft-deleted (its id stays reserved for 30 "
+                "days after deletion)"
+            )
+        else:
+            found.append(f"{pool_what} exists")
+    if found:
+        raise PreflightError(
+            f"prefix {target.prefix!r} was used by an earlier deployment in "
+            f"{target.project}, and a new stack cannot reuse its names: "
+            f"{'; '.join(found)}. Pass another --prefix for this deployment"
         )
 
 

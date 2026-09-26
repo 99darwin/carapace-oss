@@ -68,6 +68,8 @@ class StackHandle(Protocol):
 
     def outputs(self) -> dict[str, Any]: ...
 
+    def has_resources(self) -> bool: ...
+
 
 @dataclass(frozen=True)
 class Completed:
@@ -209,14 +211,7 @@ class PulumiStack:
         return result.output
 
     def _json(self, *args: str) -> dict[str, Any]:
-        output = self._pulumi(*args, "--json")
-        try:
-            value = json.loads(output or "{}")
-        except json.JSONDecodeError:
-            raise PulumiError(f"pulumi {args[0]} did not print JSON") from None
-        if not isinstance(value, dict):
-            raise PulumiError(f"pulumi {args[0]} printed {type(value).__name__}")
-        return value
+        return _decode(self._pulumi(*args, "--json"), command=args[0])
 
     def select(self) -> None:
         """Select the stack, creating it with the KMS secrets provider."""
@@ -288,6 +283,32 @@ class PulumiStack:
             for name, value in self._json("stack", "output").items()
             if value != MASKED_OUTPUT
         }
+
+    def has_resources(self) -> bool:
+        """Whether the state in the backend tracks any resource.
+
+        Outputs are exported only by an ``up`` that finished, but every
+        resource an ``up`` created is checkpointed even when it fails, so
+        this tells a stack that owns half a deployment from one that owns
+        nothing. ``stack export`` prints the deployment to stdout (it has
+        no ``--json``) with secrets as ciphertext; ``--show-secrets`` is
+        never passed.
+        """
+        export = _decode(self._pulumi("stack", "export"), command="stack export")
+        deployment = export.get("deployment")
+        if not isinstance(deployment, dict):
+            return False
+        return bool(deployment.get("resources"))
+
+
+def _decode(output: str, *, command: str) -> dict[str, Any]:
+    try:
+        value = json.loads(output or "{}")
+    except json.JSONDecodeError:
+        raise PulumiError(f"pulumi {command} did not print JSON") from None
+    if not isinstance(value, dict):
+        raise PulumiError(f"pulumi {command} printed {type(value).__name__}")
+    return value
 
 
 def open_stack(

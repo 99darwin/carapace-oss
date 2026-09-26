@@ -35,6 +35,7 @@ COMPUTE = "https://compute.googleapis.com/compute/v1"
 STORAGE = "https://storage.googleapis.com/storage/v1"
 SERVICE_USAGE = "https://serviceusage.googleapis.com/v1"
 RUN = "https://run.googleapis.com/v2"
+IAM = "https://iam.googleapis.com/v1"
 
 
 class GcpError(CarapaceError):
@@ -235,3 +236,22 @@ class GcpApi:
             f"{COMPUTE}/projects/{project_id}/zones/{zone}/machineTypes/{machine_type}"
         )
         return self.get_or_none(url) is not None
+
+    # -- names a new stack must not reuse ----------------------------------------
+
+    def get_key_ring(
+        self, project_id: str, location: str, key_ring_id: str
+    ) -> dict[str, Any] | None:
+        """The key ring, or None. Key rings can never be deleted."""
+        return self.get_or_none(
+            f"{KMS}/projects/{project_id}/locations/{location}/keyRings/{key_ring_id}"
+        )
+
+    def get_workload_identity_pool(
+        self, project_id: str, pool_id: str
+    ) -> dict[str, Any] | None:
+        """The pool in any state, DELETED included, or None."""
+        return self.get_or_none(
+            f"{IAM}/projects/{project_id}/locations/global"
+            f"/workloadIdentityPools/{pool_id}"
+        )

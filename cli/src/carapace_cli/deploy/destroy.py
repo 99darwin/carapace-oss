@@ -55,10 +55,11 @@ report it are already gone. Treat every stored secret, and every database
 backup, as readable by a project Owner until then. If the secrets matter,
 rotate them at their providers first, or delete the whole project.
 
-Kept: the state bucket gs://{bucket} and its KMS key, the key ring names,
-workload identity pools (soft-deleted for 30 days, so a redeploy within
-that window needs another prefix), and images, backups and logs under
-their own retention rules."""
+Kept: the state bucket gs://{bucket} and its KMS key, the key ring
+{prefix}-keyring (key rings can never be deleted), the workload identity
+pool {prefix}-attest (soft-deleted, its id reserved for 30 days), and
+images, backups and logs under their own retention rules. A new deploy
+refuses the prefix {prefix!r} while either exists; use another --prefix."""
 
 
 def destroy_warning(project: str, prefix: str) -> str:

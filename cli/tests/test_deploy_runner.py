@@ -48,6 +48,8 @@ class FakePulumi:
 
     config: dict[str, dict[str, object]] = field(default_factory=dict)
     outputs: dict[str, object] = field(default_factory=dict)
+    # What `pulumi stack export` prints: the deployment, secrets encrypted.
+    export: dict[str, object] = field(default_factory=lambda: {"version": 3})
     version: str = "v3.217.1"
     fail: str | None = None
     # Extra lines `pulumi destroy` streams after its progress.
@@ -79,6 +81,8 @@ class FakePulumi:
             return Completed(0, json.dumps(self.config))
         if command == "stack output":
             return Completed(0, json.dumps(self.outputs))
+        if command == "stack export":
+            return Completed(0, json.dumps(self.export))
         return Completed(0, "")
 
     def argv(self, command: str) -> list[str]:
@@ -126,9 +130,35 @@ def test_no_command_ever_shows_secrets() -> None:
     handle.config()
     handle.set_config({"carapace:prefix": PREFIX})
     assert handle.up() == {"server_url": "https://s"}
+    handle.has_resources()
     handle.destroy()
     assert fake.calls
     assert not any("--show-secrets" in call.argv for call in fake.calls)
+
+
+def test_has_resources_reads_the_state_export() -> None:
+    root = {"urn": f"urn:pulumi:{PREFIX}::carapace::pulumi:pulumi:Stack::s"}
+    fake = FakePulumi(export={"version": 3, "deployment": {"resources": [root]}})
+    assert stack(fake).has_resources()
+    export = fake.argv("stack export")
+    assert export[export.index("--stack") + 1] == PREFIX
+    assert "--show-secrets" not in export and "--json" not in export
+    # Never deployed, destroyed, or exported without a deployment: nothing.
+    for empty in (
+        {"version": 3},
+        {"version": 3, "deployment": None},
+        {"version": 3, "deployment": {"manifest": {}, "resources": []}},
+    ):
+        assert not stack(FakePulumi(export=empty)).has_resources()
+
+
+def test_has_resources_fails_on_garbled_export() -> None:
+    class Garbled(FakePulumi):
+        def __call__(self, argv, **kwargs) -> Completed:  # type: ignore[override]
+            return Completed(0, "[]")
+
+    with pytest.raises(PulumiError, match="stack export printed list"):
+        stack(Garbled()).has_resources()
 
 
 def test_up_and_destroy_stream_and_skip_prompts() -> None:
