@@ -22,6 +22,7 @@ ADC_LOGIN_HINT = "run: gcloud auth application-default login"
 REQUEST_TIMEOUT_SECONDS = 60.0
 MAX_MESSAGE_CHARS = 300
 MAX_PAGES = 20
+HTTP_FORBIDDEN = 403
 HTTP_NOT_FOUND = 404
 HTTP_CONFLICT = 409
 SERVICE_DISABLED_REASON = "SERVICE_DISABLED"
@@ -31,6 +32,9 @@ RESOURCE_MANAGER = "https://cloudresourcemanager.googleapis.com/v1"
 BILLING = "https://cloudbilling.googleapis.com/v1"
 KMS = "https://cloudkms.googleapis.com/v1"
 COMPUTE = "https://compute.googleapis.com/compute/v1"
+STORAGE = "https://storage.googleapis.com/storage/v1"
+SERVICE_USAGE = "https://serviceusage.googleapis.com/v1"
+RUN = "https://run.googleapis.com/v2"
 
 
 class GcpError(CarapaceError):
