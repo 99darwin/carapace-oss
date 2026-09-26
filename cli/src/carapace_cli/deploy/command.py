@@ -22,7 +22,14 @@ from typing import Protocol, TextIO
 import httpx
 
 from carapace_cli.deploy import pulumi_runner
-from carapace_cli.deploy.destroy import DestroyError, destroy_warning, run_destroy
+from carapace_cli.deploy.destroy import (
+    DestroyError,
+    deployment_urls,
+    destroy_warning,
+    forget_deployment,
+    remove_stack,
+    run_destroy,
+)
 from carapace_cli.deploy.first_run import (
     AccountFlags,
     FirstRunServices,
@@ -80,7 +87,7 @@ from carapace_cli.deploy.state import (
     ensure_state_backend,
     state_backend_for,
 )
-from carapace_cli.deploy.summary import render_summary
+from carapace_cli.deploy.summary import render_summary, state_bucket_name
 
 EXIT_DECLINED = 1
 
@@ -407,11 +414,18 @@ def cmd_destroy(args: argparse.Namespace, ctx: CommandContext) -> int:
             return EXIT_DECLINED
         stack = services.stack(target, state_backend_for(target), ctx)
         check_stack_config(stack.config(), target, is_existing=True)
+        # Read before the destroy: afterwards the stack has no outputs.
+        urls = deployment_urls(stack.outputs())
         run_destroy(stack, say=ctx.say)
+        # The record goes first: while it exists, `carapace destroy` can be
+        # run again to resume, and once it is gone a deploy starts fresh.
         delete_record(api, project, prefix)
+        remove_stack(stack, prefix=prefix, say=ctx.say)
+    for line in forget_deployment(ctx.config_dir, urls):
+        ctx.say(line)
     ctx.say(
-        f"Destroyed. The session and enclave pin in {ctx.config_dir} belong to "
-        "the deleted deployment; use another --config-dir for a new one."
+        f"Destroyed. Kept the state bucket gs://{state_bucket_name(project)} and "
+        "its KMS key, so the project can be deployed again."
     )
     return 0
 

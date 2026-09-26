@@ -256,8 +256,10 @@ class FakeStack:
     initial: dict[str, str] = field(default_factory=dict)
     state: dict[str, str] | None = None
     fail_on_up: int | None = None
+    fail_on_remove: bool = False
     ups: list[dict[str, str]] = field(default_factory=list)
     destroyed: bool = False
+    removed: bool = False
 
     def __post_init__(self) -> None:
         self._config = dict(self.initial)
@@ -279,6 +281,14 @@ class FakeStack:
 
     def destroy(self) -> None:
         self.destroyed = True
+        self._state = {}
+
+    def remove(self) -> None:
+        """``pulumi stack rm``: the local config file goes with the stack."""
+        if self.fail_on_remove:
+            raise CarapaceError("pulumi stack rm failed: simulated")
+        self.removed = True
+        self._config = {}
 
     def outputs(self) -> dict[str, Any]:
         if not self._state:

@@ -50,6 +50,8 @@ class FakePulumi:
     outputs: dict[str, object] = field(default_factory=dict)
     version: str = "v3.217.1"
     fail: str | None = None
+    # Extra lines `pulumi destroy` streams after its progress.
+    destroy_output: list[str] = field(default_factory=list)
     calls: list[Call] = field(default_factory=list)
 
     def __call__(
@@ -68,6 +70,9 @@ class FakePulumi:
             return Completed(1, "lots of output\n  error: quota exceeded\n\n")
         if on_output:
             on_output("progress\n")
+            if command == "destroy":
+                for line in self.destroy_output:
+                    on_output(line)
         if command == "version":
             return Completed(0, f"{self.version}\n")
         if command == "config" and "--json" in argv:
@@ -136,6 +141,51 @@ def test_up_and_destroy_stream_and_skip_prompts() -> None:
         argv = fake.argv(command)
         assert "--yes" in argv and "--skip-preview" in argv
     assert lines == ["progress\n", "progress\n"]
+
+
+def test_destroy_hides_the_stack_rm_hint_only() -> None:
+    lines: list[str] = []
+    fake = FakePulumi(
+        destroy_output=[
+            "Resources:\n",
+            "    - 42 deleted\n",
+            "The resources in the stack have been deleted, but the history and "
+            "configuration associated with the stack are still maintained. \n",
+            "If you want to remove the stack completely, run "
+            f"`pulumi stack rm {PREFIX}`.\n",
+            "warning: something real\n",
+        ]
+    )
+    stack(fake, lines).destroy()
+    assert lines == [
+        "progress\n",
+        "Resources:\n",
+        "    - 42 deleted\n",
+        "warning: something real\n",
+    ]
+
+
+def test_remove_runs_stack_rm_without_force_or_preserved_config() -> None:
+    fake = FakePulumi()
+    stack(fake).remove()
+    (call,) = fake.calls
+    assert call.argv == [
+        "/bin/pulumi",
+        "stack",
+        "rm",
+        "--yes",
+        PREFIX,
+        "--non-interactive",
+    ]
+    assert call.cwd == INFRA
+    assert call.env["PULUMI_BACKEND_URL"] == f"gs://{PROJECT}-carapace-state"
+    assert not call.streamed
+
+
+def test_failed_stack_rm_is_an_error_that_names_it() -> None:
+    fake = FakePulumi(fail="stack rm")
+    with pytest.raises(PulumiError, match="pulumi stack rm failed: error: quota"):
+        stack(fake).remove()
 
 
 def test_config_reads_plain_values_and_skips_secrets() -> None:

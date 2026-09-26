@@ -225,9 +225,24 @@ only the enclave).
   `up` (skipped when a failed destroy already did), runs `pulumi destroy`
   and deletes the record. Each step is idempotent, so a failed destroy is
   resumed by running it again.
-- The state bucket, the state key, the key ring names and the CLI config
-  directory are kept. The CLI says the session and pin in the config
-  directory belong to the deleted deployment rather than deleting them.
+- Then it runs `pulumi stack rm --yes <prefix>` (no `--force`, no
+  `--preserve-config`), so the empty stack and `Pulumi.<prefix>.yaml` go
+  and a later deploy with the prefix starts fresh; Pulumi's hint to run
+  that command is not shown. A failed `stack rm` is reported but the
+  destroy still succeeds; the stack's config is then reset (protection on,
+  `deploy_workloads` false, `allowed_digests` empty) so a new deploy
+  bootstraps and does not trust the dead deployment's enclave digest.
+- Every deploy sets `protect_kms_key` and `db_deletion_protection` on
+  again with the rest of the config it owns, so a config file left behind
+  by an interrupted destroy (or a failed reset) cannot bring a deployment
+  up unprotected.
+- The session and enclave pin in the config directory are removed if they
+  name the destroyed deployment's server and enclave URLs (read from the
+  stack outputs before the destroy). If either names another deployment,
+  or is a symlink or other non-regular file, the directory is left
+  untouched. The owner key is always kept: it is the user's signing
+  identity and may be registered elsewhere.
+- The state bucket, the state key and the key ring names are kept.
 
 ### First run
 
