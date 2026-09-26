@@ -147,8 +147,16 @@ only the enclave).
   repository was considered. It would add a second repository, an extra
   IAM grant for the enclave service account, and a pull-time dependency on
   ghcr.io. It would also change the image path layout the stack assumes.
-- `--build` runs `docker buildx` locally (docker is needed only then) and
-  reads the pushed `linux/amd64` digest back from the registry.
+- Credentials stay on their host. ghcr.io gets an anonymous token. The
+  ADC token goes only to the Artifact Registry host's own token realm, as
+  basic auth for `oauth2accesstoken`. A realm on another host is refused,
+  and a blob redirect (ghcr.io serves blobs from a CDN) is followed
+  without the Authorization header.
+- `--build` runs `docker buildx` locally (docker is needed only then) with
+  the release workflow's flags into an OCI layout tarball, takes the
+  `linux/amd64` image manifest from it (skipping attestation manifests,
+  as `scripts/oci_image_digest.py` does) and uploads it with the same
+  copier, so docker never needs registry credentials.
 
 ### Resume and updates
 
@@ -180,8 +188,11 @@ They need a real project:
   credentials.
 - Resource Manager, Cloud Billing and `testIamPermissions` responses for a
   fresh project, including which of them work before any API is enabled.
-- The Artifact Registry token flow and blob upload in the Python copier,
-  and that the pushed digest matches.
+- The Artifact Registry token flow (realm on the registry host, basic
+  auth with `oauth2accesstoken`), the monolithic blob upload streamed with
+  an explicit `Content-Length`, push by digest, and the
+  `Docker-Content-Digest` it returns. Also ghcr.io's anonymous token
+  endpoint and its blob redirect.
 - The sigstore bundle format that cosign v3 `sign-blob --bundle` emits.
 - The time it takes the HSM key version to reach `ENABLED`, and for the
   enclave to boot and register.
