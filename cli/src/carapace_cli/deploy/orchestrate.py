@@ -149,10 +149,7 @@ def bootstrap(
             "deployed, then run the same command again"
         )
     if workloads_live(current):
-        say(
-            f"infra/pulumi/Pulumi.{target.prefix}.yaml says workloads run, but "
-            "the stack's state has none; ignoring its stale digests."
-        )
+        say(_not_live_reason(target, outputs))
         stack.set_config(FRESH_STACK)
         current = stack.config()
     allowed = _resumable_digests(current, outputs) or [
@@ -167,6 +164,16 @@ def bootstrap(
         }
     )
     return stack.up()
+
+
+def _not_live_reason(target: Target, outputs: Mapping[str, Any]) -> str:
+    """Why a config that says the workloads run is bootstrapped anyway."""
+    if outputs:
+        return "The last deploy stopped before the workloads ran; bootstrapping again."
+    return (
+        f"infra/pulumi/Pulumi.{target.prefix}.yaml says workloads run, but "
+        "the stack's state is empty; ignoring its stale digests."
+    )
 
 
 def _resumable_digests(config: dict[str, str], outputs: Mapping[str, Any]) -> list[str]:

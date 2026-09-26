@@ -53,6 +53,7 @@ from carapace_cli.deploy.images import (
 )
 from carapace_cli.deploy.interview import Interview, InvalidInputError
 from carapace_cli.deploy.orchestrate import (
+    FRESH_STACK,
     Images,
     ImageSource,
     PrebuiltImages,
@@ -297,6 +298,32 @@ def choose_images(
     return source, "built from this checkout with docker buildx (after confirming)"
 
 
+def start_fresh_stack(
+    stack: StackHandle,
+    config: dict[str, str],
+    target: Target,
+    *,
+    say: Callable[[str], None],
+) -> None:
+    """A record with no state and no local config: start the stack fresh.
+
+    A run that failed before its first ``up`` finished leaves the record
+    but no outputs. Without outputs no workloads run, so a missing local
+    config cannot let a bootstrap delete anything. The stack starts from
+    the fresh values, never a digest from an older config. A config that
+    is present is left to the bootstrap, which checks it against the
+    state.
+    """
+    if config.get("carapace:prefix") == target.prefix:
+        return
+    say(
+        f"The record for {target.prefix!r} has no deployed stack behind it "
+        f"and infra/pulumi/Pulumi.{target.prefix}.yaml is missing; starting "
+        "a fresh stack."
+    )
+    stack.set_config(FRESH_STACK)
+
+
 def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
     interview = make_interview(args, ctx)
     services = default_services()
@@ -335,10 +362,13 @@ def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
         )
         backend = ensure_state_backend(api, target, say=ctx.say, clock=services.clock)
         stack = services.stack(target, backend, ctx)
-        # The record can be unreadable (or gone) while the stack is live;
-        # the backend's state, not the record, decides what exists.
-        is_existing = report.existing is not None or bool(stack.outputs())
-        check_stack_config(stack.config(), target, is_existing=is_existing)
+        # The record can be unreadable, gone, or left behind by a failed
+        # run; the backend's state, not the record, decides what exists.
+        has_state = bool(stack.outputs())
+        config = stack.config()
+        check_stack_config(config, target, is_existing=has_state)
+        if report.existing is not None and not has_state:
+            start_fresh_stack(stack, config, target, say=ctx.say)
         # The record is written once the stack has its config, so a re-run
         # that finds the record also finds the config.
         stack.set_config(base_config(target))

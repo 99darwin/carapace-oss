@@ -221,6 +221,40 @@ def test_live_stack_without_local_config_is_never_bootstrapped(
     assert stack.config() == {}
 
 
+def test_leftover_record_without_state_or_config_starts_fresh(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    # An earlier deploy crashed after writing the record; its state has no
+    # outputs and the user moved the stale config aside. Nothing is live,
+    # so the deploy bootstraps a fresh stack instead of refusing.
+    google, stack = recorded(deployable_project()), FakeStack(initial={}, state={})
+    code, output = run_cli(monkeypatch, tmp_path, google, stack, *DEPLOY, *DEPLOY_FLAGS)
+    assert code == 0, output
+    assert "not on this machine" not in output
+    assert "starting a fresh stack" in output
+    bootstrap, *workloads = stack.ups
+    assert bootstrap["carapace:deploy_workloads"] == "false"
+    assert bootstrap["carapace:enclave_image_digest"] == ""
+    assert all(bootstrap[key] == "true" for key in UNPROTECTED)
+    assert workloads
+    assert all(
+        json.loads(up["carapace:allowed_digests"]) == [NEW_DIGEST] for up in stack.ups
+    )
+
+
+def test_leftover_record_with_live_state_and_no_config_is_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    google = recorded(deployable_project())
+    stack = FakeStack(initial={}, state=live_stack().config())
+    code, output = run_cli(monkeypatch, tmp_path, google, stack, *DEPLOY, *DEPLOY_FLAGS)
+    assert code != 0
+    assert "not on this machine" in output
+    assert "starting a fresh stack" not in output
+    assert not stack.ups
+    assert stack.config() == {}
+
+
 # -- re-runs -------------------------------------------------------------------
 
 

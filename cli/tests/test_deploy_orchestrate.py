@@ -161,7 +161,7 @@ def test_stale_config_with_empty_state_bootstraps_without_old_digest() -> None:
     stack = FakeStack(initial=STALE_CONFIG, state={})
     said: list[str] = []
     outputs = _deploy(deployable_project(), stack, said.append)
-    assert any("the stack's state has none" in line for line in said)
+    assert any("ignoring its stale digests" in line for line in said)
     assert not any("skipping the bootstrap" in line for line in said)
     bootstrap, *workloads = stack.ups
     assert bootstrap["carapace:deploy_workloads"] == "false"
@@ -195,6 +195,27 @@ def test_stale_config_with_unknown_digest_bootstraps_with_placeholder() -> None:
     allowed = [json.loads(up["carapace:allowed_digests"]) for up in stack.ups]
     assert allowed[0] == [PLACEHOLDER_DIGEST]
     assert all(OLD_DIGEST not in digests for digests in allowed)
+
+
+def test_rerun_after_failed_first_workloads_up_bootstraps_again() -> None:
+    # The bootstrap finished, then the first workloads up failed: the config
+    # says live, the state has bootstrap outputs but no enclave_url.
+    stack = FakeStack(fail_on_up=2)
+    google = deployable_project()
+    with pytest.raises(Exception, match="simulated"):
+        _deploy(google, stack)
+    said: list[str] = []
+    _deploy(google, stack, said.append)
+    assert "The last deploy stopped before the workloads ran; " in " ".join(said)
+    assert not any("stale digests" in line for line in said)
+    assert [up["carapace:deploy_workloads"] for up in stack.ups] == [
+        "false",
+        "false",
+        "true",
+    ]
+    assert all(
+        json.loads(up["carapace:allowed_digests"]) == [NEW_DIGEST] for up in stack.ups
+    )
 
 
 def test_bootstrap_ignores_allowed_digests_when_state_is_empty() -> None:
