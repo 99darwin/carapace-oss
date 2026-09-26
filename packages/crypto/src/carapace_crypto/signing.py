@@ -108,7 +108,7 @@ class KeyPair:
         """Verify a signature against a public key.
 
         This is a static method so verification can happen without
-        the private key (e.g., in the orchestrator or dashboard).
+        the private key (e.g., by a client checking a receipt).
 
         Args:
             public_key: 32-byte Ed25519 public key.

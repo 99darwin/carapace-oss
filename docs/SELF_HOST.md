@@ -6,10 +6,10 @@ you are the operator and the GCP project owner, so the server and project
 risks in [THREAT_MODEL.md](THREAT_MODEL.md) are risks from yourself (and
 anyone you give access to the project).
 
-> **Status: pre-alpha, not yet deployed end to end.** The Pulumi program is
-> tested with mocks only and has not yet been run against a real project.
-> What is unverified is listed in [Known gaps](#known-gaps). Do not put
-> real secrets into a self-hosted deployment yet.
+> **Status: pre-alpha.** The stack has run end to end once against a real
+> project, through `carapace deploy --build`. What is unverified is listed
+> in [Known gaps](#known-gaps). Do not put real secrets into a self-hosted
+> deployment yet.
 
 ## What gets created
 

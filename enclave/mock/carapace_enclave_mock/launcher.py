@@ -24,8 +24,8 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 MOCK_ISSUER = "mock://local"
 MOCK_KEY_ID = "mock-key-1"
 MOCK_IMAGE_DIGEST = "sha256:" + "00" * 32
-MOCK_PROJECT_ID = "carapace-dev"
-MOCK_SERVICE_ACCOUNT = "enclave@carapace-dev.iam.gserviceaccount.com"
+MOCK_PROJECT_ID = "example-project"
+MOCK_SERVICE_ACCOUNT = "enclave@example-project.iam.gserviceaccount.com"
 TOKEN_LIFETIME_SECONDS = 3600
 MAX_NONCES = 6
 MIN_NONCE_LENGTH = 10

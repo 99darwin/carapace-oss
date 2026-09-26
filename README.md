@@ -34,6 +34,34 @@ ENCLAVE     ──attestation-gated asymmetricDecrypt──▶ Cloud KMS (HSM)
 - **Auditable.** Every authorized use produces a receipt signed by a key
   bound to the attestation. `carapace audit verify` checks them.
 
+## Quick start
+
+Deploy your own into a new, dedicated GCP project with billing enabled.
+You need `gcloud` (run `gcloud auth application-default login`), the Pulumi
+CLI 3.x, Python 3.12, [`uv`](https://docs.astral.sh/uv/) and, for
+`--build`, Docker with buildx. The full prerequisites, costs and teardown
+are in [docs/SELF_HOST.md](docs/SELF_HOST.md).
+
+```bash
+git clone https://github.com/99darwin/carapace-oss.git
+cd carapace-oss
+uv sync --all-packages --locked
+uv run carapace deploy --build
+```
+
+`carapace deploy` asks for the project, region, alert email, first account
+and owner-key passphrase, prints what it will create and what it costs, and
+waits for confirmation. It ends by running `carapace verify` against the new
+enclave, trusting only the digest it just deployed, and saving the pin.
+`--build` builds both images from your checkout, so what the enclave attests
+is your own build rather than a signed, reproducibly built release; without
+it, the CLI deploys the latest signed release after verifying its signature.
+Only the `--build` path has run end to end so far. Back up the owner key it
+writes (`owner-key.json` in the [CLI config directory](cli/README.md#local-state)):
+without it you cannot authorize new API keys, and recovery means re-entering
+and re-sealing every secret. `uv run carapace destroy` removes the
+deployment.
+
 ## Documentation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): the design.
@@ -54,6 +82,7 @@ ENCLAVE     ──attestation-gated asymmetricDecrypt──▶ Cloud KMS (HSM)
 | `enclave/` | Credential-injecting proxy that runs in the TEE |
 | `server/` | Untrusted control plane: auth, ciphertext store, API keys, receipts |
 | `cli/` | `carapace` CLI and Python SDK |
+| `web/` | Web UI, served by the server |
 | `infra/pulumi` | One-command self-host on GCP |
 
 ## Development
