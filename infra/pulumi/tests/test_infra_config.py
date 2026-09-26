@@ -13,7 +13,10 @@ from components.config import (  # noqa: E402
     build_image_reference,
     validate_control_plane_url,
 )
-from components.enclave_vm import build_enclave_metadata  # noqa: E402
+from components.enclave_vm import (  # noqa: E402
+    ALLOWED_ENV_OVERRIDES,
+    build_enclave_metadata,
+)
 from components.kms import (  # noqa: E402
     KEY_ALGORITHM,
     KmsPublicKeyError,
@@ -28,6 +31,10 @@ from components.wif import (  # noqa: E402
 from harness import DIGEST_A, DIGEST_B, make_config  # noqa: E402
 
 REPO = "us-docker.pkg.dev/example-project/carapace/enclave"
+KMS_KEY_VERSION = (
+    "projects/example-project/locations/us-central1/keyRings/k"
+    "/cryptoKeys/c/cryptoKeyVersions/1"
+)
 
 
 def test_image_reference_is_pinned_by_digest() -> None:
@@ -221,6 +228,7 @@ def test_attribute_condition_refuses_public_audiences(audience: str) -> None:
             allowed_digests=["sha256:" + "a" * 64],
             audience=audience,
             control_plane_url="https://api.example.com",
+            kms_key_name=KMS_KEY_VERSION,
         )
 
 
@@ -240,6 +248,7 @@ def test_attribute_condition_refuses_the_server_audience() -> None:
             allowed_digests=["sha256:" + "a" * 64],
             audience="https://cptest-server-42.us-central1.run.app",
             control_plane_url="https://cptest-server-42.us-central1.run.app",
+            kms_key_name=KMS_KEY_VERSION,
         )
 
 
@@ -251,7 +260,36 @@ def test_attribute_condition_requires_a_control_plane_url() -> None:
             allowed_digests=["sha256:" + "a" * 64],
             audience="carapace-sts-test",
             control_plane_url="",
+            kms_key_name=KMS_KEY_VERSION,
         )
+
+
+def test_attribute_condition_requires_a_kms_key() -> None:
+    with pytest.raises(ValueError, match="kms_key_name"):
+        build_attribute_condition(
+            project_id="example-project",
+            enclave_sa_email="e@example-project.iam.gserviceaccount.com",
+            allowed_digests=["sha256:" + "a" * 64],
+            audience="carapace-sts-test",
+            control_plane_url="https://api.example.com",
+            kms_key_name="",
+        )
+
+
+def test_attribute_condition_pins_every_launch_override() -> None:
+    condition = build_attribute_condition(
+        project_id="example-project",
+        enclave_sa_email="e@example-project.iam.gserviceaccount.com",
+        allowed_digests=["sha256:" + "a" * 64],
+        audience="carapace-sts-test",
+        control_plane_url="https://api.example.com",
+        kms_key_name=KMS_KEY_VERSION,
+    )
+    env = "assertion.submods.container.env"
+    for name in sorted(ALLOWED_ENV_OVERRIDES):
+        assert f"{env}.{name} == '" in condition
+    assert f"{env}.KMS_KEY_NAME == '{KMS_KEY_VERSION}'" in condition
+    assert f"{env}.WIF_AUDIENCE == 'carapace-sts-test'" in condition
 
 
 def test_provider_audience_is_the_provider_resource_name() -> None:

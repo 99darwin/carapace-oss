@@ -214,16 +214,16 @@ minutes). Then, from your own machine:
 carapace init
 carapace signup --server "$(pulumi stack output server_url)" --email you@example.com
 carapace verify --enclave "$(pulumi stack output enclave_url)" \
-  --allow-digest sha256:<enclave digest>
+  --allow-digest sha256:<enclave digest> \
+  --project-id "$(pulumi config get gcp:project)" \
+  --service-account "$(pulumi stack output enclave_service_account)" \
+  --kms-key "$(pulumi stack output kms_key_version_name)"
 ```
 
-Check the printed values:
-
-- `image` is the digest you built and allowed.
-- `kms_key` equals `pulumi stack output kms_key_version_name`. The CLI does
-  **not** check the project, service account or KMS key name itself (see
-  [VERIFY.md](VERIFY.md#what-it-does-not-check)), so this comparison is
-  yours to make.
+`verify` refuses an enclave in another project, running as another service
+account, reporting to another server or using another KMS key (see
+[VERIFY.md](VERIFY.md#what-it-checks)). Check that `image` is the digest you
+built and allowed.
 
 Then seal a test secret, create a key, make a request and verify the
 receipt, as in the [CLI quick start](../cli/README.md#quick-start). If the

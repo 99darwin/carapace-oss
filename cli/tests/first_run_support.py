@@ -109,6 +109,10 @@ class FakeEnclave:
             insecure_mock=False,
             mock_key_pem=None,
             verified_at=0,
+            project_id=str(policy.project_id),
+            service_account=str(policy.service_account),
+            control_plane_url=str(policy.control_plane_url),
+            kms_key_name=str(policy.kms_key_name),
         )
 
 

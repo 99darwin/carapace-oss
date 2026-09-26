@@ -102,6 +102,21 @@ def test_first_run_creates_key_account_session_and_pin(tmp_path: Path) -> None:
     assert enclave.policies[0].allowed_digests == frozenset({NEW_DIGEST})
 
 
+def test_first_run_pins_the_deployment_identity(tmp_path: Path) -> None:
+    enclave = FakeEnclave()
+    run(tmp_path, fake_first_run(enclave=enclave))
+    policy = enclave.policies[0]
+    stack = outputs()
+    assert policy.project_id == PROJECT
+    assert policy.service_account == stack["enclave_service_account"]
+    assert policy.control_plane_url == SERVER_URL
+    # The enclave's KMS_KEY_NAME is the key version, not the crypto key.
+    assert policy.kms_key_name == KEY_VERSION
+    pin = read_private_json(pin_path(tmp_path))
+    assert pin["project_id"] == PROJECT
+    assert pin["kms_key_name"] == KEY_VERSION
+
+
 def test_rerun_reuses_the_session_and_asks_nothing(tmp_path: Path) -> None:
     server = FakeControlPlane()
     services = fake_first_run(server)

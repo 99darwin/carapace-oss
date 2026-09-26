@@ -55,7 +55,14 @@ async def main(args: argparse.Namespace) -> None:
         wif_audience=DEV_WIF_AUDIENCE,
     )
     config.validate(require_https=False)
-    launcher = MockLauncher(signing_key=_load_rsa(args.launcher_key))
+    launcher = MockLauncher(
+        signing_key=_load_rsa(args.launcher_key),
+        env={
+            "CONTROL_PLANE_URL": config.control_plane_url,
+            "KMS_KEY_NAME": config.kms_key_name,
+            "WIF_AUDIENCE": config.wif_audience,
+        },
+    )
     decrypter = (
         LocalRsaDecrypter(_load_rsa(args.kms_key))
         if args.kms_key
@@ -64,6 +71,11 @@ async def main(args: argparse.Namespace) -> None:
     print("mock launcher public key (CARAPACE_MOCK_ATTESTATION_PUBLIC_KEY_PEM):")
     print(launcher.public_pem)
     print(f"mock image digest (CARAPACE_ALLOWED_IMAGE_DIGESTS): {MOCK_IMAGE_DIGEST}")
+    print(
+        f"carapace verify: --project-id {launcher.project_id} "
+        f"--service-account {launcher.service_account} "
+        f"--kms-key {config.kms_key_name}"
+    )
     clock = TrustedClock()
     identity = BootIdentity.generate()
     tokens = TokenSource(

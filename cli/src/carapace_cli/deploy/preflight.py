@@ -12,6 +12,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from carapace_cli.attestation import PROJECT_ID_PATTERN
 from carapace_cli.deploy.gcp import GcpApi, GcpError
 from carapace_cli.deploy.interview import Interview, InvalidInputError
 from carapace_cli.errors import CarapaceError
@@ -66,8 +67,6 @@ REQUIRED_PERMISSIONS: list[str] = [
     "monitoring.alertPolicies.create",
 ]
 
-# GCP project ids: 6-30 chars, lowercase letters, digits and hyphens.
-PROJECT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
 # Same rule as infra/pulumi/components/config.py (a test keeps them equal).
 PREFIX_PATTERN = re.compile(r"^[a-z][a-z0-9-]{1,18}[a-z0-9]$")
 # GCP zones: the region plus one letter. The zone goes into a Compute API

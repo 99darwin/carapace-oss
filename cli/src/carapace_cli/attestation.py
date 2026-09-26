@@ -12,6 +12,12 @@ A token is accepted only if all of these hold:
   is ``disabled-since-boot``, ``secboot`` is true and the Confidential Space
   image carries the ``STABLE`` support attribute.
 - ``submods.container.image_digest`` is in the user's allowlist.
+- For each deployment identity value the policy sets, the matching claim is
+  present and equal: ``submods.gce.project_id``, the enclave service account
+  in ``google_service_accounts``, and the container env's
+  ``CONTROL_PLANE_URL`` (compared as normalised URLs) and ``KMS_KEY_NAME``.
+  Without them, any genuine Confidential Space VM running an allowed digest
+  passes, whichever project or deployment it belongs to.
 
 What is *not* checked: any release signature (Sigstore/cosign, Rekor).
 Digests come only from ``--allow-digest``; the user compares them against
@@ -31,6 +37,7 @@ import httpx
 import jwt
 
 from carapace_cli.errors import VerificationError
+from carapace_crypto.kms import is_kms_key_version_name
 
 GOOGLE_ISSUER = "https://confidentialcomputing.googleapis.com"
 GOOGLE_DISCOVERY_URL = f"{GOOGLE_ISSUER}/.well-known/openid-configuration"
@@ -43,6 +50,13 @@ ALLOWED_HWMODELS = frozenset({"GCP_AMD_SEV"})
 REQUIRED_SUPPORT_ATTRIBUTE = "STABLE"
 LEEWAY_SECONDS = 60
 IMAGE_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+# GCP project ids: 6-30 chars, lowercase letters, digits and hyphens.
+PROJECT_ID_PATTERN = re.compile(r"^[a-z][a-z0-9-]{4,28}[a-z0-9]$")
+SERVICE_ACCOUNT_PATTERN = re.compile(r"^[a-z0-9-]{6,30}@[a-z0-9.-]+$")
+# Launch-time env overrides the enclave reads (enclave/.../runtime.py).
+CONTROL_PLANE_URL_ENV = "CONTROL_PLANE_URL"
+KMS_KEY_NAME_ENV = "KMS_KEY_NAME"
+DEFAULT_PORTS = {"https": 443, "http": 80}
 FETCH_TIMEOUT_SECONDS = 15.0
 MAX_FETCH_BYTES = 256 * 1024
 
@@ -67,24 +81,75 @@ def validate_digest(digest: str) -> str:
     return digest
 
 
+def canonical_url(url: str) -> str:
+    """``url`` with a lowercase scheme and host, no default port, no slash.
+
+    Raises:
+        VerificationError: Not a plain http(s) base URL.
+    """
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        raise VerificationError(f"invalid URL {url!r}") from None
+    scheme, host = parts.scheme.lower(), parts.hostname
+    if scheme not in DEFAULT_PORTS or not host:
+        raise VerificationError(f"invalid URL {url!r}")
+    if parts.username or parts.password or parts.query or parts.fragment:
+        raise VerificationError(f"URL must be a plain base URL: {url!r}")
+    netloc = host if port in (None, DEFAULT_PORTS[scheme]) else f"{host}:{port}"
+    return f"{scheme}://{netloc}{parts.path.rstrip('/')}"
+
+
 @dataclass(frozen=True)
 class TrustPolicy:
-    """What the user trusts: image digests and one attestation issuer.
+    """What the user trusts: image digests, one issuer, one deployment.
 
     ``mock_key_pem`` set means insecure mock mode: only ``mock://local``
     tokens signed by that key are accepted. Otherwise only Google's issuer
     is, with keys from ``jwks_fetcher`` (default: Google's live JWKS).
+
+    The deployment identity fields are optional here (a digest-only policy
+    is valid for callers that pin the deployment another way), but each one
+    that is set must match its claim or the token is refused.
+    ``kms_key_name`` is the full ``.../cryptoKeyVersions/N`` name the
+    enclave is launched with as ``KMS_KEY_NAME``.
     """
 
     allowed_digests: frozenset[str]
     mock_key_pem: str | None = None
     jwks_fetcher: JwksFetcher | None = field(default=None, compare=False)
+    project_id: str | None = None
+    service_account: str | None = None
+    control_plane_url: str | None = None
+    kms_key_name: str | None = None
 
     def __post_init__(self) -> None:
         if not self.allowed_digests:
             raise VerificationError("no trusted image digests: pass --allow-digest")
         for digest in self.allowed_digests:
             validate_digest(digest)
+        if self.project_id is not None and not PROJECT_ID_PATTERN.fullmatch(
+            self.project_id
+        ):
+            raise VerificationError(f"{self.project_id!r} is not a GCP project id")
+        if self.service_account is not None and not SERVICE_ACCOUNT_PATTERN.fullmatch(
+            self.service_account
+        ):
+            raise VerificationError(
+                f"{self.service_account!r} is not a service account email"
+            )
+        if self.control_plane_url is not None:
+            object.__setattr__(
+                self, "control_plane_url", canonical_url(self.control_plane_url)
+            )
+        if self.kms_key_name is not None and not is_kms_key_version_name(
+            self.kms_key_name
+        ):
+            raise VerificationError(
+                f"{self.kms_key_name!r} is not a KMS key version name "
+                "(projects/.../cryptoKeys/.../cryptoKeyVersions/N)"
+            )
 
     @property
     def insecure_mock(self) -> bool:
@@ -201,6 +266,7 @@ def _check_claims(claims: dict[str, Any], policy: TrustPolicy) -> AttestedClaims
     digest = container.get("image_digest") if isinstance(container, dict) else None
     if not isinstance(digest, str) or digest not in policy.allowed_digests:
         raise VerificationError(f"image digest {digest!r} is not in the allowlist")
+    _check_identity(claims, submods, container, policy)
     return AttestedClaims(
         issuer=claims["iss"],
         image_digest=digest,
@@ -208,6 +274,51 @@ def _check_claims(claims: dict[str, Any], policy: TrustPolicy) -> AttestedClaims
         iat=int(claims["iat"]),
         exp=int(claims["exp"]),
     )
+
+
+def _check_identity(
+    claims: dict[str, Any],
+    submods: dict[str, Any],
+    container: dict[str, Any],
+    policy: TrustPolicy,
+) -> None:
+    """Refuse a token from another deployment. Unset fields are not checked."""
+    if policy.project_id is not None:
+        gce = submods.get("gce")
+        project = gce.get("project_id") if isinstance(gce, dict) else None
+        _require_equal("GCP project", project, policy.project_id)
+    if policy.service_account is not None:
+        accounts = claims.get("google_service_accounts")
+        if not isinstance(accounts, list) or policy.service_account not in accounts:
+            raise VerificationError(
+                f"the enclave does not run as {policy.service_account!r} "
+                f"(google_service_accounts: {accounts!r})"
+            )
+    env = container.get("env")
+    if policy.control_plane_url is not None:
+        url = env.get(CONTROL_PLANE_URL_ENV) if isinstance(env, dict) else None
+        try:
+            attested = canonical_url(url) if isinstance(url, str) else None
+        except VerificationError:
+            attested = None
+        _require_equal("control plane URL", attested, policy.control_plane_url)
+    if policy.kms_key_name is not None:
+        key = env.get(KMS_KEY_NAME_ENV) if isinstance(env, dict) else None
+        if not is_kms_key_version_name(key):
+            key = None
+        _require_equal("KMS key", key, policy.kms_key_name)
+
+
+def _require_equal(what: str, attested: object, expected: str) -> None:
+    if attested is None:
+        raise VerificationError(
+            f"the attestation token does not state the enclave's {what}; "
+            f"expected {expected!r}"
+        )
+    if attested != expected:
+        raise VerificationError(
+            f"the enclave's {what} is {attested!r}, not {expected!r}"
+        )
 
 
 # -- fetching --------------------------------------------------------------------

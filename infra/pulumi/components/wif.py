@@ -31,8 +31,10 @@ REQUIRED_SWNAME = "CONFIDENTIAL_SPACE"
 REQUIRED_DBGSTAT = "disabled-since-boot"
 REQUIRED_SUPPORT_ATTRIBUTE = "STABLE"
 PROVIDER_ID = "confidential-space"
-# Launch-time env override the condition pins (see enclave_vm.py).
+# Launch-time env overrides the condition pins (see enclave_vm.py).
 CONTROL_PLANE_URL_ENV = "CONTROL_PLANE_URL"
+KMS_KEY_NAME_ENV = "KMS_KEY_NAME"
+WIF_AUDIENCE_ENV = "WIF_AUDIENCE"
 
 # google.subject is limited to 127 bytes; the raw ``sub`` claim (a full GCE
 # instance URL) can exceed that, so use Google's documented compact form.
@@ -68,10 +70,17 @@ def build_attribute_condition(
     allowed_digests: Sequence[str],
     audience: str,
     control_plane_url: str,
+    kms_key_name: str,
 ) -> str:
-    """Return the CEL condition every attestation token must satisfy."""
+    """Return the CEL condition every attestation token must satisfy.
+
+    ``kms_key_name`` is the key version the enclave is launched with as
+    ``KMS_KEY_NAME``.
+    """
     if not control_plane_url:
         raise ValueError("control_plane_url must not be empty")
+    if not kms_key_name:
+        raise ValueError("kms_key_name must not be empty")
     if not allowed_digests:
         raise ValueError("allowed_digests must not be empty")
     if audience in FORBIDDEN_WIF_AUDIENCES:
@@ -96,6 +105,13 @@ def build_attribute_condition(
         # pointing a decrypting enclave at a server of their own.
         f"assertion.submods.container.env.{CONTROL_PLANE_URL_ENV}"
         f" == {_cel_string(control_plane_url)}",
+        # The other two launch-time overrides, so every value the operator
+        # can set is pinned and a token from a VM launched with another key
+        # or STS audience is never exchanged.
+        f"assertion.submods.container.env.{KMS_KEY_NAME_ENV}"
+        f" == {_cel_string(kms_key_name)}",
+        f"assertion.submods.container.env.{WIF_AUDIENCE_ENV}"
+        f" == {_cel_string(audience)}",
     ]
     return " && ".join(clauses)
 
@@ -125,6 +141,7 @@ def create_workload_identity(
     allowed_digests: Sequence[str],
     audience: str | None,
     control_plane_url: pulumi.Input[str],
+    kms_key_name: pulumi.Input[str],
     depends_on: Sequence[pulumi.Resource] = (),
 ) -> WorkloadIdentity:
     """Create the attestation pool and OIDC provider, in code."""
@@ -145,8 +162,10 @@ def create_workload_identity(
             )
         )
     )
+    # The key does not depend on the pool (only its IAM policy does), so
+    # pinning its version here adds no dependency cycle.
     condition = pulumi.Output.all(
-        enclave_sa_email, sts_audience, control_plane_url
+        enclave_sa_email, sts_audience, control_plane_url, kms_key_name
     ).apply(
         lambda args: build_attribute_condition(
             project_id=project_id,
@@ -154,6 +173,7 @@ def create_workload_identity(
             allowed_digests=allowed_digests,
             audience=args[1],
             control_plane_url=args[2],
+            kms_key_name=args[3],
         )
     )
     provider = gcp.iam.WorkloadIdentityPoolProvider(

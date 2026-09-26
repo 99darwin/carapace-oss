@@ -104,12 +104,22 @@ source does; Option A plus reading the diff does.
 ```bash
 carapace login --server https://<server> --email you@example.com
 carapace verify --enclave https://<enclave ip or host>:8443 \
-  --allow-digest sha256:<digest from step 1>
+  --allow-digest sha256:<digest from step 1> \
+  --project-id <gcp project id> \
+  --service-account <enclave service account email> \
+  --kms-key projects/<p>/locations/<r>/keyRings/<ring>/cryptoKeys/<key>/cryptoKeyVersions/<n>
 ```
 
 Pass `--allow-digest` more than once to accept several digests, for example
 during an image rollout. `verify` needs a logged-in session because it also
-fetches the server's KMS public key (check 6 below).
+fetches the server's KMS public key (check 7 below).
+
+The other three flags name the deployment you expect, and are required. For
+a self-hosted stack they are the `gcp:project` config and the
+`enclave_service_account` and `kms_key_version_name` stack outputs.
+`--control-plane-url` defaults to the server you are logged in to (the
+`control_plane_url` output); pass it only if the enclave reports to another
+URL. `carapace deploy` fills in all four from the stack it just deployed.
 
 On success it writes the pin to `enclave.json` in the config directory and
 prints:
@@ -119,6 +129,9 @@ verified https://<enclave>:8443
 boot_id  <hex>
 image    sha256:<digest>
 kms_key  projects/<p>/locations/<r>/keyRings/<ring>/cryptoKeys/<key>/cryptoKeyVersions/<n>
+project  <gcp project id>
+account  <enclave service account email>
+server   https://<server>
 ```
 
 ### What it checks
@@ -136,27 +149,39 @@ kms_key  projects/<p>/locations/<r>/keyRings/<ring>/cryptoKeys/<key>/cryptoKeyVe
    support attribute.
 4. **Image.** The `image_digest` claim is in your `--allow-digest` list. With
    no list, verification fails.
-5. **Boot binding.** `eat_nonce` equals `sha256(TLS SPKI ‖ receipt public
+5. **Deployment.** `submods.gce.project_id` equals `--project-id`;
+   `--service-account` is in `google_service_accounts`; the container env's
+   `CONTROL_PLANE_URL` equals `--control-plane-url` (both normalised: case
+   of scheme and host, default port and trailing slash do not matter); and
+   its `KMS_KEY_NAME` equals `--kms-key`, which the enclave must also report
+   as its key version. A missing claim fails like a different one. Without
+   this, an allowed image running in someone else's project would pass, and
+   secrets you seal would go to that project's KMS key.
+6. **Boot binding.** `eat_nonce` equals `sha256(TLS SPKI ‖ receipt public
    key)`, which binds both per-boot keys to this attested boot.
-6. **KMS key.** The server's `/v1/kms/public-key` must report the same key
+7. **KMS key.** The server's `/v1/kms/public-key` must report the same key
    and version the enclave attested to. Otherwise nothing is pinned.
 
 Afterwards, every call to the enclave (`carapace request`, the Python SDK)
 trusts only the pinned certificate, compares the peer certificate byte for
 byte, and ignores proxy environment variables. `carapace secret add` repeats
-check 6 and seals only to the pinned KMS key.
+check 7 and seals only to the pinned KMS key.
+
+The pin (`enclave.json`, version 2) records the four deployment values.
+Pins written by older CLIs (version 1) do not, and are refused with a
+message to run `carapace verify` again: the CLI cannot tell which deployment
+an old pin was verified against, so it does not guess.
 
 ### What it does not check
 
 - **Release signatures.** See step 1.
-- **Which project, service account, control plane or KMS key.** The CLI
-  does not compare the attested project id, service account,
-  `CONTROL_PLANE_URL` or KMS key name with any expected value. Compare the
-  printed `kms_key` with the `kms_key_version_name` output of the deployment
-  you expect (for a self-hosted stack, `pulumi stack output
-  kms_key_version_name`). An allowed image running in someone else's project
-  would otherwise pass, and secrets you seal would go to that project's KMS
-  key.
+- **`WIF_AUDIENCE`.** The enclave's STS audience is not compared. Its
+  default is derived from the project *number* and the stack prefix, neither
+  of which the CLI is given, and it can be overridden. The WIF condition
+  pins it, so an enclave launched with another audience cannot decrypt with
+  this deployment's key.
+- **That the values you pass are right.** The checks are only as good as
+  the flags. Take them from the stack outputs, not from the server.
 - **Who can decrypt with that KMS key.** The CLI cannot see the key's IAM
   policy. See [THREAT_MODEL.md, R1](THREAT_MODEL.md#r1-a-gcp-project-owner-or-editor-can-decrypt).
 
@@ -165,6 +190,13 @@ check 6 and seals only to the pinned KMS key.
 The enclave generates fresh TLS and receipt keys on every boot, so any
 restart, redeploy or image rollout changes its certificate, and pinned calls
 fail. Run `carapace verify` again, and repeat step 1 if the image changed.
+
+Rotating the KMS key (a new key version) needs a `pulumi up`, because the
+WIF condition pins `KMS_KEY_NAME`, and then a `carapace verify` with the new
+`--kms-key`. After that, receipts from boots that used the old key version
+fail `carapace audit verify` against the new pin. Keep a copy of the old
+`enclave.json` (or a config directory verified with the old key) if you
+need to audit them.
 
 ### Local development
 
@@ -192,7 +224,8 @@ carapace audit verify --file receipts.json
 For each boot that produced one of your receipts:
 
 - The boot's attestation token verifies under the trust policy in your pin
-  (Google issuer, platform claims, image digest in your allowlist), with the
+  (Google issuer, platform claims, image digest in your allowlist, and the
+  pinned project, service account, control plane URL and KMS key), with the
   audience set to the server URL or `carapace-attestation`, and a nonce equal
   to the boot id. Expiry is not checked, because boots are historical.
 - The boot id equals `sha256(TLS SPKI ‖ receipt public key)`, so the receipt
@@ -229,3 +262,6 @@ and exits non-zero on failure.
 - **Allowlist.** Boots are checked against the digests in your current pin.
   After an image rollout, run `carapace verify` with both the old and new
   digests if you want receipts from old boots to verify.
+- **One KMS key version.** Boots are also checked against the pinned KMS
+  key version. After a key rotation, audit old boots with the old pin (see
+  [When to run it again](#when-to-run-it-again)).

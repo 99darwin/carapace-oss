@@ -180,8 +180,16 @@ def cmd_verify(args: argparse.Namespace, ctx: Context) -> int:
         ctx.say(INSECURE_MOCK_BANNER)
     elif args.mock_issuer_key:
         raise CarapaceError("--mock-issuer-key is only valid with --insecure-mock")
-    policy = TrustPolicy(allowed_digests=frozenset(digests), mock_key_pem=mock_key_pem)
     with ctx.server() as server:
+        policy = TrustPolicy(
+            allowed_digests=frozenset(digests),
+            mock_key_pem=mock_key_pem,
+            project_id=args.project_id,
+            service_account=args.service_account,
+            # The deployment's CONTROL_PLANE_URL is the server's public URL.
+            control_plane_url=args.control_plane_url or server.server_url,
+            kms_key_name=args.kms_key,
+        )
         pin = verify_enclave(args.enclave, server, policy)
     save_pin(ctx.config_dir, pin)
     if pin.insecure_mock:
@@ -191,6 +199,9 @@ def cmd_verify(args: argparse.Namespace, ctx: Context) -> int:
     print(f"boot_id  {pin.boot_id}", file=ctx.out)
     print(f"image    {pin.image_digest}", file=ctx.out)
     print(f"kms_key  {pin.kms_key_version}", file=ctx.out)
+    print(f"project  {pin.project_id}", file=ctx.out)
+    print(f"account  {pin.service_account}", file=ctx.out)
+    print(f"server   {pin.control_plane_url}", file=ctx.out)
     return 0
 
 
@@ -430,6 +441,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="INSECURE: trust a local mock attestation key (dev only)",
     )
     verify.add_argument("--mock-issuer-key", help="PEM public key of the mock")
+    verify.add_argument(
+        "--project-id", help="GCP project the enclave must run in (required)"
+    )
+    verify.add_argument(
+        "--service-account",
+        help="service account email the enclave must run as (required)",
+    )
+    verify.add_argument(
+        "--kms-key",
+        help="KMS key version the enclave must use: "
+        "projects/.../cryptoKeys/.../cryptoKeyVersions/N (required)",
+    )
+    verify.add_argument(
+        "--control-plane-url",
+        help="server URL the enclave must report to (default: the logged-in server)",
+    )
     verify.set_defaults(handler=cmd_verify)
 
     secret = sub.add_parser("secret").add_subparsers(
