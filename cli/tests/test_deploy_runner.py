@@ -137,6 +137,7 @@ def test_no_command_ever_shows_secrets() -> None:
     handle.has_resources()
     handle.resources()
     handle.up_targets([DB_URN])
+    handle.unprotect_all()
     handle.destroy()
     assert fake.calls
     assert not any("--show-secrets" in call.argv for call in fake.calls)
@@ -181,13 +182,51 @@ def test_up_targets_passes_each_urn_and_nothing_else() -> None:
     assert "--show-secrets" not in call.argv
 
 
-def test_up_targets_refuses_no_targets_or_a_non_urn() -> None:
+def test_up_targets_refuses_no_targets_a_non_urn_or_a_glob() -> None:
     fake = FakePulumi()
     with pytest.raises(PulumiError, match="at least one target"):
         stack(fake).up_targets([])
     with pytest.raises(PulumiError, match="not a Pulumi URN"):
         stack(fake).up_targets(["--target-dependents"])
+    # A `*` makes --target a glob, which can match, and so create, what
+    # the state lacks.
+    for glob in ("urn:pulumi:*", f"urn:pulumi:{PREFIX}::carapace::gcp:*::*"):
+        with pytest.raises(PulumiError, match="not a Pulumi URN"):
+            stack(fake).up_targets([DB_URN, glob])
     assert not fake.calls, "an untargeted up ran"
+
+
+def test_unprotect_all_edits_the_state_without_the_program() -> None:
+    lines: list[str] = []
+    fake = FakePulumi()
+    stack(fake, lines).unprotect_all()
+    (call,) = fake.calls
+    assert call.argv == [
+        "/bin/pulumi",
+        "state",
+        "unprotect",
+        "--all",
+        "--yes",
+        "--non-interactive",
+        "--stack",
+        PREFIX,
+    ]
+    assert call.cwd == INFRA and not call.streamed and not lines
+    assert call.env["PULUMI_BACKEND_URL"] == f"gs://{PROJECT}-carapace-state"
+
+
+def test_failed_unprotect_is_a_resumable_error_that_names_it() -> None:
+    fake = FakePulumi(fail="state unprotect")
+    with pytest.raises(PulumiError, match="state unprotect failed: .*run the same"):
+        stack(fake).unprotect_all()
+
+
+def test_state_resource_repr_leaves_the_outputs_out() -> None:
+    # Outputs hold ciphertext and plain values alike; neither belongs in a
+    # traceback or an error message that shows the resource.
+    resource = StateResource(DB_URN, "t", True, {"ciphertext": "AAAA", "ip": "1"})
+    assert "AAAA" not in repr(resource) and "ip" not in repr(resource)
+    assert DB_URN in repr(resource)
 
 
 def test_failed_targeted_up_is_a_resumable_error() -> None:

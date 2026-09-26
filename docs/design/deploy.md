@@ -248,10 +248,14 @@ only the enclave).
 - It prints the KMS restore-window warning from SELF_HOST.md ("Teardown")
   and what is kept, then asks for the project id to be typed back.
   `--confirm-project <p>` confirms in scripts; there is no `--yes`.
-- It turns off `protect_kms_key` and `db_deletion_protection` with one
-  `up` (skipped when a failed destroy already did), runs `pulumi destroy`
-  and deletes the record. Each step is idempotent, so a failed destroy is
-  resumed by running it again.
+- It clears `protect` on every resource in the state with
+  `pulumi state unprotect --all` (a state edit; the program does not run,
+  so nothing is created whatever type is protected), turns the Cloud SQL
+  instance's deletion protection fields off with `db_deletion_protection`
+  and an `up` that targets the instance alone (a full `up` on a
+  half-created stack would create what is missing), runs `pulumi destroy`
+  and deletes the record. The state decides which steps are still needed,
+  so a failed destroy is resumed by running it again.
 - Then it runs `pulumi stack rm --yes <prefix>` (no `--force`, no
   `--preserve-config`), so the empty stack and `Pulumi.<prefix>.yaml` go
   and a later deploy with the prefix starts fresh; Pulumi's hint to run
@@ -355,6 +359,7 @@ They need a real project:
 - The 400-then-login path of the first run for an existing account.
 - The `pulumi stack output` behaviour on a fresh stack, and recovery of
   `Pulumi.<prefix>.yaml` from state on a second machine.
-- `carapace destroy` against a real stack: the protection-lifting `up`,
+- `carapace destroy` against a real stack: `pulumi state unprotect --all`,
+  the `up` targeted at the Cloud SQL instance,
   `pulumi destroy` of the HSM key (scheduling its version's destruction)
   and of the Cloud SQL instance, and the order Pulumi deletes in.

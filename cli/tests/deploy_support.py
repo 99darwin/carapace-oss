@@ -324,10 +324,13 @@ class FakeStack:
     resources_in_state: list[StateResource] | None = None
     fail_on_up: int | None = None
     fail_on_up_targets: bool = False
+    fail_on_unprotect: bool = False
     fail_on_remove: bool = False
     ups: list[dict[str, str]] = field(default_factory=list)
     # The URNs of each targeted up, with the config it ran with.
     targeted_ups: list[tuple[list[str], dict[str, str]]] = field(default_factory=list)
+    # How many times `pulumi state unprotect --all` ran.
+    unprotects: int = 0
     destroyed: bool = False
     removed: bool = False
 
@@ -366,13 +369,19 @@ class FakeStack:
         return self.outputs()
 
     def up_targets(self, urns: Sequence[str]) -> None:
-        """Only the targets change; nothing missing from the state is made."""
+        """Only the targets change; nothing missing from the state is made.
+
+        The program declares FULL_STACK_URNS: a target it does not declare
+        would be deleted by the real engine, so the fake refuses it too.
+        """
         if self.fail_on_up_targets:
             self.fail_on_up_targets = False
             raise CarapaceError("pulumi up failed: simulated")
         tracked = {resource.urn for resource in self._resources}
         missing = [target for target in urns if target not in tracked]
         assert not missing, f"a targeted up would create {missing}"
+        undeclared = [target for target in urns if target not in FULL_STACK_URNS]
+        assert not undeclared, f"a targeted up would delete {undeclared}"
         self.targeted_ups.append((list(urns), self.config()))
         declared = {
             resource.urn: resource
@@ -387,6 +396,16 @@ class FakeStack:
             if resource.urn in urns
             else resource
             for resource in self._resources
+        ]
+
+    def unprotect_all(self) -> None:
+        """``pulumi state unprotect --all``: a state edit, no program run."""
+        if self.fail_on_unprotect:
+            self.fail_on_unprotect = False
+            raise CarapaceError("pulumi state unprotect failed: simulated")
+        self.unprotects += 1
+        self._resources = [
+            replace(resource, protect=False) for resource in self._resources
         ]
 
     def resources(self) -> list[StateResource]:

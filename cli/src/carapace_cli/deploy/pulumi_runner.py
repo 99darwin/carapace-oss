@@ -61,13 +61,14 @@ class StateResource:
     """One resource as the backend's state tracks it (``stack export``).
 
     ``outputs`` are as exported: a secret output is ciphertext, never its
-    value.
+    value. They are kept out of the repr so that neither ciphertext nor
+    plain outputs end up in a traceback or an error message.
     """
 
     urn: str
     type: str
     protect: bool
-    outputs: Mapping[str, Any]
+    outputs: Mapping[str, Any] = field(repr=False)
 
 
 class StackHandle(Protocol):
@@ -80,6 +81,8 @@ class StackHandle(Protocol):
     def up(self) -> dict[str, Any]: ...
 
     def up_targets(self, urns: Sequence[str]) -> None: ...
+
+    def unprotect_all(self) -> None: ...
 
     def destroy(self) -> None: ...
 
@@ -275,16 +278,28 @@ class PulumiStack:
         every untargeted resource missing from the state is a "skipped
         create" and is never created, and a target that would need one
         fails the update instead (no ``--target-dependents``). The
-        targets get their new resource options, ``protect`` included.
+        targets get their new inputs and resource options; every other
+        resource keeps its old state. Each target names one resource: a
+        ``*`` would make it a glob, which can match resources the state
+        lacks and create them.
         """
         if not urns:
             raise PulumiError("a targeted pulumi up needs at least one target")
         targets: list[str] = []
         for urn in urns:
-            if not urn.startswith(URN_PREFIX):
-                raise PulumiError(f"{urn!r} is not a Pulumi URN")
+            if not urn.startswith(URN_PREFIX) or "*" in urn:
+                raise PulumiError(f"{urn!r} is not a Pulumi URN naming one resource")
             targets += ["--target", urn]
         self._pulumi("up", "--yes", "--skip-preview", *targets, stream=True)
+
+    def unprotect_all(self) -> None:
+        """Clear ``protect`` on every resource in the state.
+
+        ``pulumi state unprotect --all`` edits the state in the backend
+        and nothing else: the program does not run, so nothing can be
+        created or changed, whatever type the protected resources are.
+        """
+        self._pulumi("state", "unprotect", "--all", "--yes")
 
     def destroy(self) -> None:
         self._pulumi(

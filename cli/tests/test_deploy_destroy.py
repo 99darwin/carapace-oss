@@ -14,9 +14,10 @@ from typing import Any
 
 import pytest
 from deploy_support import (
-    CRYPTO_KEY_URN,
     DB_INSTANCE_URN,
+    DB_URN,
     DB_URNS,
+    DB_USER_URN,
     ENCLAVE_URL,
     KEY_RING_URN,
     KMS_URNS,
@@ -37,6 +38,7 @@ from deploy_support import (
     instant_clock,
     scripted,
     state_resources,
+    urn,
 )
 from first_run_support import fake_first_run
 
@@ -44,7 +46,7 @@ from carapace_cli.deploy import command
 from carapace_cli.deploy.destroy import (
     FRESH_STACK,
     UNPROTECTED,
-    protected_urns,
+    protected_database_urns,
     run_destroy,
 )
 from carapace_cli.deploy.gcp import STORAGE
@@ -357,8 +359,9 @@ def test_destroy_lifts_protection_then_destroys(
     assert "can restore the version" in output
     assert f"gs://{PROJECT}-carapace-state" in output
     assert not stack.ups, "a destroy ran an untargeted up"
+    assert stack.unprotects == 1
     ((targets, config),) = stack.targeted_ups
-    assert sorted(targets) == sorted([*KMS_URNS, *DB_URNS])
+    assert targets == [DB_INSTANCE_URN]
     assert all(config[key] == "false" for key in UNPROTECTED)
     assert stack.destroyed
     assert record_name(PREFIX) not in google.objects
@@ -415,41 +418,58 @@ def half_created(*resources: StateResource) -> FakeStack:
     )
 
 
-def test_half_created_stack_without_key_or_db_is_destroyed_without_an_up() -> None:
+def quiet_destroy(stack: FakeStack) -> None:
+    run_destroy(stack, say=lambda _: None)
+
+
+def test_half_created_stack_without_key_or_db_is_destroyed_directly() -> None:
     # The 409s on the key ring and the pool: neither is in the state.
     stack = half_created(*state_resources(UNPROTECTED_URNS))
-    run_destroy(stack, say=lambda _: None)
-    assert not stack.ups and not stack.targeted_ups
+    quiet_destroy(stack)
+    assert not stack.ups and not stack.targeted_ups and not stack.unprotects
     assert stack.destroyed
 
 
-def test_stack_with_only_the_database_targets_the_database_only() -> None:
+def test_stack_with_only_the_database_targets_the_instance_only() -> None:
     stack = half_created(*state_resources((*UNPROTECTED_URNS, *DB_URNS)))
-    run_destroy(stack, say=lambda _: None)
-    assert not stack.ups
+    quiet_destroy(stack)
+    assert not stack.ups and stack.unprotects == 1
     ((targets, config),) = stack.targeted_ups
-    assert targets == list(DB_URNS)
+    assert targets == [DB_INSTANCE_URN]
     assert all(config[key] == "false" for key in UNPROTECTED)
     assert stack.destroyed
 
 
-def test_stack_with_only_the_key_ring_targets_the_key_ring_only() -> None:
+def test_stack_with_only_the_key_ring_is_unprotected_without_an_up() -> None:
     stack = half_created(*state_resources((*UNPROTECTED_URNS, KEY_RING_URN)))
-    run_destroy(stack, say=lambda _: None)
-    assert not stack.ups
-    assert [targets for targets, _ in stack.targeted_ups] == [[KEY_RING_URN]]
-    assert stack.destroyed
+    quiet_destroy(stack)
+    assert not stack.ups and not stack.targeted_ups
+    assert stack.unprotects == 1 and stack.destroyed
 
 
-def test_full_stack_targets_the_key_and_the_database() -> None:
+def test_full_stack_unprotects_the_state_and_targets_the_instance() -> None:
     stack = live_stack()
-    run_destroy(stack, say=lambda _: None)
-    assert not stack.ups
+    quiet_destroy(stack)
+    assert not stack.ups and stack.unprotects == 1
     ((targets, _),) = stack.targeted_ups
-    assert CRYPTO_KEY_URN in targets and DB_INSTANCE_URN in targets
-    assert sorted(targets) == sorted([*KMS_URNS, *DB_URNS])
-    assert not set(targets) & set(UNPROTECTED_URNS)
+    assert targets == [DB_INSTANCE_URN]
     assert stack.destroyed
+
+
+def test_protected_resource_of_any_type_is_unprotected_before_the_destroy() -> None:
+    # A resource the CLI knows nothing about (the program grew one, or an
+    # operator ran `pulumi state protect`) must not survive to make the
+    # destroy fail halfway, after the unprotected resources are gone.
+    foreign = StateResource(
+        urn=urn("gcp:logging/projectBucketConfig:ProjectBucketConfig", "audit"),
+        type="gcp:logging/projectBucketConfig:ProjectBucketConfig",
+        protect=True,
+        outputs={},
+    )
+    stack = half_created(*state_resources(UNPROTECTED_URNS), foreign)
+    quiet_destroy(stack)
+    assert not stack.ups and not stack.targeted_ups
+    assert stack.unprotects == 1 and stack.destroyed
 
 
 def test_database_with_protect_off_but_deletion_protection_on_is_targeted() -> None:
@@ -460,7 +480,7 @@ def test_database_with_protect_off_but_deletion_protection_on_is_targeted() -> N
         protect=False,
         outputs={"deletionProtection": False, "settings": {}},
     )
-    assert protected_urns(half_created(instance)) == [DB_INSTANCE_URN]
+    assert protected_database_urns([instance]) == [DB_INSTANCE_URN]
     # A secret-wrapped value is not a known false either.
     secret = {"4dabf18193072939515e22adb298388d": "1b47", "ciphertext": "x"}
     masked = StateResource(
@@ -472,16 +492,34 @@ def test_database_with_protect_off_but_deletion_protection_on_is_targeted() -> N
             "settings": {"deletionProtectionEnabled": False},
         },
     )
-    assert protected_urns(half_created(masked)) == [DB_INSTANCE_URN]
+    assert protected_database_urns([masked, masked]) == [DB_INSTANCE_URN]
+    stack = half_created(instance)
+    quiet_destroy(stack)
+    assert not stack.unprotects and stack.destroyed
+    assert [targets for targets, _ in stack.targeted_ups] == [[DB_INSTANCE_URN]]
 
 
-def test_resumed_destroy_after_the_protection_up_skips_it() -> None:
+def test_only_the_database_instance_is_ever_targeted() -> None:
+    # protect on the database and the user is lifted in the state, like
+    # the key's; the instance's own fields are the only reason to run the
+    # program at all.
+    stack = half_created(*state_resources(DB_URNS, db_protected=False))
+    quiet_destroy(stack)
+    assert not stack.unprotects and not stack.targeted_ups and stack.destroyed
+    stack = half_created(*state_resources((*KMS_URNS, DB_URN, DB_USER_URN)))
+    quiet_destroy(stack)
+    assert stack.unprotects == 1 and not stack.targeted_ups and stack.destroyed
+
+
+def test_resumed_destroy_after_the_protection_steps_skips_them() -> None:
     stack = live_stack()
+    stack.unprotect_all()
     stack.set_config(UNPROTECTED)
-    stack.up_targets([*KMS_URNS, *DB_URNS])
-    stack.targeted_ups.clear()
-    run_destroy(stack, say=lambda _: None)
-    assert not stack.ups and not stack.targeted_ups and stack.destroyed
+    stack.up_targets([DB_INSTANCE_URN])
+    stack.unprotects, stack.targeted_ups = 0, []
+    quiet_destroy(stack)
+    assert not stack.ups and not stack.targeted_ups and not stack.unprotects
+    assert stack.destroyed
 
 
 def test_resumed_destroy_after_a_failed_protection_up_lifts_it_again() -> None:
@@ -490,25 +528,34 @@ def test_resumed_destroy_after_a_failed_protection_up_lifts_it_again() -> None:
     stack = live_stack()
     stack.fail_on_up_targets = True
     with pytest.raises(CarapaceError, match="simulated"):
-        run_destroy(stack, say=lambda _: None)
+        quiet_destroy(stack)
     assert all(stack.config()[key] == "false" for key in UNPROTECTED)
-    assert not stack.destroyed
-    run_destroy(stack, say=lambda _: None)
+    assert stack.unprotects == 1 and not stack.destroyed
+    quiet_destroy(stack)
     assert not stack.ups and len(stack.targeted_ups) == 1
+    assert stack.unprotects == 1, "the state was unprotected twice"
     assert stack.destroyed
 
 
-def test_resumed_destroy_after_a_partial_destroy_targets_what_is_left() -> None:
+def test_resumed_destroy_after_a_failed_unprotect_runs_nothing_else() -> None:
+    stack = live_stack()
+    stack.fail_on_unprotect = True
+    with pytest.raises(CarapaceError, match="state unprotect failed"):
+        quiet_destroy(stack)
+    assert not stack.targeted_ups and not stack.destroyed
+    quiet_destroy(stack)
+    assert stack.unprotects == 1 and stack.destroyed
+
+
+def test_resumed_destroy_after_a_partial_destroy_lifts_what_is_left() -> None:
     # pulumi destroy removed the database, then failed before the key.
-    stack = half_created(
-        *state_resources(KMS_URNS, kms_protected=False),
-    )
-    run_destroy(stack, say=lambda _: None)
-    assert not stack.ups and not stack.targeted_ups and stack.destroyed
-    stack = half_created(*state_resources((*UNPROTECTED_URNS, *KMS_URNS)))
-    run_destroy(stack, say=lambda _: None)
-    assert [sorted(t) for t, _ in stack.targeted_ups] == [sorted(KMS_URNS)]
+    stack = half_created(*state_resources(KMS_URNS, kms_protected=False))
+    quiet_destroy(stack)
+    assert not stack.ups and not stack.targeted_ups and not stack.unprotects
     assert stack.destroyed
+    stack = half_created(*state_resources((*UNPROTECTED_URNS, *KMS_URNS)))
+    quiet_destroy(stack)
+    assert stack.unprotects == 1 and not stack.targeted_ups and stack.destroyed
 
 
 # -- after the destroy: the stack, the record and the config dir ---------------
