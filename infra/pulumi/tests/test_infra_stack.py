@@ -574,6 +574,14 @@ def test_sql_user_and_database_go_with_the_instance(stack) -> None:
         assert mocks.one(type_).inputs["deletionPolicy"] == "ABANDON"
 
 
+def test_sql_names_are_pinned() -> None:
+    # Renaming either replaces it, and ABANDON would strand the old role
+    # (with its password) or database (with every table). See create_database.
+    from components.server import DB_NAME, DB_USER
+
+    assert (DB_NAME, DB_USER) == ("carapace", "carapace")
+
+
 def test_iam_change_alert_watches_decrypt_path(stack) -> None:
     mocks, outputs = stack
     policy = mocks.one("gcp:monitoring/alertPolicy:AlertPolicy").inputs
