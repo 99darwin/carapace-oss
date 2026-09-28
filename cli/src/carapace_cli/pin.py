@@ -31,7 +31,7 @@ import httpx
 from cryptography import x509
 from cryptography.hazmat.primitives.serialization import Encoding
 
-from carapace_cli.errors import PinError, StorageError, network_errors
+from carapace_cli.errors import NetworkError, PinError, StorageError, network_errors
 from carapace_cli.files import read_private_json, write_private_json
 
 PIN_FILE = "enclave.json"
@@ -233,8 +233,17 @@ def fetch_peer_certificate(enclave_url: str) -> bytes:
             context.wrap_socket(raw, server_hostname=None) as tls,
         ):
             der = tls.getpeercert(True)
-    except (OSError, ssl.SSLError) as exc:
-        raise PinError(f"cannot connect to the enclave: {type(exc).__name__}") from None
+    except ssl.SSLError as exc:
+        raise PinError(
+            f"TLS handshake with the enclave failed: {type(exc).__name__}"
+        ) from None
+    except OSError as exc:
+        # Refused, timed out or unreachable: nothing was presented, so there
+        # is nothing to reject. A freshly booted enclave looks like this
+        # until its server listens; callers may retry.
+        raise NetworkError(
+            f"cannot connect to the enclave: {type(exc).__name__}"
+        ) from None
     if not der:
         raise PinError("enclave presented no certificate")
     return der
