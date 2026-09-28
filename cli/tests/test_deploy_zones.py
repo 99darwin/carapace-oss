@@ -68,6 +68,7 @@ from carapace_cli.deploy.record import (
 from carapace_cli.deploy.zones import (
     ZONAL_RESOURCE_TYPES,
     ZoneCapacityError,
+    ZoneFallback,
     is_zone_capacity_error,
     ordered_zones,
     zonal_resource_urns,
@@ -387,23 +388,102 @@ LIVE_CONFIG = {
 }
 
 
-def test_a_vm_in_the_state_never_falls_back() -> None:
-    """A new image replaces the VM, delete first: a stockout then leaves
-    no VM, and that run reports it as it is."""
+def vm_zones(stack: FakeStack) -> list[str]:
+    return [
+        str(r.outputs["zone"]) for r in stack.resources() if r.urn == ENCLAVE_VM_URN
+    ]
+
+
+def test_a_replaced_vm_whose_create_hit_a_stockout_moves_in_the_same_run() -> None:
+    """A new image replaces the VM, delete first. A stockout on the create
+    leaves no VM in the state, so the replacement goes to another zone in
+    the same run: waiting for a later run would only leave the deployment
+    without an enclave for longer."""
     google = with_zones(deployable_project())
     stack = FakeStack(initial=LIVE_CONFIG, stockout_zones=frozenset({ZONE_A}))
-    assert zonal_resource_urns(stack.resources()) == [ENCLAVE_VM_URN]
-    with pytest.raises(PulumiError):
-        deploy(google, stack)
+    assert vm_zones(stack) == [ZONE_A]
+    said: list[str] = []
+    deployment = deploy(google, stack, said)
     assert stack.stockouts == [ZONE_A]
+    assert deployment.target.zone == ZONE_B
+    assert vm_zones(stack) == [ZONE_B]
+    assert stack.config()["gcp:zone"] == ZONE_B
+    assert recorded_zone(google) == ZONE_B
+    # Step 1 kept the old VM in place; step 2's replacement and step 3
+    # ran in the new zone.
+    assert [up["gcp:zone"] for up in stack.ups] == [ZONE_A, ZONE_B, ZONE_B]
+    assert (
+        f"The enclave VM in {ZONE_A} was deleted for its replacement, which the "
+        "zone has no capacity for now; the replacement moves."
+    ) in said
+    assert f"{ZONE_A} has no capacity for {MACHINE} now; trying {ZONE_B}." in said
+
+
+def test_a_vm_still_in_the_state_after_a_stockout_never_moves() -> None:
+    """An update of a live VM can hit a stockout too (a start after a
+    stop) and leaves the VM in the state: nothing moves, whatever pulumi
+    printed. The state after the failure decides, not the message."""
+    google = with_zones(deployable_project())
+    live = LIVE_CONFIG | {
+        "carapace:enclave_image_digest": NEW_DIGEST,
+        "carapace:allowed_digests": json.dumps([NEW_DIGEST]),
+    }
+    stack = FakeStack(initial=live, fail_on_up=1, fail_output=stockout_output(ZONE_A))
+    with pytest.raises(PulumiError, match="simulated") as caught:
+        deploy(google, stack)
+    assert is_zone_capacity_error(caught.value.output)
+    assert vm_zones(stack) == [ZONE_A]
     assert zone_listings(google) == []
     assert stack.config()["gcp:zone"] == ZONE_A
-    # The replace deleted the VM first; a re-run has none to move and may
-    # create it in another zone.
-    assert zonal_resource_urns(stack.resources()) == []
-    deployment = deploy(google, stack)
-    assert deployment.target.zone == ZONE_B
-    assert stack.config()["gcp:zone"] == ZONE_B
+    assert record_name(PREFIX) not in google.objects
+
+
+def test_a_failed_restore_of_the_requested_zone_is_reported() -> None:
+    """When every zone fails and the requested zone cannot be pinned again,
+    the error says which zone the deployment still names."""
+    google = with_zones(deployable_project())
+    stack = FakeStack(stockout_zones=frozenset(OFFERING))
+    api = google.api()
+    real = zone_fallback(api, stack, project=PROJECT, machine_type=MACHINE)
+    pinned: list[str] = []
+
+    def pin(target: Target) -> None:
+        pinned.append(target.zone)
+        if target.zone == ZONE_A:
+            raise RecordError("the state bucket is gone")
+        real.pin(target)
+
+    with pytest.raises(ZoneCapacityError) as caught:
+        run_deploy(
+            TARGET,
+            api=api,
+            stack=stack,
+            images=PrebuiltImages(images=IMAGES),
+            clock=instant_clock(),
+            say=lambda _: None,
+            zone_fallback=ZoneFallback(
+                machine_type=MACHINE, offered=real.offered, pin=pin
+            ),
+        )
+    assert pinned == [ZONE_B, ZONE_F, ZONE_A]
+    message = str(caught.value)
+    assert f"tried {ZONE_A}, {ZONE_B}, {ZONE_F}" in message
+    assert f"still names {ZONE_F}" in message
+    assert "the state bucket is gone" in message
+    assert stack.config()["gcp:zone"] == ZONE_F
+    assert recorded_zone(google) == ZONE_F
+
+
+def test_pulumi_output_stays_out_of_the_error_text() -> None:
+    """The output is only for classifying the failure; what the user and
+    any log see of the error is its message."""
+    exc = PulumiError(
+        "pulumi up failed: Duration: 1m3s", output=stockout_output(ZONE_A)
+    )
+    shown = f"{exc} {exc!r} {exc.args}"
+    assert "Diagnostics" not in shown
+    assert "resources available" not in shown
+    assert is_zone_capacity_error(exc.output)
 
 
 def test_an_unchanged_vm_is_left_where_it_is() -> None:

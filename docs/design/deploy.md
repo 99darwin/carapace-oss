@@ -274,18 +274,27 @@ only the enclave).
   it; when all fail, the requested zone is pinned again and the error
   lists the zones tried and suggests a later run or another region with
   a new `--prefix`. A failure that is not a stockout is reported at once.
-- The fallback never changes region and never moves a VM that was in the
-  state before the `up`. `--no-zone-fallback` turns it off.
+- The fallback never changes region and never moves a VM that the state
+  holds after the failed `up`: that is the check that matters, made from
+  `stack export`, never from the config or the message. A VM the state
+  held before the `up` and not after it was deleted for its replacement
+  (below); the fallback then goes ahead and says so. `--no-zone-fallback`
+  turns it off.
 - The enclave VM has `replace_on_changes=["metadata"]` and
   `delete_before_replace=True`, so a new image digest (the
   `tee-image-reference` metadata) or a newer Confidential Space boot
   image (resolved on every `up`) deletes the VM before creating the new
   one. A stockout on that create leaves the deployment without a VM (the
-  static IP is regional and kept). The run that hit it had a VM in the
-  state, so it does not fall back; the provider drops a VM whose create
-  failed from the state, so a re-run sees none and falls back. Creating
-  the replacement first would avoid the gap but needs a second static IP
-  and name, which is left for later.
+  static IP is regional and kept); the provider drops a VM whose create
+  failed from the state (`google_compute_instance` clears its ID when the
+  create operation fails), so the same run sees none and creates the
+  replacement in another zone. Creating the replacement first would
+  avoid the gap but needs a second static IP and name, which is left for
+  later. The family lookup also means a run made for another reason
+  after a new Confidential Space release replaces the VM without warning
+  (the CLI runs `up --skip-preview --yes`); telling the user before the
+  `up`, or pinning the image and refreshing it on request, is a separate
+  change.
 
 ### Destroy
 

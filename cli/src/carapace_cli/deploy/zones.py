@@ -11,8 +11,13 @@ be run again in another zone of the same region. The region never
 changes: its resources would all be replaced, and a key ring can never be
 deleted.
 
-A VM that is already in the state is never moved: its update or replace
-failing for capacity is reported as it is.
+A VM that is in the state is never moved: an update of a live VM that
+fails for capacity (a start after a stop) leaves it in the state and is
+reported as it is. What decides is the state after the failed ``up``, not
+before it: a replacement deletes the VM first (``delete_before_replace``
+in ``components/enclave_vm.py``), so a stockout on its create leaves no
+VM, and waiting for a later run to move it would only leave the
+deployment without an enclave for longer.
 """
 
 from __future__ import annotations
@@ -120,18 +125,25 @@ def up_with_zone_fallback(
     """``up``, then the region's other zones while it fails for capacity.
 
     Returns the outputs and the target with the zone that worked. Nothing
-    moves when ``fallback`` is None, when the state already had a zonal
-    resource before the ``up`` (an update or replace of a live VM), or
-    when the failure is not a stockout.
+    moves when ``fallback`` is None, when the failure is not a stockout,
+    or when the state still holds a zonal resource after it (an update
+    of a live VM). A VM the state held before the ``up`` and not after
+    it was deleted for its replacement; the replacement is then created
+    in another zone, and the user is told the VM moved.
     """
     if fallback is None:
         return stack.up(), target
-    had_zonal = zonal_resource_urns(stack.resources())
+    had_zonal = bool(zonal_resource_urns(stack.resources()))
     try:
         return stack.up(), target
     except PulumiError as exc:
-        if had_zonal or not _failed_for_capacity(exc, stack):
+        if not _failed_for_capacity(exc, stack):
             raise
+    if had_zonal:
+        say(
+            f"The enclave VM in {target.zone} was deleted for its replacement, "
+            "which the zone has no capacity for now; the replacement moves."
+        )
     return _try_other_zones(stack, target, fallback=fallback, say=say)
 
 

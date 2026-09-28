@@ -298,7 +298,7 @@ it. If every zone fails, the requested zone is kept and the error lists
 the zones tried; run the same command again later, or deploy in another
 region with a new `--prefix`. The fallback never leaves the region (the
 key ring and the other regional resources cannot move) and never moves a
-VM that already exists. Pass `--no-zone-fallback` to report the stockout
+VM that is in the state. Pass `--no-zone-fallback` to report the stockout
 and stop instead.
 
 Only the enclave VM is zonal. While the state holds no VM, a re-run may
@@ -308,9 +308,16 @@ at any time.
 
 A new enclave image, or a newer Confidential Space image, replaces the
 VM, deleting the old one first. If that create hits a stockout, the
-deployment has no enclave VM until it is created again (its static IP is
-kept). That run reports the failure as it is; running the same command
-again finds no VM in the state and falls back to another zone.
+state holds no VM, so the same run says the VM was deleted for its
+replacement and creates the replacement in another zone (its static IP
+is regional and kept, so the enclave URL does not change). A stockout
+that leaves the VM in the state (a start after a stop for an update)
+is reported as it is and moves nothing.
+
+Note that the Confidential Space boot image is resolved from Google's
+`confidential-space` family on every run, so a run made for any other
+reason (say, a new server image) after Google publishes a new image
+replaces the enclave VM, with the minutes of downtime that takes.
 
 ## Cost
 

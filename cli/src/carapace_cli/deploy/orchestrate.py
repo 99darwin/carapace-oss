@@ -269,8 +269,9 @@ def deploy_workloads(
     """Each rollout ``up``; the target returned has the zone that worked.
 
     With ``fallback``, an ``up`` that fails because the zone is out of
-    capacity for a VM not yet in the state moves to another zone of the
-    region (see :mod:`carapace_cli.deploy.zones`); later steps stay there.
+    capacity for a VM the state does not hold (never created, or deleted
+    for its replacement) moves to another zone of the region (see
+    :mod:`carapace_cli.deploy.zones`); later steps stay there.
     """
     outputs: dict[str, Any] = {}
     steps = rollout_steps(

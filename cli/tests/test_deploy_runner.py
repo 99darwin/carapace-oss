@@ -409,3 +409,14 @@ def test_failure_keeps_pulumi_output_for_classifying_it() -> None:
         stack(FakePulumi(fail="up")).up()
     assert "quota exceeded" in caught.value.output
     assert not is_zone_capacity_error(f"{caught.value}\n{caught.value.output}")
+
+
+def test_a_quiet_command_failure_keeps_no_output() -> None:
+    """`stack export` prints the whole state; a failure keeps only its
+    last line in the message, as before, and none of it as output."""
+    with pytest.raises(PulumiError) as caught:
+        stack(FakePulumi(fail="stack export")).resources()
+    assert str(caught.value).startswith(
+        "pulumi stack export failed: error: quota exceeded"
+    )
+    assert caught.value.output == ""

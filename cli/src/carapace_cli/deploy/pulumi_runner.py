@@ -214,8 +214,13 @@ class PulumiStack:
             lines = [line for line in result.output.splitlines() if line.strip()]
             detail = lines[-1].strip() if lines else f"exit code {result.code}"
             command = " ".join(itertools.takewhile(_is_subcommand, args[:2]))
+            # Only a streamed command's tail is kept: those lines already
+            # went to the terminal. A quiet command's output is whole and
+            # can be the state (`stack export`) or the config, which stay
+            # out of exceptions.
             raise PulumiError(
-                f"pulumi {command} failed: {detail}; {hint}", output=result.output
+                f"pulumi {command} failed: {detail}; {hint}",
+                output=result.output if stream else "",
             )
         return result.output
 

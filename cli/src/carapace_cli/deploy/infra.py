@@ -28,8 +28,10 @@ MACHINE_TYPE_PATTERN = re.compile(r"^[a-z][a-z0-9-]{0,62}$")
 class PulumiError(CarapaceError):
     """The Pulumi CLI or program could not run.
 
-    ``output`` holds the last lines pulumi printed, which the user already
-    saw streamed. It is kept out of ``str(exc)`` and only used to tell
+    ``output`` holds the last lines a streamed command printed, which the
+    user already saw on the terminal; a quiet command's output is never
+    kept. It is an attribute, not an argument, so it stays out of
+    ``str(exc)``, ``repr(exc)`` and tracebacks, and is only used to tell
     one kind of failure from another.
     """
 
