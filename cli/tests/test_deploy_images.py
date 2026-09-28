@@ -485,7 +485,7 @@ def test_unverified_release_changes_nothing(
         verifier=FakeVerifier(valid=False),
     )
     assert code != 0 and "does not verify" in output
-    assert "$80/month" not in output
+    assert "$92/month" not in output
     assert not stack.ups and not world.ar.requests
 
 
@@ -505,7 +505,7 @@ def test_build_without_docker_fails_before_the_summary(
     code, output = deploy(monkeypatch, tmp_path, World(), FakeStack(), "--build")
     assert code != 0
     assert "--build needs docker on PATH" in output
-    assert "$80/month" not in output
+    assert "$92/month" not in output
 
 
 def test_sigstore_verify_rejects_a_malformed_bundle_offline(

@@ -21,7 +21,7 @@ value is an error. It never waits for input that cannot come.
    the Resource Manager project list when interactive), check billing and
    the caller's permissions, and pick a region that has both N2D
    Confidential VMs and Cloud KMS HSM. Validate the alert email. Print a
-   summary: what gets created, about $80/month, and residual risk R1
+   summary: what gets created, about $92/month, and residual risk R1
    (a project Owner can grant itself decrypt, so use a dedicated project).
    Nothing changes until the user confirms, or passes `--yes`.
 2. **State backend.** Create the state bucket and the state key if they are

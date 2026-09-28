@@ -370,15 +370,17 @@ Rough list prices in `us-central1`, per month:
 
 | Item | ~USD |
 |---|---|
-| `n2d-standard-2` Confidential VM, 24/7 | 62 |
+| `n2d-standard-2` Confidential VM (AMD SEV), 24/7 | 74 |
 | Static external IP (in use) | 4 |
 | Cloud SQL `db-f1-micro` + 10 GB | 10 |
 | KMS HSM key version (RSA 4096) | 3 |
 | Cloud Run (min 0 instances), Artifact Registry, Secret Manager, Logging | ~1 |
-| **Total** | **~80** |
+| **Total** | **~92** |
 
-Stopping the VM when idle brings this to about $40; the IP and the database
-still bill while it is stopped. Nothing in the stack stops it
+The VM line is the N2D base price (about $62) plus the Confidential VM
+surcharge for AMD SEV (about $12). Stopping the VM when idle saves most of
+that line; the IP, the database and the key still bill about $18 a month
+while it is stopped. Nothing in the stack stops it
 automatically. KMS operations, egress and logging volume are extra and
 depend on use. These are estimates, not measured bills.
 

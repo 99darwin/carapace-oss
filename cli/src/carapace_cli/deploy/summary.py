@@ -5,8 +5,8 @@ from __future__ import annotations
 from carapace_cli.deploy.infra import default_enclave_machine_type
 from carapace_cli.deploy.preflight import PreflightReport, Target
 
-MONTHLY_COST_USD = 80
-STOPPED_VM_MONTHLY_COST_USD = 40
+MONTHLY_COST_USD = 92
+STOPPED_VM_MONTHLY_COST_USD = 18
 
 RESIDUAL_RISK = (
     "Residual risk (THREAT_MODEL.md R1): anyone with Owner on this project,\n"
