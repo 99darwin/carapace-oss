@@ -225,7 +225,7 @@ def _target() -> Target:
 def test_summary_states_cost_risk_and_warnings() -> None:
     report = PreflightReport(warnings=["could not confirm billing"])
     text = render_summary(_target(), report, images="release v1.2.0")
-    assert "$80/month" in text
+    assert "$92/month" in text
     assert "anyone with Owner" in text and "dedicated project" in text
     assert f"gs://{PROJECT}-carapace-state" in text
     assert "could not confirm billing" in text
@@ -267,7 +267,7 @@ def test_deploy_without_yes_in_a_script_changes_nothing(
     )
     assert code == 1
     assert "pass --yes" in output
-    assert "$80/month" in output
+    assert "$92/month" in output
     assert _read_only(google)
 
 

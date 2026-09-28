@@ -308,15 +308,17 @@ A redeploy into the same project within that window therefore needs a new
 
 | Item | ~USD/month |
 |---|---|
-| n2d-standard-2 Confidential VM, 24/7 | 62 |
+| n2d-standard-2 Confidential VM (AMD SEV), 24/7 | 74 |
 | Static external IP (in use) | 4 |
 | Cloud SQL `db-f1-micro` + 10 GB | 10 |
 | KMS HSM key version (RSA 4096) | 3 |
 | Cloud Run (min 0), Artifact Registry, Secret Manager, Logging | ~1 |
-| **Total** | **~80** |
+| **Total** | **~92** |
 
-Stopping the VM when idle brings this to about $40/month. The IP and the
-database still bill while the VM is stopped.
+The VM line is the N2D base price (about $62) plus the Confidential VM
+surcharge for AMD SEV (about $12). Stopping the VM when idle saves most of
+that line; the IP, the database and the key still bill about $18/month
+while the VM is stopped.
 
 ## What this does NOT create
 
