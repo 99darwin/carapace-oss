@@ -33,6 +33,7 @@ from deploy_support import (
     google_error,
     instant_clock,
     ok,
+    replace_gate,
     scripted,
     stockout_output,
 )
@@ -145,6 +146,7 @@ def deploy(
         images=PrebuiltImages(images=IMAGES),
         clock=instant_clock(),
         say=lines.append,
+        replace_gate=replace_gate(),
         zone_fallback=(
             zone_fallback(api, stack, project=PROJECT, machine_type=MACHINE)
             if fallback
@@ -338,6 +340,7 @@ def test_a_region_with_one_zone_offering_it_fails_without_moving() -> None:
             images=PrebuiltImages(images=IMAGES),
             clock=instant_clock(),
             say=lambda _: None,
+            replace_gate=replace_gate(),
             zone_fallback=zone_fallback(
                 fallback_api, stack, project=PROJECT, machine_type="c3d-standard-4"
             ),
@@ -461,6 +464,7 @@ def test_a_failed_restore_of_the_requested_zone_is_reported() -> None:
             images=PrebuiltImages(images=IMAGES),
             clock=instant_clock(),
             say=lambda _: None,
+            replace_gate=replace_gate(),
             zone_fallback=ZoneFallback(
                 machine_type=MACHINE, offered=real.offered, pin=pin
             ),

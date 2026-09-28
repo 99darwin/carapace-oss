@@ -69,10 +69,12 @@ prefix) applies unchanged, and there is only one copy of the program.
   gcpkms://...` (idempotent), `pulumi install` (creates `infra/pulumi/venv`
   from `requirements.txt` and the provider plugins), `pulumi config
   --json`, `pulumi config set-all --plaintext ...`, `pulumi up --yes
-  --skip-preview`, `pulumi stack output --json` and `pulumi destroy`. All
+  --skip-preview`, `pulumi preview --json` (before a live workloads `up`,
+  below), `pulumi stack output --json` and `pulumi destroy`. All
   run with `--non-interactive`, `PULUMI_BACKEND_URL=gs://...` and
   `PULUMI_SKIP_UPDATE_CHECK=true`. `up`, `destroy` and `install` stream
-  their output to stderr.
+  their output to stderr; `preview` keeps stdout (its JSON) apart and
+  passes its stderr on.
 - **The deploy extra** `carapace-cli[deploy]` holds only what the CLI
   itself imports (`google-auth`, later `sigstore`).
 - v0.1 runs the CLI from a checkout (`uv sync --all-packages`, as
@@ -291,10 +293,57 @@ only the enclave).
   replacement in another zone. Creating the replacement first would
   avoid the gap but needs a second static IP and name, which is left for
   later. The family lookup also means a run made for another reason
-  after a new Confidential Space release replaces the VM without warning
-  (the CLI runs `up --skip-preview --yes`); telling the user before the
-  `up`, or pinning the image and refreshing it on request, is a separate
-  change.
+  after a new Confidential Space release would replace the VM; the
+  preview gate below announces that and asks first.
+
+### Replacing the live enclave VM
+
+- The boot image stays resolved from the family on every `up`: WIF
+  requires the `STABLE` support attribute, which Google drops from old
+  images, so pinning it would trade a warned-about restart for a VM that
+  silently stops decrypting. What changed is that the CLI no longer
+  replaces the VM unannounced. The `up`s keep `--yes --skip-preview`; a
+  separate preview runs first.
+- Before each workloads `up` on a stack whose state holds the VM
+  (`stack export`, the zonal resource of the zone rules above),
+  `StackHandle.preview()` runs `pulumi preview --json` with stdout and
+  stderr captured apart (`capture_process`), never `--show-secrets`, and
+  with `PULUMI_ENABLE_STREAMING_JSON_PREVIEW=false`, so stdout is one
+  JSON document: Pulumi's `display.PreviewDigest`
+  (`pkg/display/json.go`). Its `steps[]` carry `op`, `urn`,
+  `replaceReasons`, `diffReasons` and `detailedDiff` (property path to
+  `{kind, inputDiff}`); `oldState`/`newState` are dropped by the parse,
+  so no value, masked or not, is kept. stderr goes to the terminal.
+- The preview fails closed: a non-zero exit, output that is not JSON,
+  a digest without the root stack's step (always present in a real
+  one), or a malformed step stops the deploy before the `up`. The error
+  message holds none of pulumi's output; a failed preview's error
+  diagnostics and its stderr are printed to the terminal instead.
+- The VM is being replaced when a step for `gcp:compute/instance:Instance`
+  has op `replace`, `create-replacement`, `delete-replaced` or `delete`.
+  The causes are the top-level inputs named in `replaceReasons`, or in
+  `detailedDiff` paths whose kind ends in `-replace`; a replacement with
+  neither is "unknown", never "no cause". `bootDisk` is a new boot
+  image, `metadata` a new enclave image reference (or another metadata
+  input: control plane URL, KMS key, WIF audience).
+- Every replacement is announced in one line with its causes and the
+  downtime. A replacement whose only cause is `metadata`, in the rollout
+  step that moves the VM from the digest the state runs to another one,
+  is the change the user asked for and goes ahead without a question.
+  Anything else asks once (the interview's `confirm`, with `--yes`
+  ignored: it confirms the deploy, not an outage the user may not know
+  about). A run that cannot prompt needs `--allow-enclave-replace`, and
+  without it is refused with a message naming the flag. A no stops
+  before the `up`; the local config then holds that step's values, which
+  the next run sets again.
+- One question per deploy: it is asked, if needed, at the first `up`
+  that is previewed. A later rollout step whose preview shows a cause
+  that is neither expected nor already accepted is refused before its
+  `up`, flag or not, since nobody saw that cause. The command can be run
+  again to resume and review it.
+- First deploys and bootstraps have no VM in the state and are not
+  previewed; neither is a resume whose failed `up` already deleted the
+  VM. `carapace destroy` is unaffected.
 
 ### Destroy
 

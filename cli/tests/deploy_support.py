@@ -15,11 +15,12 @@ from urllib.parse import unquote
 
 import httpx
 
+from carapace_cli.deploy.enclave_replace import EnclaveReplaceGate
 from carapace_cli.deploy.gcp import GcpApi
 from carapace_cli.deploy.infra import PulumiError
 from carapace_cli.deploy.interview import Interview
 from carapace_cli.deploy.polling import Clock
-from carapace_cli.deploy.pulumi_runner import StateResource
+from carapace_cli.deploy.pulumi_runner import PreviewStep, StateResource
 from carapace_cli.errors import CarapaceError
 
 PROJECT = "carapace-selfhost"
@@ -151,6 +152,20 @@ def scripted(*answers: str, interactive: bool = True, yes: bool = False) -> Inte
         assume_yes=yes,
         stream_in=io.StringIO("".join(f"{a}\n" for a in answers)),
         stream_out=io.StringIO(),
+    )
+
+
+def replace_gate(
+    interview: Interview | None = None,
+    *,
+    allow: bool = False,
+    said: list[str] | None = None,
+) -> EnclaveReplaceGate:
+    """The deploy's enclave replace gate; by default it cannot prompt."""
+    return EnclaveReplaceGate(
+        interview=interview or scripted(interactive=False),
+        allow=allow,
+        say=said.append if said is not None else lambda _: None,
     )
 
 
@@ -305,6 +320,7 @@ def state_resources(
 FULL_STACK_URNS = (*UNPROTECTED_URNS, *KMS_URNS, *DB_URNS)
 # The enclave VM, the one zonal resource; in the state once workloads run.
 ENCLAVE_VM_URN = urn("gcp:compute/instance:Instance", f"{PREFIX}-enclave")
+ROOT_STACK_URN = urn("pulumi:pulumi:Stack", f"carapace-{PREFIX}")
 # Verbatim from a real `carapace deploy` in us-central1 (2026-09-28), with
 # the zone made a placeholder.
 STOCKOUT_MESSAGE = (
@@ -364,6 +380,16 @@ class FakeStack:
     fail_on_up_targets: bool = False
     fail_on_unprotect: bool = False
     fail_on_remove: bool = False
+    # Google published a Confidential Space image newer than the VM's: the
+    # next `up` with the VM in the state replaces it.
+    boot_image_drift: bool = False
+    # The new image appears once this many `up`s ran (mid-rollout).
+    drift_after_ups: int | None = None
+    preview_error: CarapaceError | None = None
+    # The config each `pulumi preview` ran with.
+    previews: list[dict[str, str]] = field(default_factory=list)
+    # How many `up`s replaced the VM.
+    replacements: int = 0
     ups: list[dict[str, str]] = field(default_factory=list)
     # The URNs of each targeted up, with the config it ran with.
     targeted_ups: list[tuple[list[str], dict[str, str]]] = field(default_factory=list)
@@ -407,6 +433,45 @@ class FakeStack:
     def _has_vm(self) -> bool:
         return any(resource.urn == ENCLAVE_VM_URN for resource in self._resources)
 
+    def _drifted(self) -> bool:
+        late = self.drift_after_ups is not None and len(self.ups) >= (
+            self.drift_after_ups
+        )
+        return self.boot_image_drift or late
+
+    def _replace_reasons(self) -> list[str]:
+        """Why the next `up` replaces the VM in the state, as the provider
+        says: a new boot image, or new metadata (the enclave digest)."""
+        if not self._has_vm():
+            return []
+        if self._config.get("carapace:deploy_workloads") != "true":
+            return []
+        reasons = ["bootDisk"] if self._drifted() else []
+        if self._state.get("carapace:enclave_image_digest") != self._config.get(
+            "carapace:enclave_image_digest"
+        ):
+            reasons.append("metadata")
+        return reasons
+
+    def preview(self) -> list[PreviewStep]:
+        """`pulumi preview --json`: the root stack and the VM's step."""
+        self.previews.append(self.config())
+        if self.preview_error is not None:
+            raise self.preview_error
+        steps = [PreviewStep(op="same", urn=ROOT_STACK_URN, type="pulumi:pulumi:Stack")]
+        reasons = self._replace_reasons()
+        if reasons:
+            steps.append(
+                PreviewStep(
+                    op="replace",
+                    urn=ENCLAVE_VM_URN,
+                    type=ENCLAVE_VM_URN.split("::")[2],
+                    replace_reasons=tuple(reasons),
+                    diff_reasons=tuple(reasons),
+                )
+            )
+        return steps
+
     def _hit_stockout(self) -> None:
         """Fail as a VM create in a zone out of capacity does.
 
@@ -420,10 +485,7 @@ class FakeStack:
             return
         if zone not in self.stockout_zones:
             return
-        replaces = self._state.get("carapace:enclave_image_digest") != config.get(
-            "carapace:enclave_image_digest"
-        )
-        if self._has_vm() and not replaces:
+        if self._has_vm() and not self._replace_reasons():
             return
         self._resources = [r for r in self._resources if r.urn != ENCLAVE_VM_URN]
         self.stockouts.append(zone)
@@ -443,7 +505,12 @@ class FakeStack:
         if self.fail_on_up is not None and len(self.ups) + 1 == self.fail_on_up:
             self.fail_on_up = None
             raise PulumiError("pulumi failed: simulated", output=self.fail_output)
+        replaces = bool(self._replace_reasons())
         self._hit_stockout()
+        if replaces:
+            self.replacements += 1
+            self.boot_image_drift = False
+            self.drift_after_ups = None
         self.ups.append(self.config())
         self._state = self.config()
         self._resources = self._program_resources(FULL_STACK_URNS)

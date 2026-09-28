@@ -19,13 +19,17 @@ from carapace_cli.deploy import pulumi_runner
 from carapace_cli.deploy.infra import INFRA_DIR_ENV
 from carapace_cli.deploy.preflight import Target
 from carapace_cli.deploy.pulumi_runner import (
+    Captured,
     Completed,
+    PreviewStep,
     PulumiError,
     PulumiStack,
     StateResource,
+    capture_process,
     find_pulumi,
     locate_infra,
     open_stack,
+    parse_preview,
     run_process,
 )
 from carapace_cli.deploy.state import state_backend_for
@@ -38,6 +42,42 @@ BACKEND = state_backend_for(TARGET)
 ROOT_URN = f"urn:pulumi:{PREFIX}::carapace::pulumi:pulumi:Stack::s"
 KEY_URN = f"urn:pulumi:{PREFIX}::carapace::gcp:kms/cryptoKey:CryptoKey::k"
 DB_URN = f"urn:pulumi:{PREFIX}::carapace::gcp:sql/databaseInstance:DatabaseInstance::d"
+VM_URN = f"urn:pulumi:{PREFIX}::carapace::gcp:compute/instance:Instance::c1x-enclave"
+# The shape of `pulumi preview --json` (display.PreviewDigest in Pulumi's
+# pkg/display/json.go): the logical replace of the VM with its reasons,
+# and the root stack's step, which is always there. The states carry
+# values; a secret one is masked, never shown.
+PREVIEW_DIGEST: dict[str, object] = {
+    "config": {"carapace:prefix": PREFIX, "carapace:db": "[secret]"},
+    "steps": [
+        {
+            "op": "same",
+            "urn": ROOT_URN,
+            "oldState": {"urn": ROOT_URN, "type": "pulumi:pulumi:Stack"},
+            "newState": {"urn": ROOT_URN, "type": "pulumi:pulumi:Stack"},
+            "detailedDiff": None,
+        },
+        {
+            "op": "replace",
+            "urn": VM_URN,
+            "provider": "urn:pulumi:c1x::carapace::pulumi:providers:gcp::default",
+            "oldState": {"inputs": {"metadata": {"k": "[secret]"}}},
+            "newState": {"inputs": {"metadata": {"k": "[secret]"}}},
+            "diffReasons": ["bootDisk", "metadata"],
+            "replaceReasons": ["bootDisk"],
+            "detailedDiff": {
+                "bootDisk.initializeParams.image": {
+                    "kind": "update-replace",
+                    "inputDiff": True,
+                },
+                "metadata": {"kind": "update", "inputDiff": True},
+            },
+        },
+    ],
+    "diagnostics": [],
+    "duration": 5000000000,
+    "changeSummary": {"replace": 1, "same": 1},
+}
 
 
 @dataclass
@@ -60,7 +100,18 @@ class FakePulumi:
     fail: str | None = None
     # Extra lines `pulumi destroy` streams after its progress.
     destroy_output: list[str] = field(default_factory=list)
+    # What `pulumi preview --json` prints, on stdout and stderr apart.
+    preview_stdout: str = field(default_factory=lambda: json.dumps(PREVIEW_DIGEST))
+    preview_stderr: str = ""
+    preview_code: int = 0
     calls: list[Call] = field(default_factory=list)
+
+    def capture(
+        self, argv: list[str], *, cwd: Path, env: Mapping[str, str]
+    ) -> Captured:
+        self.calls.append(Call(argv, cwd, dict(env), False))
+        assert argv[1] == "preview", "only the preview is captured"
+        return Captured(self.preview_code, self.preview_stdout, self.preview_stderr)
 
     def __call__(
         self,
@@ -106,6 +157,7 @@ def stack(fake: FakePulumi, lines: list[str] | None = None) -> PulumiStack:
         backend=BACKEND,
         on_output=sink.append,
         run=fake,
+        capture=fake.capture,
     )
 
 
@@ -140,6 +192,7 @@ def test_no_command_ever_shows_secrets() -> None:
     handle.resources()
     handle.up_targets([DB_URN])
     handle.unprotect_all()
+    handle.preview()
     handle.destroy()
     assert fake.calls
     assert not any("--show-secrets" in call.argv for call in fake.calls)
@@ -420,3 +473,130 @@ def test_a_quiet_command_failure_keeps_no_output() -> None:
         "pulumi stack export failed: error: quota exceeded"
     )
     assert caught.value.output == ""
+
+
+# -- pulumi preview --------------------------------------------------------------
+
+
+def test_preview_runs_json_preview_and_never_shows_secrets() -> None:
+    lines: list[str] = []
+    fake = FakePulumi(preview_stderr="warning: a plugin was downloaded\n")
+    steps = stack(fake, lines).preview()
+    (call,) = fake.calls
+    assert call.argv == [
+        "/bin/pulumi",
+        "preview",
+        "--json",
+        "--non-interactive",
+        "--stack",
+        PREFIX,
+    ]
+    assert "--show-secrets" not in call.argv
+    assert call.cwd == INFRA
+    assert call.env["PULUMI_BACKEND_URL"] == f"gs://{PROJECT}-carapace-state"
+    # The digest, not a stream of events, whatever the environment says.
+    assert call.env["PULUMI_ENABLE_STREAMING_JSON_PREVIEW"] == "false"
+    # stderr goes to the terminal, never into the JSON.
+    assert lines == ["warning: a plugin was downloaded\n"]
+    assert [step.op for step in steps] == ["same", "replace"]
+
+
+def test_preview_steps_keep_reasons_and_no_values() -> None:
+    _root, vm = parse_preview(json.dumps(PREVIEW_DIGEST))
+    assert vm == PreviewStep(
+        op="replace",
+        urn=VM_URN,
+        type="gcp:compute/instance:Instance",
+        replace_reasons=("bootDisk",),
+        diff_reasons=("bootDisk", "metadata"),
+        detailed_diff={
+            "bootDisk.initializeParams.image": "update-replace",
+            "metadata": "update",
+        },
+    )
+    assert "[secret]" not in repr(vm)
+
+
+def test_preview_reads_a_child_resource_type_from_its_urn() -> None:
+    child = f"urn:pulumi:{PREFIX}::carapace::my:comp$gcp:compute/instance:Instance::v"
+    digest = {
+        "steps": [{"op": "same", "urn": ROOT_URN}, {"op": "update", "urn": child}]
+    }
+    assert parse_preview(json.dumps(digest))[1].type == (
+        "gcp:compute/instance:Instance"
+    )
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "",
+        "not json",
+        # stderr merged into stdout would look like this.
+        "warning: something\n" + json.dumps(PREVIEW_DIGEST),
+        "[]",
+        json.dumps({"config": {}}),
+        # Parses, but lacks the root stack: not a preview digest.
+        json.dumps({"steps": []}),
+        json.dumps({"steps": [{"op": "replace", "urn": VM_URN}]}),
+        json.dumps({"steps": "all"}),
+        json.dumps({"steps": [{"urn": ROOT_URN}]}),
+        json.dumps({"steps": [{"op": "same", "urn": "not-a-urn"}]}),
+        json.dumps(
+            {
+                "steps": [
+                    {"op": "same", "urn": ROOT_URN},
+                    {"op": "replace", "urn": VM_URN, "replaceReasons": "bootDisk"},
+                ]
+            }
+        ),
+        json.dumps(
+            {
+                "steps": [
+                    {"op": "same", "urn": ROOT_URN},
+                    {"op": "replace", "urn": VM_URN, "detailedDiff": {"a": "b"}},
+                ]
+            }
+        ),
+    ],
+)
+def test_unusable_preview_output_fails_closed(stdout: str) -> None:
+    fake = FakePulumi(preview_stdout=stdout)
+    with pytest.raises(PulumiError, match="nothing was changed") as caught:
+        stack(fake).preview()
+    assert caught.value.output == ""
+
+
+def test_failed_preview_says_so_without_pulumi_output_in_the_error() -> None:
+    lines: list[str] = []
+    digest = {
+        "steps": [{"op": "same", "urn": ROOT_URN}],
+        "diagnostics": [
+            {"message": "error: program failed: KeyError x\n", "severity": "error"},
+            {"message": "just info\n", "severity": "info"},
+        ],
+    }
+    fake = FakePulumi(
+        preview_code=255,
+        preview_stdout=json.dumps(digest),
+        preview_stderr="error: preview failed\n",
+    )
+    with pytest.raises(PulumiError) as caught:
+        stack(fake, lines).preview()
+    message = str(caught.value)
+    assert message.startswith("pulumi preview failed (exit code 255)")
+    assert "nothing was changed" in message
+    assert "KeyError" not in message and "preview failed\n" not in message
+    assert caught.value.output == ""
+    # The causes reach the terminal instead.
+    assert lines == [
+        "error: preview failed\n",
+        "error: program failed: KeyError x\n",
+    ]
+
+
+def test_capture_process_keeps_stdout_and_stderr_apart(tmp_path: Path) -> None:
+    script = "import sys; print('{}'); print('warn', file=sys.stderr); sys.exit(2)"
+    result = capture_process([sys.executable, "-c", script], cwd=tmp_path, env={})
+    assert result == Captured(2, "{}\n", "warn\n")
+    assert "warn" not in repr(result)

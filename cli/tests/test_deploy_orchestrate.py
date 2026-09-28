@@ -30,6 +30,7 @@ from deploy_support import (
     deployable_project,
     instant_clock,
     ok,
+    replace_gate,
 )
 from first_run_support import fake_first_run
 
@@ -61,6 +62,7 @@ def _deploy(
         images=PrebuiltImages(images=IMAGES),
         clock=instant_clock(),
         say=say,
+        replace_gate=replace_gate(),
     ).outputs
 
 
@@ -103,6 +105,7 @@ def test_unknown_enclave_digest_bootstraps_with_placeholder() -> None:
         images=LaterImages(),
         clock=instant_clock(),
         say=lambda _: None,
+        replace_gate=replace_gate(),
     )
     assert json.loads(stack.ups[0]["carapace:allowed_digests"]) == [PLACEHOLDER_DIGEST]
     assert json.loads(stack.ups[-1]["carapace:allowed_digests"]) == [NEW_DIGEST]
@@ -192,6 +195,7 @@ def test_stale_config_with_unknown_digest_bootstraps_with_placeholder() -> None:
         images=LaterImages(),
         clock=instant_clock(),
         say=lambda _: None,
+        replace_gate=replace_gate(),
     )
     allowed = [json.loads(up["carapace:allowed_digests"]) for up in stack.ups]
     assert allowed[0] == [PLACEHOLDER_DIGEST]

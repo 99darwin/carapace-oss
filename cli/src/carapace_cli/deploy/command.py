@@ -30,6 +30,11 @@ from carapace_cli.deploy.destroy import (
     remove_stack,
     run_destroy,
 )
+from carapace_cli.deploy.enclave_replace import (
+    ALLOW_FLAG,
+    EnclaveReplaceDeclined,
+    EnclaveReplaceGate,
+)
 from carapace_cli.deploy.first_run import (
     AccountFlags,
     FirstRunServices,
@@ -408,15 +413,23 @@ def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
                 machine_type=enclave_machine_type(stack.config()),
             )
         )
-        deployment = run_deploy(
-            target,
-            api=api,
-            stack=stack,
-            images=images,
-            clock=services.clock,
-            say=ctx.say,
-            zone_fallback=fallback,
+        gate = EnclaveReplaceGate(
+            interview=interview, allow=args.allow_enclave_replace, say=ctx.say
         )
+        try:
+            deployment = run_deploy(
+                target,
+                api=api,
+                stack=stack,
+                images=images,
+                clock=services.clock,
+                say=ctx.say,
+                replace_gate=gate,
+                zone_fallback=fallback,
+            )
+        except EnclaveReplaceDeclined as exc:
+            ctx.say(f"Aborted: {exc}.")
+            return EXIT_DECLINED
     ctx.say("Deployed.")
     if deployment.target.zone != target.zone:
         ctx.say(
@@ -528,6 +541,13 @@ def add_deploy_commands(sub: argparse._SubParsersAction) -> None:
         action="store_true",
         help="if the zone is out of capacity for the enclave VM, stop instead "
         "of trying the region's other zones",
+    )
+    deploy.add_argument(
+        ALLOW_FLAG,
+        action="store_true",
+        help="if the update would replace the live enclave VM (a new "
+        "Confidential Space image), go ahead without asking; --yes does not "
+        "cover it",
     )
     deploy.add_argument("--prefix", help="resource name prefix (default: carapace)")
     deploy.add_argument(
