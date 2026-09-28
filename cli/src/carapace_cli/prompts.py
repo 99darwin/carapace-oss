@@ -3,20 +3,47 @@
 from __future__ import annotations
 
 import getpass
+import os
 import sys
+import warnings
 from typing import BinaryIO
 
 from carapace_cli.errors import CarapaceError
 from carapace_crypto.envelope import MAX_PLAINTEXT_BYTES
 
 
+def has_terminal() -> bool:
+    """Whether a hidden prompt can reach a terminal.
+
+    On POSIX, getpass reads the controlling terminal (/dev/tty), not
+    stdin, so a secret can be piped in while the passphrase is typed.
+    """
+    if sys.platform == "win32":
+        return sys.stdin.isatty()
+    try:
+        fd = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+    except OSError:
+        return False
+    os.close(fd)
+    return True
+
+
 def prompt_hidden(prompt: str, *, confirm: bool = False) -> str:
-    """Prompt without echo. Refuses when stdin is not a terminal."""
-    if not sys.stdin.isatty():
+    """Prompt without echo. Refuses when there is no terminal."""
+    if not has_terminal():
         raise CarapaceError(f"{prompt.strip(': ')} must be entered at a terminal")
-    value = getpass.getpass(prompt)
-    if confirm and getpass.getpass("Repeat to confirm: ") != value:
-        raise CarapaceError("the two entries do not match")
+    with warnings.catch_warnings():
+        # getpass falls back to an echoing read of stdin with this warning;
+        # never let a passphrase echo.
+        warnings.simplefilter("error", getpass.GetPassWarning)
+        try:
+            value = getpass.getpass(prompt)
+            if confirm and getpass.getpass("Repeat to confirm: ") != value:
+                raise CarapaceError("the two entries do not match")
+        except getpass.GetPassWarning:
+            raise CarapaceError(
+                f"{prompt.strip(': ')} must be entered at a terminal"
+            ) from None
     return value
 
 
