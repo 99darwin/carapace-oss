@@ -15,6 +15,7 @@ from typing import Any
 
 from carapace_cli.attestation import PROJECT_ID_PATTERN
 from carapace_cli.deploy.gcp import HTTP_FORBIDDEN, GcpApi, GcpError
+from carapace_cli.deploy.infra import default_enclave_machine_type
 from carapace_cli.deploy.interview import Interview, InvalidInputError
 from carapace_cli.errors import CarapaceError
 
@@ -42,7 +43,6 @@ REGION_ZONES: dict[str, str] = {
 }
 DEFAULT_REGION = "us-central1"
 DEFAULT_PREFIX = "carapace"
-ENCLAVE_MACHINE_TYPE = "n2d-standard-2"
 MAX_LISTED_PROJECTS = 30
 
 # Needed to tell a new stack's names from a destroyed deployment's
@@ -334,11 +334,13 @@ def choose_location(
     project: str,
     report: PreflightReport,
 ) -> tuple[str, str]:
-    """The region and zone, with N2D confirmed in the zone when possible.
+    """The region and zone, with the enclave's machine type confirmed.
 
-    An existing deployment's region and zone are the defaults, and cannot
-    be changed: the stack would replace every resource, and the state key
-    lives in the region.
+    An existing deployment's region and zone are the defaults. Its region
+    cannot change: every regional resource would be replaced, and the
+    state key lives in the region. Its zone may, but only while the stack
+    has no zonal resource; ``check_stack_config`` decides that once the
+    state can be read.
     """
     existing = report.existing
     options = (
@@ -354,23 +356,41 @@ def choose_location(
         default=existing.region if existing else DEFAULT_REGION,
         validate=validate_region,
     )
-    if existing:
-        zone = flags.zone or existing.zone
-        if (region, zone) != (existing.region, existing.zone):
-            raise PreflightError(
-                f"this deployment is in {existing.region} ({existing.zone}) and "
-                "cannot move; pass another --prefix for a new deployment"
-            )
+    if existing and region != existing.region:
+        raise PreflightError(
+            f"this deployment is in {existing.region} and cannot move to "
+            "another region; pass another --prefix for a new deployment"
+        )
+    default_zone = existing.zone if existing else REGION_ZONES[region]
+    zone = validate_zone(region, flags.zone or default_zone)
+    if existing and zone == existing.zone:
         return region, zone
-    zone = validate_zone(region, flags.zone or REGION_ZONES[region])
-    try:
-        available = api.machine_type_available(project, zone, ENCLAVE_MACHINE_TYPE)
-    except GcpError as exc:
-        report.warn(f"could not confirm {ENCLAVE_MACHINE_TYPE} in {zone} ({exc})")
-        return region, zone
-    if not available:
-        raise PreflightError(f"{ENCLAVE_MACHINE_TYPE} is not offered in {zone}")
+    check_machine_type(api, project, region, zone, report)
     return region, zone
+
+
+def check_machine_type(
+    api: GcpApi, project: str, region: str, zone: str, report: PreflightReport
+) -> None:
+    """The enclave's machine type must be offered in ``zone``.
+
+    Offered is not the same as available: a zone can be out of capacity
+    for it, which shows only when the VM is created (see zones.py).
+    """
+    machine_type = default_enclave_machine_type()
+    try:
+        available = api.machine_type_available(project, zone, machine_type)
+    except GcpError as exc:
+        report.warn(f"could not confirm {machine_type} in {zone} ({exc})")
+        return
+    if available:
+        return
+    try:
+        others = api.zones_offering(project, region, machine_type)
+    except GcpError:
+        others = []
+    hint = f"; zones of {region} that offer it: {', '.join(others)}" if others else ""
+    raise PreflightError(f"{machine_type} is not offered in {zone}{hint}")
 
 
 def run_preflight(

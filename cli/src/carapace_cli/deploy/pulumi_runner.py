@@ -27,16 +27,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from carapace_cli.deploy.infra import PulumiError, locate_infra
 from carapace_cli.deploy.preflight import Target
 from carapace_cli.deploy.state import StateBackend
-from carapace_cli.errors import CarapaceError
 
-INFRA_DIR_ENV = "CARAPACE_INFRA_DIR"
 PULUMI_MAJOR = 3
 PULUMI_INSTALL_URL = "https://www.pulumi.com/docs/iac/download-install/"
 PULUMI_ENV = {"PULUMI_SKIP_UPDATE_CHECK": "true"}
 # Lines of output kept to explain a failure; the rest already streamed.
-ERROR_TAIL_LINES = 20
+# Enough to hold the diagnostics pulumi prints after a failed `up`, which
+# tell a zone out of capacity from other failures.
+ERROR_TAIL_LINES = 60
 # What `pulumi stack output --json` prints in place of a secret output.
 MASKED_OUTPUT = "[secret]"  # noqa: S105 - a placeholder, not a credential
 VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)")
@@ -47,10 +48,6 @@ STACK_RM_HINT = (
     "The resources in the stack have been deleted, but the history and configuration",
     "If you want to remove the stack completely, run `pulumi stack rm",
 )
-
-
-class PulumiError(CarapaceError):
-    """The Pulumi CLI or program could not run."""
 
 
 URN_PREFIX = "urn:pulumi:"
@@ -147,20 +144,6 @@ def run_process(
         return Completed(process.wait(), output)
 
 
-def locate_infra() -> Path:
-    """``infra/pulumi`` in the checkout this CLI runs from, or the override."""
-    override = os.environ.get(INFRA_DIR_ENV)
-    # cli/src/carapace_cli/deploy/ -> repository root
-    infra = Path(override) if override else Path(__file__).parents[4] / "infra/pulumi"
-    infra = infra.resolve()
-    if not (infra / "Pulumi.yaml").is_file() or not (infra / "__main__.py").is_file():
-        raise PulumiError(
-            f"the Pulumi program is not at {infra}; run carapace from a "
-            f"checkout of the repository or set {INFRA_DIR_ENV}"
-        )
-    return infra
-
-
 def pulumi_env(backend: StateBackend | None = None) -> dict[str, str]:
     env = {**os.environ, **PULUMI_ENV}
     if backend is not None:
@@ -231,7 +214,9 @@ class PulumiStack:
             lines = [line for line in result.output.splitlines() if line.strip()]
             detail = lines[-1].strip() if lines else f"exit code {result.code}"
             command = " ".join(itertools.takewhile(_is_subcommand, args[:2]))
-            raise PulumiError(f"pulumi {command} failed: {detail}; {hint}")
+            raise PulumiError(
+                f"pulumi {command} failed: {detail}; {hint}", output=result.output
+            )
         return result.output
 
     def _json(self, *args: str) -> dict[str, Any]:

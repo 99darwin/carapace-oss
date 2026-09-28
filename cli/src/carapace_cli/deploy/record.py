@@ -10,6 +10,7 @@ record holds no secret.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import quote
 
@@ -101,7 +102,11 @@ def delete_record(api: GcpApi, project: str, prefix: str) -> None:
 
 
 def check_stack_config(
-    config: dict[str, str], target: Target, *, is_existing: bool
+    config: dict[str, str],
+    target: Target,
+    *,
+    is_existing: bool,
+    zonal_resources: Callable[[], list[str]] | None = None,
 ) -> None:
     """Refuse a stack whose local config is missing or elsewhere.
 
@@ -113,6 +118,11 @@ def check_stack_config(
     deployment per prefix: a config that names another project belongs to
     that project's stack, and an ``up`` with it would act on the wrong
     project.
+
+    The region never changes. The zone may change while the state holds
+    no zonal resource (the enclave VM, see zones.py): nothing that exists
+    is in a zone. ``zonal_resources`` lists the URNs of those in the
+    state; without it a zone change is refused.
     """
     if is_existing and config.get("carapace:prefix") != target.prefix:
         raise RecordError(
@@ -128,14 +138,29 @@ def check_stack_config(
             "prefix's config file is shared across projects, so use another "
             "--prefix for a second project"
         )
-    for key, wanted in (("gcp:region", target.region), ("gcp:zone", target.zone)):
-        current = config.get(key)
-        if current and current != wanted:
-            raise RecordError(
-                f"stack {target.prefix!r} has {key} {current}, not {wanted}; a "
-                "deployment cannot move. Pass the same --region and --zone, or "
-                "another --prefix"
-            )
+    current_region = config.get("gcp:region")
+    if current_region and current_region != target.region:
+        raise RecordError(
+            f"stack {target.prefix!r} has gcp:region {current_region}, not "
+            f"{target.region}; a deployment cannot move to another region. "
+            "Pass the same --region, or another --prefix"
+        )
+    current_zone = config.get("gcp:zone")
+    if not current_zone or current_zone == target.zone:
+        return
+    zonal = zonal_resources() if zonal_resources is not None else None
+    if zonal is None:
+        reason = "its resources could not be checked"
+    elif zonal:
+        names = ", ".join(urn.rpartition("::")[2] for urn in zonal)
+        reason = f"it has zonal resources there ({names}) that cannot move"
+    else:
+        return
+    raise RecordError(
+        f"stack {target.prefix!r} has gcp:zone {current_zone}, not "
+        f"{target.zone}, and {reason}. Pass --zone {current_zone}, or another "
+        "--prefix"
+    )
 
 
 def describe_existing(existing: ExistingDeployment, target: Target) -> str:

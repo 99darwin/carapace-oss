@@ -174,12 +174,24 @@ only the enclave).
   stack has its base config, before the first `up`.
 - A re-run reads the record during preflight (read-only). Its region, zone
   and alert emails become the defaults, and the summary shows "Existing
-  deployment". A different `--region` or `--zone` is refused: the stack
-  would replace everything, and the state key lives in the region. If the
-  bucket cannot be read (a fresh project without Cloud Storage enabled),
-  that is a warning and the deploy proceeds as new.
+  deployment". A different `--region` is refused: the regional resources
+  would all be replaced, the state key lives in the region, and a key
+  ring can never be deleted. If the bucket cannot be read (a fresh
+  project without Cloud Storage enabled), that is a warning and the
+  deploy proceeds as new.
+- A different `--zone` of the same region is allowed while the stack's
+  state (`pulumi stack export`, never `--show-secrets`) holds no zonal
+  resource. The only one is the enclave VM
+  (`gcp:compute/instance:Instance`, boot disk inline); a test classifies
+  every resource class `infra/pulumi` declares, so a new zonal one cannot
+  slip in unnoticed. The provider's zone setting has no ForceNew, so
+  changing `gcp:zone` replaces nothing else. Once the VM exists, a zone
+  change is refused and the error names it. Preflight checks that the
+  enclave's machine type is offered in the chosen zone and, if not,
+  lists the region's zones that offer it.
 - After opening the stack, the deploy refuses a stack whose config names
-  another region or zone (say, one deployed by hand), and refuses an
+  another region, or another zone while the VM is in the state (say, one
+  deployed by hand), and refuses an
   existing deployment whose `Pulumi.<prefix>.yaml` is not on this machine:
   with an empty config, the bootstrap would run on a live stack and delete
   its workloads. A stack counts as existing when the backend already has
@@ -239,6 +251,41 @@ only the enclave).
   These three are mutually exclusive. A release is downloaded and its
   signature verified before the summary, so the summary shows the
   verified digest and commit, and a bad release changes nothing.
+
+### Zone capacity
+
+- A zone can run out of the enclave's machine type (a stockout). The CLI
+  tells one from other failures by `ZONE_CAPACITY_ERROR_PATTERNS` in
+  `deploy/zones.py`, matched against pulumi's output: the
+  `ZONE_RESOURCE_POOL_EXHAUSTED` codes and the two phrases of Compute's
+  message ("does not have enough resources available to fulfill the
+  request", "is currently unavailable in the"). A test runs them against
+  the message a real deploy printed.
+- When a workloads `up` fails that way and the state holds no zonal
+  resource, before or after the `up`, the CLI lists the region's zones
+  through the Compute REST API (`UP`, and offering the machine type,
+  which it reads from `DEFAULT_ENCLAVE_MACHINE_TYPE` in
+  `infra/pulumi/components/config.py` or the stack's
+  `carapace:enclave_machine_type`). It tries them in order, the requested
+  zone first and the rest by name, printing one line per switch. Before
+  each try it pins the zone in the stack config and the deployment
+  record, so a failure for another reason leaves both naming the zone the
+  VM may now be in. The zone that worked stays pinned and later runs use
+  it; when all fail, the requested zone is pinned again and the error
+  lists the zones tried and suggests a later run or another region with
+  a new `--prefix`. A failure that is not a stockout is reported at once.
+- The fallback never changes region and never moves a VM that was in the
+  state before the `up`. `--no-zone-fallback` turns it off.
+- The enclave VM has `replace_on_changes=["metadata"]` and
+  `delete_before_replace=True`, so a new image digest (the
+  `tee-image-reference` metadata) or a newer Confidential Space boot
+  image (resolved on every `up`) deletes the VM before creating the new
+  one. A stockout on that create leaves the deployment without a VM (the
+  static IP is regional and kept). The run that hit it had a VM in the
+  state, so it does not fall back; the provider drops a VM whose create
+  failed from the state, so a re-run sees none and falls back. Creating
+  the replacement first would avoid the gap but needs a second static IP
+  and name, which is left for later.
 
 ### Destroy
 
