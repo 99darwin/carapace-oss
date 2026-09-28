@@ -120,9 +120,10 @@ def check_stack_config(
     project.
 
     The region never changes. The zone may change while the state holds
-    no zonal resource (the enclave VM, see zones.py): nothing that exists
-    is in a zone. ``zonal_resources`` lists the URNs of those in the
-    state; without it a zone change is refused.
+    no live zonal resource (the enclave VM, see zones.py): nothing that
+    exists is in a zone. A VM pending replacement (deleted, its
+    replacement not created) is not live. ``zonal_resources`` lists the
+    URNs of the live ones; without it a zone change is refused.
     """
     if is_existing and config.get("carapace:prefix") != target.prefix:
         raise RecordError(

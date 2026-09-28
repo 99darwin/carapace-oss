@@ -31,6 +31,18 @@ FORBIDDEN_WIF_AUDIENCES = frozenset({LAUNCHER_DEFAULT_AUDIENCE, ATTESTATION_AUDI
 # does not depend on pulumi) to pick zones that offer it, so keep it a
 # plain string literal.
 DEFAULT_ENCLAVE_MACHINE_TYPE = "n2d-standard-2"
+# Production family only; the debug family reports dbgstat=enabled and could
+# never pass the WIF condition anyway.
+CONFIDENTIAL_SPACE_IMAGE_PROJECT = "confidential-space-images"
+CONFIDENTIAL_SPACE_IMAGE_FAMILY = "confidential-space"
+# carapace:boot_image, pinned by `carapace deploy`: a selfLink or bare path
+# of an image in CONFIDENTIAL_SPACE_IMAGE_PROJECT, never another project's.
+# Must match BOOT_IMAGE_PATTERN in cli/src/carapace_cli/deploy/boot_image.py.
+BOOT_IMAGE_PATTERN = re.compile(
+    r"^(?:https://(?:www|compute)\.googleapis\.com/compute/v1/)?"
+    rf"projects/{CONFIDENTIAL_SPACE_IMAGE_PROJECT}/global/images/"
+    r"[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$"
+)
 
 
 class ConfigError(ValueError):
@@ -77,6 +89,22 @@ def reject_server_audience(wif_audience: str | None, control_plane_url: str) -> 
         )
 
 
+def validate_boot_image(image: str) -> str:
+    """Return ``image`` if it names a production Confidential Space image.
+
+    The boot image is part of the trust root: an image of any other
+    project, or a debug image, is refused.
+    """
+    name = image.rpartition("/")[2]
+    if not BOOT_IMAGE_PATTERN.fullmatch(image) or "debug" in name:
+        raise ConfigError(
+            f"boot_image {image[:200]!r} must be an image of the "
+            f"{CONFIDENTIAL_SPACE_IMAGE_PROJECT} project's "
+            f"{CONFIDENTIAL_SPACE_IMAGE_FAMILY} family"
+        )
+    return image
+
+
 def build_image_reference(repository: str, digest: str) -> str:
     """Build ``<repository>@<digest>``, refusing tag-based references.
 
@@ -110,6 +138,8 @@ class StackConfig:
     wif_audience: str | None = None
     control_plane_url: str | None = None
     enclave_machine_type: str = DEFAULT_ENCLAVE_MACHINE_TYPE
+    # None looks the newest image of the family up on every program run.
+    boot_image: str | None = None
     db_tier: str = "db-f1-micro"
     server_min_instances: int = 0
     server_max_instances: int = 2
@@ -143,6 +173,8 @@ class StackConfig:
                     "enclave_image_digest is not in allowed_digests; the VM "
                     "would boot but could never decrypt"
                 )
+        if self.boot_image is not None:
+            validate_boot_image(self.boot_image)
         if self.server_min_instances < 0:
             raise ConfigError("server_min_instances must be >= 0")
         if self.server_max_instances < max(1, self.server_min_instances):
@@ -185,6 +217,7 @@ def load_config() -> StackConfig:
         enclave_machine_type=(
             cfg.get("enclave_machine_type") or DEFAULT_ENCLAVE_MACHINE_TYPE
         ),
+        boot_image=cfg.get("boot_image") or None,
         db_tier=cfg.get("db_tier") or "db-f1-micro",
         server_min_instances=cfg.get_int("server_min_instances") or 0,
         server_max_instances=cfg.get_int("server_max_instances") or 2,

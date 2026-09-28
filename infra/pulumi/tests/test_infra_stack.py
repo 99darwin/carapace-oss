@@ -17,6 +17,7 @@ from harness import (  # noqa: E402
     DIGEST_A,
     DIGEST_B,
     ENCLAVE_SA_UNIQUE_ID,
+    GET_IMAGE_TOKEN,
     GET_KEY_VERSION_TOKEN,
     KMS_PUBLIC_KEY_PEM,
     PROJECT_ID,
@@ -390,6 +391,22 @@ def test_vm_is_confidential_space_with_digest_pinned_image(stack) -> None:
     }
     assert metadata["tee-env-KMS_KEY_NAME"].endswith("/cryptoKeyVersions/1")
     assert metadata["tee-env-WIF_AUDIENCE"] == STS_AUDIENCE
+
+
+def test_vm_boots_the_family_image_without_a_pin(stack) -> None:
+    mocks, _ = stack
+    (lookup,) = [c for c in mocks.calls if c.token == GET_IMAGE_TOKEN]
+    assert lookup.args["family"] == "confidential-space"
+    assert lookup.args["project"] == "confidential-space-images"
+
+
+def test_vm_boots_the_pinned_image_without_a_lookup() -> None:
+    pinned = CONFIDENTIAL_SPACE_IMAGE.replace("251000", "260100")
+    mocks, _ = run_stack(make_config(boot_image=pinned))
+    instance = mocks.one(INSTANCE).inputs
+    assert instance["bootDisk"]["initializeParams"]["image"] == pinned
+    # No lookup: a preview and the `up` after it read the same image.
+    assert not [c for c in mocks.calls if c.token == GET_IMAGE_TOKEN]
 
 
 def _server_env(mocks: RecordingMocks) -> dict[str, str | None]:

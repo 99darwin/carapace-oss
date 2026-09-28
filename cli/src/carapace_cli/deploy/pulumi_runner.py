@@ -34,6 +34,10 @@ from carapace_cli.deploy.state import StateBackend
 PULUMI_MAJOR = 3
 PULUMI_INSTALL_URL = "https://www.pulumi.com/docs/iac/download-install/"
 PULUMI_ENV = {"PULUMI_SKIP_UPDATE_CHECK": "true"}
+# `preview --json` prints one JSON document (the preview digest) when this
+# is off, and a stream of engine events when it is on; the parser reads
+# the digest, so it is always set off.
+PREVIEW_ENV = {"PULUMI_ENABLE_STREAMING_JSON_PREVIEW": "false"}
 # Lines of output kept to explain a failure; the rest already streamed.
 # Enough to hold the diagnostics pulumi prints after a failed `up`, which
 # tell a zone out of capacity from other failures.
@@ -51,6 +55,10 @@ STACK_RM_HINT = (
 
 
 URN_PREFIX = "urn:pulumi:"
+ROOT_STACK_TYPE = "pulumi:pulumi:Stack"
+PREVIEW_HINT = "nothing was changed; fix the cause and run the same command again"
+ERROR_SEVERITY = "error"
+WARNING_SEVERITY = "warning"
 
 
 @dataclass(frozen=True)
@@ -60,12 +68,37 @@ class StateResource:
     ``outputs`` are as exported: a secret output is ciphertext, never its
     value. They are kept out of the repr so that neither ciphertext nor
     plain outputs end up in a traceback or an error message.
+
+    ``pending_replacement`` is Pulumi's ``pendingReplacement``: the
+    resource was deleted for a delete-before-replace and its replacement
+    was not created yet. It stays in the state until the replacement
+    exists, but nothing of it exists in the cloud.
     """
 
     urn: str
     type: str
     protect: bool
     outputs: Mapping[str, Any] = field(repr=False)
+    pending_replacement: bool = False
+
+
+@dataclass(frozen=True)
+class PreviewStep:
+    """One step of ``pulumi preview --json``, without any property value.
+
+    Only what decides whether a resource is replaced, and why, is kept:
+    the operation, the resource, and the names of the properties that
+    differ. The old and new states the digest also carries are dropped,
+    so no value (masked or not) outlives the parse.
+    """
+
+    op: str
+    urn: str
+    type: str
+    replace_reasons: tuple[str, ...] = ()
+    diff_reasons: tuple[str, ...] = ()
+    # Property path -> diff kind ("update", "update-replace", ...).
+    detailed_diff: Mapping[str, str] = field(default_factory=dict)
 
 
 class StackHandle(Protocol):
@@ -76,6 +109,8 @@ class StackHandle(Protocol):
     def set_config(self, values: Mapping[str, str]) -> None: ...
 
     def up(self) -> dict[str, Any]: ...
+
+    def preview(self) -> list[PreviewStep]: ...
 
     def up_targets(self, urns: Sequence[str]) -> None: ...
 
@@ -144,6 +179,39 @@ def run_process(
         return Completed(process.wait(), output)
 
 
+@dataclass(frozen=True)
+class Captured:
+    """A finished command's stdout and stderr, kept apart."""
+
+    code: int
+    stdout: str
+    stderr: str = field(repr=False)
+
+
+class ProcessCapture(Protocol):
+    def __call__(
+        self, argv: list[str], *, cwd: Path, env: Mapping[str, str]
+    ) -> Captured: ...
+
+
+def capture_process(argv: list[str], *, cwd: Path, env: Mapping[str, str]) -> Captured:
+    """Run ``argv`` without a shell; return stdout and stderr separately.
+
+    For commands whose stdout is a document to parse: anything pulumi or
+    a plugin writes to stderr (warnings, plugin downloads) stays out of it.
+    """
+    result = subprocess.run(  # noqa: S603 - argv built in this module, no shell
+        argv,
+        cwd=cwd,
+        env=dict(env),
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return Captured(result.returncode, result.stdout, result.stderr)
+
+
 def pulumi_env(backend: StateBackend | None = None) -> dict[str, str]:
     env = {**os.environ, **PULUMI_ENV}
     if backend is not None:
@@ -192,6 +260,7 @@ class PulumiStack:
     backend: StateBackend
     on_output: Callable[[str], None]
     run: ProcessRunner = field(default=run_process)
+    capture: ProcessCapture = field(default=capture_process)
 
     def _pulumi(
         self,
@@ -260,6 +329,42 @@ class PulumiStack:
     def up(self) -> dict[str, Any]:
         self._pulumi("up", "--yes", "--skip-preview", stream=True)
         return self.outputs()
+
+    def preview(self) -> list[PreviewStep]:
+        """``pulumi preview --json``: what the next ``up`` would do.
+
+        Never ``--show-secrets``: secret values stay masked in the digest,
+        and the parse keeps no value at all. stderr is kept apart from the
+        JSON and passed to the terminal, as a streamed command's output
+        is. A failed preview or output that is not a preview digest raises
+        :class:`PulumiError`, whose message holds none of pulumi's output.
+        """
+        argv = [
+            self.executable,
+            "preview",
+            "--json",
+            "--non-interactive",
+            "--stack",
+            self.stack,
+        ]
+        result = self.capture(
+            argv, cwd=self.infra, env={**pulumi_env(self.backend), **PREVIEW_ENV}
+        )
+        for line in result.stderr.splitlines(keepends=True):
+            self.on_output(line)
+        if result.code != 0:
+            self._show_diagnostics(result.stdout, ERROR_SEVERITY)
+            raise PulumiError(
+                f"pulumi preview failed (exit code {result.code}); see its "
+                f"output above; {PREVIEW_HINT}"
+            )
+        steps = parse_preview(result.stdout)
+        self._show_diagnostics(result.stdout, WARNING_SEVERITY)
+        return steps
+
+    def _show_diagnostics(self, output: str, severity: str) -> None:
+        for message in _preview_diagnostics(output, severity):
+            self.on_output(message if message.endswith("\n") else message + "\n")
 
     def up_targets(self, urns: Sequence[str]) -> None:
         """``pulumi up`` on exactly ``urns``, which the state already tracks.
@@ -358,6 +463,7 @@ class PulumiStack:
                     type=type_,
                     protect=entry.get("protect") is True,
                     outputs=outputs,
+                    pending_replacement=entry.get("pendingReplacement") is True,
                 )
             )
         return resources
@@ -389,12 +495,129 @@ def _decode(output: str, *, command: str) -> dict[str, Any]:
     return value
 
 
+def urn_type(urn: str) -> str:
+    """The resource type a URN names; its parents' types are dropped.
+
+    ``urn:pulumi:<stack>::<project>::<parent$...$type>::<name>``
+    """
+    parts = urn.split("::", 3)
+    if len(parts) != 4 or not urn.startswith(URN_PREFIX):
+        raise PulumiError(
+            f"pulumi preview printed a malformed resource URN; {PREVIEW_HINT}"
+        )
+    return parts[2].rpartition("$")[2]
+
+
+def _preview_digest(output: str) -> dict[str, Any]:
+    try:
+        value = json.loads(output)
+    except json.JSONDecodeError:
+        raise PulumiError(
+            f"pulumi preview did not print a JSON preview; {PREVIEW_HINT}"
+        ) from None
+    if not isinstance(value, dict):
+        raise PulumiError(
+            f"pulumi preview printed {type(value).__name__}, not a preview; "
+            f"{PREVIEW_HINT}"
+        )
+    return value
+
+
+def _preview_diagnostics(output: str, severity: str) -> list[str]:
+    """The diagnostics of ``severity`` in a preview's digest, if it printed one.
+
+    A failure in the program, and its warnings, are reported in the
+    digest, not on stderr. The messages are copied verbatim, as the
+    streamed output of an ``up`` is: Pulumi masks the values it knows are
+    secret, but a message a program or provider writes holds whatever it
+    wrote. They go to the terminal only, never into an exception.
+    """
+    try:
+        diagnostics = _preview_digest(output).get("diagnostics")
+    except PulumiError:
+        return []
+    if not isinstance(diagnostics, list):
+        return []
+    return [
+        entry["message"]
+        for entry in diagnostics
+        if isinstance(entry, dict)
+        and entry.get("severity") == severity
+        and isinstance(entry.get("message"), str)
+    ]
+
+
+def _names(value: object) -> tuple[str, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise PulumiError(f"pulumi preview printed a malformed step; {PREVIEW_HINT}")
+    return tuple(value)
+
+
+def _detailed_diff(value: object) -> dict[str, str]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise PulumiError(f"pulumi preview printed a malformed step; {PREVIEW_HINT}")
+    kinds: dict[str, str] = {}
+    for path, diff in value.items():
+        kind = diff.get("kind") if isinstance(diff, dict) else None
+        if not isinstance(path, str) or not isinstance(kind, str):
+            raise PulumiError(
+                f"pulumi preview printed a malformed step; {PREVIEW_HINT}"
+            )
+        kinds[path] = kind
+    return kinds
+
+
+def parse_preview(output: str) -> list[PreviewStep]:
+    """The steps of the digest ``pulumi preview --json`` prints.
+
+    The shape is Pulumi's ``display.PreviewDigest`` (``pkg/display/json.go``):
+    ``steps[]`` with ``op``, ``urn``, ``replaceReasons``, ``diffReasons``
+    and ``detailedDiff`` (path -> ``{kind, inputDiff}``). The root stack's
+    step is always in it, so a digest without one is not trusted: output
+    that merely parses as JSON must not read as "nothing changes".
+    """
+    steps = _preview_digest(output).get("steps")
+    if not isinstance(steps, list):
+        raise PulumiError(f"pulumi preview printed no steps; {PREVIEW_HINT}")
+    parsed: list[PreviewStep] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            raise PulumiError(
+                f"pulumi preview printed a malformed step; {PREVIEW_HINT}"
+            )
+        op, urn = step.get("op"), step.get("urn")
+        if not isinstance(op, str) or not op or not isinstance(urn, str):
+            raise PulumiError(
+                f"pulumi preview printed a malformed step; {PREVIEW_HINT}"
+            )
+        parsed.append(
+            PreviewStep(
+                op=op,
+                urn=urn,
+                type=urn_type(urn),
+                replace_reasons=_names(step.get("replaceReasons")),
+                diff_reasons=_names(step.get("diffReasons")),
+                detailed_diff=_detailed_diff(step.get("detailedDiff")),
+            )
+        )
+    if not any(step.type == ROOT_STACK_TYPE for step in parsed):
+        raise PulumiError(
+            f"pulumi preview printed no step for the stack; {PREVIEW_HINT}"
+        )
+    return parsed
+
+
 def open_stack(
     target: Target,
     backend: StateBackend,
     *,
     on_output: Callable[[str], None],
     run: ProcessRunner = run_process,
+    capture: ProcessCapture = capture_process,
 ) -> PulumiStack:
     """Select or create the stack named after the prefix, in the GCS backend."""
     stack = PulumiStack(
@@ -404,6 +627,7 @@ def open_stack(
         backend=backend,
         on_output=on_output,
         run=run,
+        capture=capture,
     )
     stack.select()
     stack.install()

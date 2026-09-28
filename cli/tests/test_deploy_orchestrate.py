@@ -15,6 +15,8 @@ from typing import Any
 
 import pytest
 from deploy_support import (
+    ENCLAVE_VM_URN,
+    FULL_STACK_URNS,
     KEY_VERSION,
     KMS,
     NEW_DIGEST,
@@ -30,6 +32,9 @@ from deploy_support import (
     deployable_project,
     instant_clock,
     ok,
+    replace_gate,
+    state_resources,
+    vm_outputs,
 )
 from first_run_support import fake_first_run
 
@@ -45,6 +50,7 @@ from carapace_cli.deploy.orchestrate import (
 )
 from carapace_cli.deploy.polling import PollTimeoutError
 from carapace_cli.deploy.preflight import Target
+from carapace_cli.deploy.pulumi_runner import StateResource
 from carapace_cli.main import main
 
 TARGET = Target(PROJECT, PROJECT_NUMBER, REGION, f"{REGION}-a", PREFIX, ("a@b.io",))
@@ -61,6 +67,7 @@ def _deploy(
         images=PrebuiltImages(images=IMAGES),
         clock=instant_clock(),
         say=say,
+        replace_gate=replace_gate(),
     ).outputs
 
 
@@ -103,6 +110,7 @@ def test_unknown_enclave_digest_bootstraps_with_placeholder() -> None:
         images=LaterImages(),
         clock=instant_clock(),
         say=lambda _: None,
+        replace_gate=replace_gate(),
     )
     assert json.loads(stack.ups[0]["carapace:allowed_digests"]) == [PLACEHOLDER_DIGEST]
     assert json.loads(stack.ups[-1]["carapace:allowed_digests"]) == [NEW_DIGEST]
@@ -192,6 +200,7 @@ def test_stale_config_with_unknown_digest_bootstraps_with_placeholder() -> None:
         images=LaterImages(),
         clock=instant_clock(),
         say=lambda _: None,
+        replace_gate=replace_gate(),
     )
     allowed = [json.loads(up["carapace:allowed_digests"]) for up in stack.ups]
     assert allowed[0] == [PLACEHOLDER_DIGEST]
@@ -434,3 +443,41 @@ def test_deploy_command_end_to_end(
     assert len(stack.ups) == 2
     assert (tmp_path / "enclave.json").exists()
     assert "Verified and pinned the enclave" in err.getvalue()
+
+
+def enclave_vm(*, pending: bool) -> StateResource:
+    return StateResource(
+        urn=ENCLAVE_VM_URN,
+        type=ENCLAVE_VM_URN.split("::")[2],
+        protect=False,
+        outputs=vm_outputs(zone=TARGET.zone, image=""),
+        pending_replacement=pending,
+    )
+
+
+def test_bootstrap_refuses_a_state_with_a_live_vm() -> None:
+    # The config says no workloads and the outputs agree, yet the state
+    # holds a live VM: a deploy_workloads=false up would delete it.
+    stack = FakeStack(
+        initial={"carapace:deploy_workloads": "false"},
+        resources_in_state=[
+            *state_resources(FULL_STACK_URNS),
+            enclave_vm(pending=False),
+        ],
+    )
+    with pytest.raises(DeployStepError, match=f"{PREFIX}-enclave.*carapace:deploy_"):
+        _deploy(deployable_project(), stack)
+    assert stack.ups == []
+
+
+def test_bootstrap_goes_ahead_over_a_vm_pending_replacement() -> None:
+    # Pulumi already deleted that VM; there is nothing left to take down.
+    stack = FakeStack(
+        initial={"carapace:deploy_workloads": "false"},
+        resources_in_state=[
+            *state_resources(FULL_STACK_URNS),
+            enclave_vm(pending=True),
+        ],
+    )
+    _deploy(deployable_project(), stack)
+    assert [up["carapace:deploy_workloads"] for up in stack.ups] == ["false", "true"]

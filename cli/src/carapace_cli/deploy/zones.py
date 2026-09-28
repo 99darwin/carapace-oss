@@ -11,13 +11,16 @@ be run again in another zone of the same region. The region never
 changes: its resources would all be replaced, and a key ring can never be
 deleted.
 
-A VM that is in the state is never moved: an update of a live VM that
-fails for capacity (a start after a stop) leaves it in the state and is
-reported as it is. What decides is the state after the failed ``up``, not
-before it: a replacement deletes the VM first (``delete_before_replace``
-in ``components/enclave_vm.py``), so a stockout on its create leaves no
-VM, and waiting for a later run to move it would only leave the
-deployment without an enclave for longer.
+A live VM is never moved: an update of a live VM that fails for capacity
+(a start after a stop) leaves it in the state and is reported as it is.
+What decides is the state after the failed ``up``, not before it: a
+replacement deletes the VM first (``delete_before_replace`` in
+``components/enclave_vm.py``), so a stockout on its create leaves no VM,
+and waiting for a later run to move it would only leave the deployment
+without an enclave for longer. Pulumi keeps the deleted VM in the state,
+marked ``pendingReplacement``, until the replacement is created; such an
+entry is not a VM, so it is left out wherever this module (and the gate,
+and the zone check of ``record.py``) asks for the zonal resources.
 """
 
 from __future__ import annotations
@@ -60,9 +63,23 @@ def is_zone_capacity_error(text: str) -> bool:
     return any(pattern.lower() in lowered for pattern in ZONE_CAPACITY_ERROR_PATTERNS)
 
 
-def zonal_resource_urns(resources: Sequence[StateResource]) -> list[str]:
-    """The URNs of the zonal resources in the state."""
-    return [r.urn for r in resources if r.type in ZONAL_RESOURCE_TYPES]
+def live_zonal_resources(resources: Sequence[StateResource]) -> list[StateResource]:
+    """The zonal resources in the state that exist in the cloud.
+
+    A resource pending replacement was deleted by a delete-before-replace
+    whose create has not succeeded (Pulumi's ``pendingReplacement``): it
+    is in no zone any more, and its replacement may be created in another.
+    """
+    return [
+        r
+        for r in resources
+        if r.type in ZONAL_RESOURCE_TYPES and not r.pending_replacement
+    ]
+
+
+def live_zonal_resource_urns(resources: Sequence[StateResource]) -> list[str]:
+    """The URNs of :func:`live_zonal_resources`."""
+    return [r.urn for r in live_zonal_resources(resources)]
 
 
 def ordered_zones(requested: str, region: str, offered: Sequence[str]) -> list[str]:
@@ -109,10 +126,10 @@ def zone_fallback(
 
 
 def _failed_for_capacity(exc: PulumiError, stack: StackHandle) -> bool:
-    """A stockout that left no zonal resource in the state."""
+    """A stockout that left no live zonal resource in the state."""
     if not is_zone_capacity_error(f"{exc}\n{exc.output}"):
         return False
-    return not zonal_resource_urns(stack.resources())
+    return not live_zonal_resource_urns(stack.resources())
 
 
 def up_with_zone_fallback(
@@ -126,14 +143,15 @@ def up_with_zone_fallback(
 
     Returns the outputs and the target with the zone that worked. Nothing
     moves when ``fallback`` is None, when the failure is not a stockout,
-    or when the state still holds a zonal resource after it (an update
-    of a live VM). A VM the state held before the ``up`` and not after
-    it was deleted for its replacement; the replacement is then created
-    in another zone, and the user is told the VM moved.
+    or when the state still holds a live zonal resource after it (an
+    update of a live VM). A VM live before the ``up`` and not after it
+    was deleted for its replacement (the state keeps it, pending
+    replacement); the replacement is then created in another zone, and
+    the user is told the VM moved.
     """
     if fallback is None:
         return stack.up(), target
-    had_zonal = bool(zonal_resource_urns(stack.resources()))
+    had_zonal = bool(live_zonal_resource_urns(stack.resources()))
     try:
         return stack.up(), target
     except PulumiError as exc:

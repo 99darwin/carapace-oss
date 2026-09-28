@@ -247,6 +247,7 @@ remove them in a later release).
 | `control_plane_url` | `https://<prefix>-server-<project number>.<region>.run.app` | A bare `https://host[:port]` origin (no path or trailing slash). Used as the server's `CARAPACE_PUBLIC_URL`, the enclave's `CONTROL_PLANE_URL`, and in the WIF condition |
 | `wif_audience` | provider resource name | The only audience WIF accepts. Must be stack-specific. `https://sts.googleapis.com`, `carapace-attestation` and the control plane URL are refused |
 | `enclave_machine_type` | `n2d-standard-2` | Must support AMD SEV |
+| `boot_image` | newest image of the `confidential-space` family | A Confidential Space image of the `confidential-space-images` project (selfLink or `projects/...` path); debug images and other projects are refused. `carapace deploy` pins it once per run so its preview and `up` agree |
 | `db_tier` | `db-f1-micro` | |
 | `server_min_instances` / `server_max_instances` | `0` / `2` | |
 | `protect_kms_key` | `true` | Pulumi `protect` on the key ring and key |

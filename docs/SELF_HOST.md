@@ -257,6 +257,49 @@ long-lived VM eventually **stops being able to decrypt**. Run `pulumi up`
 periodically (monthly is reasonable). When a newer image exists, the VM is
 recreated on it, with a few minutes of downtime.
 
+The program boots the image named by `carapace:boot_image` in the stack
+config when it is set, and the newest image of the `confidential-space`
+family otherwise. `carapace deploy` looks the family up once per run and
+sets `carapace:boot_image` itself, so its preview and its `up` use the
+same image. The value must be an image of the `confidential-space-images`
+project (never a debug image); anything else is refused. If you run
+`pulumi up` by hand to pick up a newer image, remove the key first
+(`pulumi config rm carapace:boot_image`) or set it to the new image.
+
+`carapace deploy` asks before it does this. Before each workloads
+`pulumi up` on a deployment whose enclave VM already exists, it runs
+`pulumi preview --json` (never with `--show-secrets`). If the preview
+would replace or delete the VM, it prints why (a new Confidential Space
+boot image, a new enclave digest, or another input it names) and that
+the enclave is down for a few minutes while the VM is recreated. Then:
+
+- A replacement caused only by the new enclave digest you chose is
+  announced and goes ahead: choosing the images is the consent. If a
+  newer boot image is out too, it is folded into that same replacement,
+  so you get one outage, not two.
+- Anything else, such as a new boot image with no new digest, other
+  metadata, or a removal, asks `Replace the enclave VM
+  now? [y/N]`. Answering no stops before that `up`, so the VM is not
+  replaced; run the same command again when the downtime suits you.
+- A run that cannot prompt (`--non-interactive`, or stdin not a
+  terminal) is refused unless you pass `--allow-enclave-replace`. `--yes`
+  does not cover it.
+
+You are asked at most once per deploy. A rollout to a new digest takes
+three `up`s, and each one is previewed. If a later one would replace the
+VM for a cause you were not shown, the deploy stops before that `up`,
+even with `--allow-enclave-replace`; run the same command again to
+review it. An image Google publishes mid-deploy is not picked up: the
+image is fixed when the deploy starts. A failed preview, or output the
+CLI cannot read, also stops the deploy before the `up`.
+
+First deploys are not previewed, and neither are runs where the state
+holds no live VM. That includes a replacement whose create failed (say,
+on a stockout): Pulumi already deleted the old VM and keeps it in the
+state marked `pendingReplacement` until an `up` creates the new one, so
+the rerun that does has nothing left to take down, and may create it in
+another zone of the region.
+
 ### Alerts
 
 Alerts go to `alert_emails`. An alert means someone changed IAM on the key,
@@ -317,7 +360,9 @@ is reported as it is and moves nothing.
 Note that the Confidential Space boot image is resolved from Google's
 `confidential-space` family on every run, so a run made for any other
 reason (say, a new server image) after Google publishes a new image
-replaces the enclave VM, with the minutes of downtime that takes.
+would replace the enclave VM, with the minutes of downtime that takes.
+`carapace deploy` previews such a run and asks first (see
+[Keep the Confidential Space image current](#keep-the-confidential-space-image-current)).
 
 ## Cost
 
