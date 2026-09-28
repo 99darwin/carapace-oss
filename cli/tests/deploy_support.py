@@ -349,10 +349,10 @@ FULL_STACK_URNS = (*UNPROTECTED_URNS, *KMS_URNS, *DB_URNS)
 ENCLAVE_VM_URN = urn("gcp:compute/instance:Instance", f"{PREFIX}-enclave")
 ROOT_STACK_URN = urn("pulumi:pulumi:Stack", f"carapace-{PREFIX}")
 # Verbatim from a real `carapace deploy` in us-central1 (2026-09-28), with
-# the zone made a placeholder.
+# the project and zone made placeholders.
 STOCKOUT_MESSAGE = (
     "Error waiting for instance to create: The zone "
-    "'projects/throwaway-carapace/zones/{zone}' does not have enough "
+    "'projects/example-project/zones/{zone}' does not have enough "
     "resources available to fulfill the request. Try a different zone, or "
     "try again later. A n2d-standard-2 VM instance is currently unavailable "
     "in the {zone} zone."
