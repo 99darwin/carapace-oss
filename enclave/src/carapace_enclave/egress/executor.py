@@ -9,7 +9,9 @@ One request in, one response out. For each agent request the executor:
 3. Resolves DNS once through :class:`URLFilter` and connects to that IP, with
    TLS SNI and ``Host`` set to the allowlisted hostname (certificate
    verification uses the hostname, not the IP).
-4. Injects the secret, sends the request without following redirects, and
+4. Injects the secret, adds ``User-Agent: carapace-enclave`` when no
+   ``User-Agent`` is present (some APIs, GitHub among them, refuse requests
+   without one), sends the request without following redirects, and
    streams the response up to the policy's byte cap.
 5. Redacts the secret from response headers and body.
 
@@ -54,6 +56,9 @@ from carapace_enclave.egress.url_filter import (
 MIN_SECRET_BYTES = 8
 MAX_REQUEST_HEADERS = 64
 MAX_HEADER_BYTES = 16 * 1024
+# Sent only when neither the agent nor the injection sets a User-Agent. A
+# constant: it must never carry secret material or per-request data.
+DEFAULT_USER_AGENT = b"carapace-enclave"
 _PLACEHOLDER = SECRET_PLACEHOLDER.encode("ascii")
 # C0 controls and DEL can never appear in a header value or be sent safely.
 _UNSAFE_SECRET_BYTES = frozenset([*range(0x20), 0x7F])
@@ -194,6 +199,7 @@ class EgressExecutor:
         if policy.inject.kind == "header" and not _FIELD_VALUE.match(rendered):
             raise EgressDenied("secret_not_injectable")
         target, headers = _inject(policy, rendered, url.target, headers)
+        headers = _with_default_user_agent(headers)
         redactor = Redactor(_redaction_values(policy, bytes(secret), rendered))
 
         # The error is raised outside the ``except`` blocks so it carries no
@@ -367,6 +373,20 @@ def _inject(
     param = f"{name}=".encode() + quote_from_bytes(rendered, safe="").encode()
     joined = f"{path}?{query}&" if query else f"{path}?"
     return joined.encode("ascii") + param, headers
+
+
+def _with_default_user_agent(
+    headers: list[tuple[bytes, bytes]],
+) -> list[tuple[bytes, bytes]]:
+    """Append the default User-Agent unless one is already present.
+
+    httpx adds its own ``python-httpx`` User-Agent only in
+    ``Client.build_request``; the executor sends a prebuilt request, so
+    without this no User-Agent reaches the upstream at all.
+    """
+    if any(name.lower() == b"user-agent" for name, _ in headers):
+        return headers
+    return [*headers, (b"User-Agent", DEFAULT_USER_AGENT)]
 
 
 def _redaction_values(

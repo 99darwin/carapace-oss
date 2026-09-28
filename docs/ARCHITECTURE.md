@@ -157,6 +157,9 @@ For each request, the enclave executor:
 - Resolves DNS once, blocks private and link-local addresses, and connects to
   the pinned IP to prevent DNS rebinding.
 - Rejects agent-supplied `Host`, `Proxy-*`, and injection-target headers.
+- Sends `User-Agent: carapace-enclave` when neither the agent nor the
+  injection sets one (GitHub, for one, rejects requests without it); an
+  agent-supplied `User-Agent` passes through unchanged.
 - Does not follow redirects.
 - Caps request and response sizes.
 - Redacts the secret from response headers and body, in raw, base64,
