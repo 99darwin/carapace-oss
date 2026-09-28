@@ -6,6 +6,7 @@ import sqlite3
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 from anyio import to_thread
@@ -205,10 +206,19 @@ async def test_admin_command_lists_and_deletes(
     stranger, owner = await _seed_open_server(db)
     # main() starts its own event loop, so it runs in a worker thread.
     assert await to_thread.run_sync(main, ["users", "list"], settings) == 0
-    lines = capsys.readouterr().out.splitlines()
+    listing = capsys.readouterr().out
+    lines = listing.splitlines()
     assert len(lines) == 2
     assert lines[0].startswith(str(stranger)) and lines[0].endswith("(claim)")
-    assert lines[1].startswith(str(owner)) and OWNER in lines[1]
+    assert lines[1].startswith(str(owner)) and "(claim)" not in lines[1]
+    # Job output lands in Cloud Logging, so emails are opt-in.
+    assert "@" not in listing
+
+    args = ["users", "list", "--emails"]
+    assert await to_thread.run_sync(main, args, settings) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert STRANGER in lines[0] and lines[0].endswith("(claim)")
+    assert OWNER in lines[1]
 
     args = ["users", "delete", str(stranger)]
     assert await to_thread.run_sync(main, args, settings) == 0
@@ -261,3 +271,29 @@ async def test_startup_is_silent_with_one_account(
     with caplog.at_level(logging.WARNING, logger="carapace_server.admin"):
         await warn_if_accounts_predate_closing(sessionmaker, closed)
     assert caplog.records == []
+
+
+@pytest.mark.parametrize("error", [OSError, TimeoutError])
+async def test_startup_continues_when_the_probe_fails(
+    settings: Settings,
+    caplog: pytest.LogCaptureFixture,
+    error: type[Exception],
+) -> None:
+    class Broken:
+        """A sessionmaker whose connection fails as a raw driver error."""
+
+        async def __aenter__(self) -> None:
+            raise error("probe failed: host=db.internal")
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    closed = settings.model_copy(update={"allow_signup": False})
+    with caplog.at_level(logging.WARNING, logger="carapace_server.admin"):
+        await warn_if_accounts_predate_closing(
+            cast(async_sessionmaker[AsyncSession], Broken), closed
+        )
+    assert [r.getMessage() for r in caplog.records] == [
+        f"could not count accounts: {error.__name__}"
+    ]
+    assert "db.internal" not in caplog.text

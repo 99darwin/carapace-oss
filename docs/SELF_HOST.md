@@ -288,8 +288,9 @@ account could use: one sealed while signed in to it, or reachable
 through an API key issued from it.
 
 **With the admin command.** It runs in the server image, so the migration
-job can run it with your server's environment. Its output (account ids,
-creation times and emails) goes to the job's logs in Cloud Logging.
+job can run it with your server's environment. Its output goes to the
+job's logs in Cloud Logging, so `list` prints only each account's id,
+creation time and whether it holds the claim.
 
 ```bash
 gcloud run jobs execute <prefix>-migrate --region <region> --wait \
@@ -298,10 +299,15 @@ gcloud run jobs execute <prefix>-migrate --region <region> --wait \
   --args=-m,carapace_server.admin,users,delete,<user id>
 ```
 
-`list` marks the account that holds the claim. `delete` removes one
-account and, if it held the claim, gives the claim to the oldest
-remaining account, in one transaction. The next `pulumi up` resets the
-job's arguments.
+`delete` removes one account and, if it held the claim, gives the claim
+to the oldest remaining account, in one transaction. `--args` overrides
+the arguments for that one execution only; the job's definition does not
+change.
+
+To tell accounts apart by email, prefer the SQL below through
+`gcloud sql connect`, which keeps the emails off the logs. `users list
+--emails` also prints them, but running it as the job writes every
+account's email to Cloud Logging.
 
 **With SQL.** Connected to the database (for Cloud SQL, through
 `gcloud sql connect` or the Cloud SQL Auth Proxy), list the accounts:
@@ -316,6 +322,7 @@ exactly as the list shows it:
 
 <!-- delete-account-sql: tested by server/tests/test_admin.py -->
 ```sql
+-- <id> exactly as listed (on SQLite, ids are stored without dashes)
 BEGIN;
 DELETE FROM instance_claim WHERE user_id = '<id>';
 DELETE FROM users WHERE id = '<id>';

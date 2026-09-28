@@ -24,7 +24,6 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import delete, func, select
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from carapace_server.auth.models import INSTANCE_CLAIM_ID, InstanceClaim, User
@@ -66,8 +65,9 @@ async def warn_if_accounts_predate_closing(
     try:
         async with sessionmaker() as db:
             users = await count_users(db)
-    except SQLAlchemyError as exc:
-        # Never block startup on this check; the migration job owns schema.
+    except Exception as exc:  # noqa: BLE001
+        # Never block startup on this advisory check: a driver can raise
+        # OSError or TimeoutError as well as SQLAlchemyError.
         logger.warning("could not count accounts: %s", type(exc).__name__)
         return
     if users > 1:
@@ -97,6 +97,16 @@ async def list_accounts(db: AsyncSession) -> list[Account]:
     ]
 
 
+def format_account(account: Account, *, show_email: bool) -> str:
+    """One ``list`` line; emails only on request, as job output is logged."""
+    fields = [str(account.id), account.created_at.isoformat()]
+    if show_email:
+        fields.append(account.email)
+    if account.holds_claim:
+        fields.append("(claim)")
+    return "  ".join(fields)
+
+
 async def delete_account(db: AsyncSession, user_id: uuid.UUID) -> None:
     """Delete one account and keep the server claimed, in one transaction."""
     if await db.get(User, user_id) is None:
@@ -116,11 +126,7 @@ async def _run(args: argparse.Namespace, settings: Settings) -> None:
         async with create_sessionmaker(engine)() as db:
             if args.action == "list":
                 for account in await list_accounts(db):
-                    claim = " (claim)" if account.holds_claim else ""
-                    print(
-                        f"{account.id}  {account.created_at.isoformat()}  "
-                        f"{account.email}{claim}"
-                    )
+                    print(format_account(account, show_email=args.emails))
             else:
                 await delete_account(db, args.user_id)
                 print(f"deleted {args.user_id}")
@@ -132,7 +138,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m carapace_server.admin")
     users = parser.add_subparsers(dest="group", required=True).add_parser("users")
     actions = users.add_subparsers(dest="action", required=True)
-    actions.add_parser("list", help="every account, oldest first")
+    listing = actions.add_parser("list", help="every account, oldest first")
+    listing.add_argument(
+        "--emails",
+        action="store_true",
+        help="include emails (job output is written to Cloud Logging)",
+    )
     remove = actions.add_parser("delete", help="delete one account and its data")
     remove.add_argument("user_id", type=uuid.UUID)
     return parser
