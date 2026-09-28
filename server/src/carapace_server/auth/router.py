@@ -1,4 +1,9 @@
-"""/v1/auth routes. Error messages are deliberately generic."""
+"""/v1/auth routes. Error messages are deliberately generic.
+
+Registration refusals are the exception: a closed server answers 403 with
+the stable detail ``Registration is closed``, and a first registration
+without the right setup token 403 ``Invalid setup token``.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +13,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from carapace_server.auth import schemas
 from carapace_server.auth.deps import AppSettings, CurrentUser
-from carapace_server.auth.service import AuthError, AuthService, ClientInfo, Session
+from carapace_server.auth.service import (
+    AuthError,
+    AuthService,
+    ClientInfo,
+    RegistrationClosedError,
+    Session,
+    SetupTokenError,
+)
 from carapace_server.auth.tokens import (
     InvalidTokenError,
     blacklist_token,
@@ -47,6 +59,12 @@ def _fail(code: int, detail: str) -> HTTPException:
     return HTTPException(status_code=code, detail=detail)
 
 
+def _registration_failed(exc: AuthError) -> HTTPException:
+    if isinstance(exc, RegistrationClosedError | SetupTokenError):
+        return _fail(status.HTTP_403_FORBIDDEN, str(exc))
+    return _fail(status.HTTP_400_BAD_REQUEST, "Registration failed")
+
+
 @router.post("/register", status_code=status.HTTP_201_CREATED)
 @limiter.limit("3/minute")
 async def register(
@@ -57,10 +75,14 @@ async def register(
 ) -> schemas.TokenResponse:
     try:
         session = await service.register_with_password(
-            body.email, body.password, body.display_name, _client(request)
+            body.email,
+            body.password,
+            body.display_name,
+            _client(request),
+            setup_token=body.setup_token,
         )
-    except AuthError:
-        raise _fail(status.HTTP_400_BAD_REQUEST, "Registration failed") from None
+    except AuthError as exc:
+        raise _registration_failed(exc) from None
     return _tokens(session, settings)
 
 
@@ -88,6 +110,8 @@ async def passkey_register_options(
 ) -> schemas.PasskeyOptionsResponse:
     try:
         options = await service.registration_options(body.email)
+    except RegistrationClosedError as exc:
+        raise _registration_failed(exc) from None
     except AuthError:
         raise _fail(status.HTTP_400_BAD_REQUEST, "Unable to process request") from None
     return schemas.PasskeyOptionsResponse(options=options)
@@ -103,10 +127,14 @@ async def passkey_register(
 ) -> schemas.TokenResponse:
     try:
         session = await service.register_with_passkey(
-            body.email, body.display_name, body.credential, _client(request)
+            body.email,
+            body.display_name,
+            body.credential,
+            _client(request),
+            setup_token=body.setup_token,
         )
-    except AuthError:
-        raise _fail(status.HTTP_400_BAD_REQUEST, "Registration failed") from None
+    except AuthError as exc:
+        raise _registration_failed(exc) from None
     return _tokens(session, settings)
 
 

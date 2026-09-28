@@ -12,6 +12,9 @@ from dataclasses import dataclass, field
 import pulumi
 
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+# carapace:setup_token_sha256, set by `carapace deploy`: the hex SHA-256 of
+# the one-time token the first account registers with. Not a secret.
+SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 # A bare https origin: lowercase host and optional port, nothing after it.
 # Also keeps the value safe to embed in the WIF condition's CEL.
 CONTROL_PLANE_URL_PATTERN = re.compile(r"^https://[a-z0-9.-]+(:[0-9]{1,5})?$")
@@ -148,6 +151,10 @@ class StackConfig:
     deploy_workloads: bool = True
     enable_iam_alerts: bool = True
     alert_emails: list[str] = field(default_factory=list)
+    # Registration: the setup token's hash for the first account, and
+    # whether anyone else may sign up (off: closed after the first).
+    setup_token_sha256: str | None = None
+    allow_signup: bool = False
 
     def __post_init__(self) -> None:
         if not self.project:
@@ -175,6 +182,10 @@ class StackConfig:
                 )
         if self.boot_image is not None:
             validate_boot_image(self.boot_image)
+        if self.setup_token_sha256 is not None and not SHA256_HEX_PATTERN.fullmatch(
+            self.setup_token_sha256
+        ):
+            raise ConfigError("setup_token_sha256 must be 64 lowercase hex characters")
         if self.server_min_instances < 0:
             raise ConfigError("server_min_instances must be >= 0")
         if self.server_max_instances < max(1, self.server_min_instances):
@@ -226,6 +237,8 @@ def load_config() -> StackConfig:
         deploy_workloads=_get_bool(cfg, "deploy_workloads", default=True),
         enable_iam_alerts=_get_bool(cfg, "enable_iam_alerts", default=True),
         alert_emails=cfg.get_object("alert_emails") or [],
+        setup_token_sha256=cfg.get("setup_token_sha256") or None,
+        allow_signup=_get_bool(cfg, "allow_signup", default=False),
     )
 
 

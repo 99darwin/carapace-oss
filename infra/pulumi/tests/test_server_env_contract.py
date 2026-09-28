@@ -133,3 +133,37 @@ def test_server_trusts_exactly_one_proxy_hop(server_config, server_envs) -> None
     env = server_envs.get(f"{prefix}{PROXY_HOPS_SETTING.upper()}")
     assert env is not None, "the server would key rate limits on the frontend"
     assert env.get("value") == CLOUD_RUN_PROXY_HOPS
+
+
+SETUP_TOKEN_SHA256 = "d" * 64
+
+
+def _envs_for(**overrides: object) -> dict[str, dict]:
+    mocks, _ = run_stack(make_config(**overrides))
+    service = mocks.one("gcp:cloudrunv2/service:Service").inputs
+    envs = service["template"]["containers"][0]["envs"]
+    return {env["name"]: env for env in envs}
+
+
+def test_signup_is_closed_by_default(server_config, server_envs) -> None:
+    prefix = _env_prefix(server_config)
+    fields = _settings_fields(server_config)
+    assert {"allow_signup", "setup_token_sha256"} <= fields
+    assert server_envs[f"{prefix}ALLOW_SIGNUP"]["value"] == "false"
+    assert f"{prefix}SETUP_TOKEN_SHA256" not in server_envs
+
+
+def test_setup_token_hash_and_opt_in_reach_the_server(server_config) -> None:
+    prefix = _env_prefix(server_config)
+    envs = _envs_for(setup_token_sha256=SETUP_TOKEN_SHA256, allow_signup=True)
+    assert envs[f"{prefix}ALLOW_SIGNUP"]["value"] == "true"
+    # Only the hash, never the token, so a plain value is fine.
+    assert envs[f"{prefix}SETUP_TOKEN_SHA256"]["value"] == SETUP_TOKEN_SHA256
+
+
+@pytest.mark.parametrize("value", ["abc", "D" * 64, "sha256:" + "d" * 64])
+def test_setup_token_hash_must_be_hex_sha256(value: str) -> None:
+    from components.config import ConfigError
+
+    with pytest.raises(ConfigError, match="setup_token_sha256"):
+        make_config(setup_token_sha256=value)

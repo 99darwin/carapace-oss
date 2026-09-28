@@ -8,6 +8,8 @@ run calls, over ``httpx.MockTransport``. :class:`FakeEnclave` stands in for
 from __future__ import annotations
 
 import functools
+import hashlib
+import hmac
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,7 +20,12 @@ from deploy_support import KEY_VERSION
 
 from carapace_cli.attestation import TrustPolicy
 from carapace_cli.deploy.first_run import FirstRunServices
-from carapace_cli.errors import EnclaveError, NetworkError
+from carapace_cli.errors import (
+    REGISTRATION_CLOSED,
+    SETUP_TOKEN_INVALID,
+    EnclaveError,
+    NetworkError,
+)
 from carapace_cli.pin import EnclavePin
 from carapace_cli.session import ServerClient, Session, authenticate
 
@@ -27,12 +34,20 @@ PASSWORD = "Correct-Horse-9"  # a test value
 
 @dataclass
 class FakeControlPlane:
-    """Accounts and owner keys in memory; ``unavailable`` 503s come first."""
+    """Accounts and owner keys in memory; ``unavailable`` 503s come first.
+
+    Registration is gated as on the real server (#52): closed once there is
+    an account unless ``allow_signup``, and the first account needs the
+    token whose SHA-256 is ``setup_token_sha256`` (any token when None).
+    """
 
     users: dict[str, str] = field(default_factory=dict)
     owner_keys: list[dict[str, Any]] = field(default_factory=list)
     unavailable: int = 0
     requests: list[httpx.Request] = field(default_factory=list)
+    allow_signup: bool = False
+    setup_token_sha256: str | None = None
+    setup_tokens: list[str | None] = field(default_factory=list)
 
     def _tokens(self, email: str, status: int = 200) -> httpx.Response:
         return httpx.Response(
@@ -54,6 +69,9 @@ class FakeControlPlane:
             body = json.loads(request.content)
             email, password = body["email"], body["password"]
             if path == "/v1/auth/register":
+                refused = self._refuse_registration(body.get("setup_token"))
+                if refused is not None:
+                    return refused
                 if email in self.users:
                     return httpx.Response(400, json={"detail": "Registration failed"})
                 self.users[email] = password
@@ -73,6 +91,19 @@ class FakeControlPlane:
             self.owner_keys.append(record)
             return httpx.Response(201, json=record)
         return httpx.Response(404)
+
+    def _refuse_registration(self, token: str | None) -> httpx.Response | None:
+        self.setup_tokens.append(token)
+        if self.allow_signup:
+            return None
+        if self.users:
+            return httpx.Response(403, json={"detail": REGISTRATION_CLOSED})
+        if self.setup_token_sha256 is None:
+            return None
+        digest = hashlib.sha256((token or "").encode()).hexdigest()
+        if not token or not hmac.compare_digest(digest, self.setup_token_sha256):
+            return httpx.Response(403, json={"detail": SETUP_TOKEN_INVALID})
+        return None
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)

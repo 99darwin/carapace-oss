@@ -5,7 +5,11 @@ After the stack is up, ``carapace deploy`` leaves the CLI ready to use:
 1. An owner key in the config directory (created if there is none).
 2. A session on the new server: sign up, or log in if the account exists.
    The owner key is registered before the session is saved, so a saved
-   session always means a registered key.
+   session always means a registered key. Registration on the server is
+   closed once it has an account (#52); the first sign-up proves it is
+   this deploy's with a one-time setup token. The token is generated here,
+   before the deploy, and kept only in memory: the stack gets its SHA-256
+   (see :func:`setup_token_sha256`), the server gets the token once.
 3. ``verify`` against the enclave, trusting exactly the image digest this
    deploy published, in this deploy's project, service account, control
    plane and KMS key, retried while the VM and Cloud Run start.
@@ -20,6 +24,8 @@ failed run resumes by running ``carapace deploy`` again.
 
 from __future__ import annotations
 
+import hashlib
+import secrets
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,6 +43,7 @@ from carapace_cli.errors import (
     CarapaceError,
     EnclaveError,
     NetworkError,
+    RegistrationRefusedError,
     ServerError,
     StorageError,
     VerificationError,
@@ -71,6 +78,8 @@ HTTP_BAD_REQUEST = 400
 HTTP_UNAUTHORIZED = 401
 HTTP_TOO_MANY_REQUESTS = 429
 HTTP_SERVER_ERROR = 500
+SETUP_TOKEN_BYTES = 32
+SETUP_TOKEN_SHA256_KEY = "carapace:setup_token_sha256"  # noqa: S105
 IDENTITY_OUTPUTS = (
     "enclave_service_account",
     "control_plane_url",
@@ -156,7 +165,13 @@ def check_pin_identity(
 
 class Authenticator(Protocol):
     def __call__(
-        self, server_url: str, email: str, password: str, *, register: bool = False
+        self,
+        server_url: str,
+        email: str,
+        password: str,
+        *,
+        register: bool = False,
+        setup_token: str | None = None,
     ) -> Session: ...
 
 
@@ -201,6 +216,32 @@ class PreparedAccount:
     owner_key: OwnerKey | None = field(default=None, repr=False)
     is_new_owner_key: bool = False
     passphrase: str | None = field(default=None, repr=False)
+    # The one-time token that claims a fresh server; only its hash is stored.
+    setup_token: str | None = field(default=None, repr=False)
+
+
+def new_setup_token() -> str:
+    """A 256-bit token for the first registration. Never written anywhere."""
+    return secrets.token_urlsafe(SETUP_TOKEN_BYTES)
+
+
+def setup_token_sha256(token: str) -> str:
+    """What the server is configured with: the token's SHA-256, in hex.
+
+    Not a secret: the token has 256 bits, so its hash reveals nothing usable.
+    """
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def setup_token_config(account: PreparedAccount) -> dict[str, str]:
+    """The stack config for this run's setup token: its hash, if any.
+
+    Only a run that signs up a new account has a token. Other runs leave
+    the stored hash alone; the server ignores it once it has its account.
+    """
+    if account.setup_token is None:
+        return {}
+    return {SETUP_TOKEN_SHA256_KEY: setup_token_sha256(account.setup_token)}
 
 
 def _load_owner_key(config_dir: Path, services: FirstRunServices) -> OwnerKey:
@@ -273,6 +314,7 @@ def prepare_account(
         validate=validate_email,
     )
     account.password = _password(flags, interview, services)
+    account.setup_token = new_setup_token()
     return account
 
 
@@ -332,13 +374,27 @@ def sign_in(
     email: str,
     password: str,
     *,
+    setup_token: str | None,
     say: Callable[[str], None],
 ) -> Session:
-    """Sign up; if the server refuses (the account exists), log in."""
+    """Sign up with the setup token; if the server is taken, log in.
+
+    A closed registration (the server already has its account) or a 400
+    (signup is open and the email is taken) falls through to a login.
+    """
     try:
-        session = services.authenticate(server_url, email, password, register=True)
+        session = services.authenticate(
+            server_url, email, password, register=True, setup_token=setup_token
+        )
         say(f"Created the account {email}.")
         return session
+    except RegistrationRefusedError as exc:
+        if not exc.is_closed:
+            raise FirstRunError(
+                f"{server_url} refused this deploy's setup token; its "
+                "setup_token_sha256 is not the one this run set. Run "
+                "`carapace deploy` again"
+            ) from None
     except ServerError as exc:
         if exc.status != HTTP_BAD_REQUEST:
             raise
@@ -411,7 +467,14 @@ def complete_first_run(
     new_session = email is not None and password is not None
     if email is not None and password is not None:
         session = retry_transient(
-            lambda: sign_in(services, server_url, email, password, say=say),
+            lambda: sign_in(
+                services,
+                server_url,
+                email,
+                password,
+                setup_token=account.setup_token,
+                say=say,
+            ),
             what="the server",
             clock=clock,
             say=say,

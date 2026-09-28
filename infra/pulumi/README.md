@@ -253,6 +253,8 @@ remove them in a later release).
 | `protect_kms_key` | `true` | Pulumi `protect` on the key ring and key |
 | `db_deletion_protection` | `true` | |
 | `enable_iam_alerts` / `alert_emails` | `true` / required | Alert on changes to the decrypt path. Set `enable_iam_alerts: "false"` to deploy without recipients |
+| `setup_token_sha256` | unset | Hex SHA-256 of the one-time setup token the first account must present. `carapace deploy` sets it; unset, the server refuses the first registration |
+| `allow_signup` | `false` | `true` lets anyone who can reach the server create an account, with no setup token. Off, registration closes after the first account |
 
 ### Rolling out a new enclave image
 

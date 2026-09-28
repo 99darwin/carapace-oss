@@ -30,5 +30,10 @@ config:
   # Alerts are on by default and need at least one recipient. Set
   # enable_iam_alerts to "false" to deploy without them.
   # carapace:enable_iam_alerts: "false"
+  # Hex SHA-256 of the setup token the first account registers with
+  # (`carapace deploy` sets it). Anyone may sign up only if allow_signup is
+  # "true"; the default closes registration after the first account.
+  # carapace:setup_token_sha256: <64 hex>
+  # carapace:allow_signup: "false"
   carapace:alert_emails:
     - security@example.com

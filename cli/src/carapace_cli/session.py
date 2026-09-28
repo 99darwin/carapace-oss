@@ -15,7 +15,10 @@ from typing import Any
 import httpx
 
 from carapace_cli.errors import (
+    REGISTRATION_CLOSED,
+    SETUP_TOKEN_INVALID,
     NotLoggedInError,
+    RegistrationRefusedError,
     ServerError,
     StorageError,
     network_errors,
@@ -27,6 +30,7 @@ SESSION_FILE = "session.json"
 REQUEST_TIMEOUT_SECONDS = 30.0
 MAX_DETAIL_CHARS = 300
 REPLACEMENT_CHAR = "?"
+HTTP_FORBIDDEN = 403
 
 
 @dataclass
@@ -147,11 +151,20 @@ def authenticate(
     password: str,
     *,
     register: bool = False,
+    setup_token: str | None = None,
     transport: httpx.BaseTransport | None = None,
 ) -> Session:
-    """Log in (or register) and return a new session. Does not save it."""
+    """Log in (or register) and return a new session. Does not save it.
+
+    ``setup_token`` is sent only when registering; it claims a fresh
+    server whose registration is otherwise closed. A refused registration
+    raises :class:`RegistrationRefusedError`.
+    """
     server_url = normalize_base_url(server_url, what="server", allow_loopback_http=True)
     path = "/v1/auth/register" if register else "/v1/auth/login"
+    body = {"email": email, "password": password}
+    if register and setup_token:
+        body["setup_token"] = setup_token
     with (
         network_errors("server"),
         httpx.Client(
@@ -161,9 +174,21 @@ def authenticate(
             follow_redirects=False,
         ) as client,
     ):
-        response = client.post(path, json={"email": email, "password": password})
-    raise_for_status(response)
+        response = client.post(path, json=body)
+    try:
+        raise_for_status(response)
+    except ServerError as exc:
+        if register and _is_registration_refusal(exc):
+            raise RegistrationRefusedError(exc.status, exc.detail) from None
+        raise
     return _session_from_tokens(server_url, _json(response))
+
+
+def _is_registration_refusal(exc: ServerError) -> bool:
+    return exc.status == HTTP_FORBIDDEN and exc.detail in {
+        REGISTRATION_CLOSED,
+        SETUP_TOKEN_INVALID,
+    }
 
 
 class ServerClient:

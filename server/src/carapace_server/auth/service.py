@@ -13,6 +13,11 @@ Security notes:
   a rotated token revokes its whole family (see :meth:`AuthService.refresh`).
 - Passkey ceremonies require user verification, so possession of an
   authenticator alone (user presence) is not enough to sign in.
+- Registration is closed unless ``allow_signup`` is set: only the first
+  account registers, and only with the one-time setup token (compared as
+  SHA-256 digests in constant time). The first account also inserts the
+  single ``instance_claim`` row in its transaction, so of two concurrent
+  first registrations the database lets exactly one commit.
 """
 
 from __future__ import annotations
@@ -32,6 +37,7 @@ from typing import Any
 import bcrypt
 import webauthn
 from sqlalchemy import delete, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from webauthn.helpers import options_to_json_dict, parse_authentication_credential_json
 from webauthn.helpers.structs import (
@@ -41,7 +47,9 @@ from webauthn.helpers.structs import (
 )
 
 from carapace_server.auth.models import (
+    INSTANCE_CLAIM_ID,
     ChallengeType,
+    InstanceClaim,
     RefreshToken,
     User,
     WebAuthnChallenge,
@@ -57,10 +65,21 @@ CHALLENGE_TIMEOUT_MS = 120_000
 REFRESH_TOKEN_BYTES = 32
 USER_AGENT_MAX_LENGTH = 512
 DECOY_CREDENTIAL_ID_BYTES = 32
+# Stable 403 details; the CLI matches on them.
+REGISTRATION_CLOSED = "Registration is closed"
+SETUP_TOKEN_INVALID = "Invalid setup token"  # noqa: S105 - a message
 
 
 class AuthError(Exception):
     """Generic authentication failure. Messages are safe to show clients."""
+
+
+class RegistrationClosedError(AuthError):
+    """An account exists and ``allow_signup`` is off."""
+
+
+class SetupTokenError(AuthError):
+    """The first registration lacked the right setup token."""
 
 
 @dataclass(frozen=True)
@@ -112,6 +131,60 @@ class AuthService:
     async def _user_by_email(self, email: str) -> User | None:
         return await self.db.scalar(select(User).where(User.email == email))
 
+    # -- registration gate --------------------------------------------------
+
+    async def ensure_registration_open(self) -> None:
+        """Raise unless signup is open or no account exists yet.
+
+        A read, so it only fails early; :meth:`_add_user` is what makes the
+        first registration atomic.
+        """
+        if self.settings.allow_signup:
+            return
+        if await self.db.scalar(select(User.id).limit(1)) is not None:
+            raise RegistrationClosedError(REGISTRATION_CLOSED)
+
+    def _setup_token_valid(self, setup_token: str | None) -> bool:
+        expected = self.settings.setup_token_sha256
+        if expected is None:
+            # Local development only; prod fails closed without a token.
+            return self.settings.mode == "dev"
+        presented = hashlib.sha256((setup_token or "").encode()).hexdigest()
+        return hmac.compare_digest(presented, expected) and bool(setup_token)
+
+    async def _check_registration(self, setup_token: str | None) -> bool:
+        """Raise unless this registration may proceed.
+
+        Returns whether it is the first account, which must claim the
+        server. With ``allow_signup`` no token is asked for and nothing is
+        claimed.
+        """
+        await self.ensure_registration_open()
+        if self.settings.allow_signup:
+            return False
+        if not self._setup_token_valid(setup_token):
+            raise SetupTokenError(SETUP_TOKEN_INVALID)
+        return True
+
+    async def _add_user(self, user: User, *, claim: bool) -> None:
+        """Insert ``user`` and, for the first account, the instance claim.
+
+        Both inserts share the caller's transaction. A concurrent first
+        registration that committed first makes the claim insert fail on
+        its primary key, which closes registration for this one.
+        """
+        self.db.add(user)
+        try:
+            await self.db.flush()
+            if claim:
+                self.db.add(InstanceClaim(id=INSTANCE_CLAIM_ID, user_id=user.id))
+                await self.db.flush()
+        except IntegrityError:
+            await self.db.rollback()
+            if claim:
+                raise RegistrationClosedError(REGISTRATION_CLOSED) from None
+            raise AuthError("Registration failed") from None
+
     # -- password -----------------------------------------------------------
 
     async def register_with_password(
@@ -120,7 +193,10 @@ class AuthService:
         password: str,
         display_name: str | None,
         client: ClientInfo,
+        *,
+        setup_token: str | None = None,
     ) -> Session:
+        claim = await self._check_registration(setup_token)
         email = normalize_email(email)
         if await self._user_by_email(email) is not None:
             raise AuthError("Registration failed")
@@ -128,8 +204,7 @@ class AuthService:
             _hash_password, password, self.settings.bcrypt_rounds
         )
         user = User(email=email, display_name=display_name, password_hash=password_hash)
-        self.db.add(user)
-        await self.db.flush()
+        await self._add_user(user, claim=claim)
         return await self._start_session(user, client)
 
     async def login_with_password(
@@ -146,6 +221,7 @@ class AuthService:
     # -- passkeys -----------------------------------------------------------
 
     async def registration_options(self, email: str) -> dict[str, Any]:
+        await self.ensure_registration_open()
         email = normalize_email(email)
         if await self._user_by_email(email) is not None:
             raise AuthError("Unable to process request")
@@ -168,9 +244,12 @@ class AuthService:
         display_name: str | None,
         credential: dict[str, Any],
         client: ClientInfo,
+        *,
+        setup_token: str | None = None,
     ) -> Session:
         email = normalize_email(email)
         challenge = await self._consume_challenge(email, ChallengeType.REGISTER)
+        claim = await self._check_registration(setup_token)
         if await self._user_by_email(email) is not None:
             raise AuthError("Registration failed")
         try:
@@ -192,8 +271,7 @@ class AuthService:
             passkey_sign_count=verified.sign_count,
             passkey_transports=credential.get("response", {}).get("transports"),
         )
-        self.db.add(user)
-        await self.db.flush()
+        await self._add_user(user, claim=claim)
         return await self._start_session(user, client)
 
     async def authentication_options(self, email: str) -> dict[str, Any]:

@@ -216,12 +216,31 @@ refuses to start if only one of them is set.
 
 ## 6. First run: verify the enclave
 
+Registration is closed once the server has an account, and the first
+account must present a one-time setup token (see
+[THREAT_MODEL.md](THREAT_MODEL.md#r15-the-first-account-and-the-setup-token)).
+`carapace deploy` does this for you. By hand, generate the token on your
+machine and give the server only its SHA-256, before (or with) step 4:
+
+```bash
+export CARAPACE_SETUP_TOKEN="$(openssl rand -hex 32)"
+pulumi config set setup_token_sha256 \
+  "$(printf %s "$CARAPACE_SETUP_TOKEN" | shasum -a 256 | cut -d' ' -f1)"
+pulumi up
+```
+
+Keep the token in that shell only; do not write it to a file. A `prod`
+server with no hash set refuses every registration. To run a server where
+anyone may sign up (a hosted, multi-tenant one), set
+`pulumi config set allow_signup true` instead; it is off by default.
+
 Wait for the VM to boot and the enclave to register with the server (a few
-minutes). Then, from your own machine:
+minutes). Then, from the same shell:
 
 ```bash
 carapace init
 carapace signup --server "$(pulumi stack output server_url)" --email you@example.com
+unset CARAPACE_SETUP_TOKEN
 carapace verify --enclave "$(pulumi stack output enclave_url)" \
   --allow-digest sha256:<enclave digest> \
   --project-id "$(pulumi config get gcp:project)" \
@@ -229,7 +248,10 @@ carapace verify --enclave "$(pulumi stack output enclave_url)" \
   --kms-key "$(pulumi stack output kms_key_version_name)"
 ```
 
-`verify` refuses an enclave in another project, running as another service
+`signup` reads the token from `$CARAPACE_SETUP_TOKEN`, or prompts for it
+with `--setup-token`. It fails with "registration refused" if the server
+already has its account (log in with `carapace login`) or the token does
+not match the hash. `verify` refuses an enclave in another project, running as another service
 account, reporting to another server or using another KMS key (see
 [VERIFY.md](VERIFY.md#what-it-checks)). Check that `image` is the digest you
 built and allowed.
