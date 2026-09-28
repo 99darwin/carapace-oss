@@ -143,7 +143,8 @@ def test_existing_account_logs_in(tmp_path: Path) -> None:
 
 
 def test_wrong_password_for_an_existing_account(tmp_path: Path) -> None:
-    server = FakeControlPlane(users={EMAIL: "Another-Password-1"})
+    # Open signup: the register is a 400, then the login a 401.
+    server = FakeControlPlane(users={EMAIL: "Another-Password-1"}, allow_signup=True)
     services = fake_first_run(server)
     with pytest.raises(FirstRunError, match="already has an account"):
         run(tmp_path, services)

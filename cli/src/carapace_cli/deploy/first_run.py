@@ -395,14 +395,22 @@ def sign_in(
                 "setup_token_sha256 is not the one this run set. Run "
                 "`carapace deploy` again"
             ) from None
+        is_closed = True
     except ServerError as exc:
         if exc.status != HTTP_BAD_REQUEST:
             raise
+        is_closed = False
     try:
         session = services.authenticate(server_url, email, password)
     except ServerError as exc:
         if exc.status != HTTP_UNAUTHORIZED:
             raise
+        if is_closed:
+            raise FirstRunError(
+                f"{server_url} already has its account and {email} cannot "
+                "log in to it. If you did not create that account, see "
+                "SELF_HOST.md § Upgrading a server that was open."
+            ) from None
         raise FirstRunError(
             f"{email} already has an account on {server_url} and this is not "
             "its password"

@@ -529,6 +529,9 @@ They need a real project:
   work on a fresh project before any API is enabled.
 - The 403-then-login path of the first run for an existing account, and
   the setup token reaching a fresh Cloud Run revision.
+- A Cloud Run revision race: if an older revision (with the previous
+  hash) still answers the sign-up, the first run fails with a spurious
+  "Invalid setup token"; running `carapace deploy` again fixes it.
 - The `pulumi stack output` behaviour on a fresh stack, and recovery of
   `Pulumi.<prefix>.yaml` from state on a second machine.
 - `carapace destroy` against a real stack: `pulumi state unprotect --all`,

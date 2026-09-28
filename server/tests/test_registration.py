@@ -12,7 +12,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from carapace_server.app import create_app
-from carapace_server.auth.models import InstanceClaim, User
+from carapace_server.auth.models import InstanceClaim, User, WebAuthnChallenge
 from carapace_server.auth.service import (
     REGISTRATION_CLOSED,
     SETUP_TOKEN_INVALID,
@@ -179,8 +179,25 @@ async def test_passkey_registration_is_closed_too(
         "/v1/auth/passkey/register",
         json={"email": "pk@example.com", "credential": {}},
     )
-    # No challenge was issued, so this fails before the gate.
-    assert register.status_code in {400, FORBIDDEN}
+    # The gate runs before the challenge lookup.
+    assert register.status_code == FORBIDDEN
+    assert register.json()["detail"] == REGISTRATION_CLOSED
+
+
+async def test_refused_passkey_registration_keeps_its_challenge(
+    closed: httpx.AsyncClient, db: AsyncSession
+) -> None:
+    options = await closed.post(
+        "/v1/auth/passkey/register/options", json={"email": "pk@example.com"}
+    )
+    assert options.status_code == 200, options.text
+    register = await closed.post(
+        "/v1/auth/passkey/register",
+        json={"email": "pk@example.com", "credential": {}, "setup_token": "wrong"},
+    )
+    assert register.status_code == FORBIDDEN
+    assert register.json()["detail"] == SETUP_TOKEN_INVALID
+    assert await _count(db, WebAuthnChallenge) == 1
 
 
 async def test_allow_signup_opens_registration(
@@ -219,6 +236,35 @@ async def test_dev_without_a_setup_token_takes_the_first_account(
         second = await _register(client, "b@example.com", None)
         assert second.status_code == FORBIDDEN
         assert second.json()["detail"] == REGISTRATION_CLOSED
+
+
+@pytest.mark.parametrize(
+    "public_url", ["https://carapace.example.com", "http://10.0.0.5:8000"]
+)
+async def test_dev_off_loopback_without_a_setup_token_fails_closed(
+    tmp_path: Path,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    db: AsyncSession,
+    public_url: str,
+) -> None:
+    settings = _settings(tmp_path, setup_token_sha256=None, public_url=public_url)
+    async for client in _client(settings, sessionmaker):
+        response = await _register(client, "a@example.com", None)
+        assert response.status_code == FORBIDDEN
+        assert response.json()["detail"] == SETUP_TOKEN_INVALID
+    assert await _count(db, User) == 0
+
+
+@pytest.mark.parametrize(
+    "public_url", ["http://localhost:8000", "http://127.0.0.1:8000", "http://[::1]"]
+)
+async def test_dev_on_loopback_takes_the_first_account_without_a_token(
+    tmp_path: Path, sessionmaker: async_sessionmaker[AsyncSession], public_url: str
+) -> None:
+    settings = _settings(tmp_path, setup_token_sha256=None, public_url=public_url)
+    async for client in _client(settings, sessionmaker):
+        response = await _register(client, "a@example.com", None)
+        assert response.status_code == 201, response.text
 
 
 def test_signup_is_off_by_default() -> None:

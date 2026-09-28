@@ -267,3 +267,14 @@ def test_first_run_with_a_stale_setup_token_fails_clearly(tmp_path: Path) -> Non
         finish(account, server)
     assert not server.users
     assert not session_path(tmp_path).exists()
+
+
+def test_first_run_on_a_server_claimed_by_someone_else(tmp_path: Path) -> None:
+    server = FakeControlPlane(users={"stranger@example.com": PASSWORD})
+    with pytest.raises(FirstRunError) as caught:
+        finish(prepare(tmp_path, server), server)
+    message = str(caught.value)
+    assert "already has its account" in message
+    assert f"{EMAIL} cannot log in" in message
+    assert "Upgrading a server that was open" in message
+    assert not session_path(tmp_path).exists()

@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any
+from urllib.parse import urlparse
 
 import bcrypt
 import webauthn
@@ -68,6 +69,7 @@ DECOY_CREDENTIAL_ID_BYTES = 32
 # Stable 403 details; the CLI matches on them.
 REGISTRATION_CLOSED = "Registration is closed"
 SETUP_TOKEN_INVALID = "Invalid setup token"  # noqa: S105 - a message
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 class AuthError(Exception):
@@ -121,6 +123,10 @@ def dummy_password_hash(rounds: int) -> bytes:
     return _hash_password(secrets.token_urlsafe(16), rounds)
 
 
+def _is_loopback_url(url: str | None) -> bool:
+    return urlparse(url or "").hostname in LOOPBACK_HOSTS
+
+
 class AuthService:
     def __init__(self, db: AsyncSession, settings: Settings) -> None:
         self.db = db
@@ -147,8 +153,11 @@ class AuthService:
     def _setup_token_valid(self, setup_token: str | None) -> bool:
         expected = self.settings.setup_token_sha256
         if expected is None:
-            # Local development only; prod fails closed without a token.
-            return self.settings.mode == "dev"
+            # Local development only: a dev server on a loopback URL. Prod,
+            # or dev reachable under another name, fails closed.
+            return self.settings.mode == "dev" and _is_loopback_url(
+                self.settings.public_url
+            )
         presented = hashlib.sha256((setup_token or "").encode()).hexdigest()
         return hmac.compare_digest(presented, expected) and bool(setup_token)
 
@@ -247,9 +256,10 @@ class AuthService:
         *,
         setup_token: str | None = None,
     ) -> Session:
+        # Checked first, so a refused registration leaves its challenge.
+        claim = await self._check_registration(setup_token)
         email = normalize_email(email)
         challenge = await self._consume_challenge(email, ChallengeType.REGISTER)
-        claim = await self._check_registration(setup_token)
         if await self._user_by_email(email) is not None:
             raise AuthError("Registration failed")
         try:

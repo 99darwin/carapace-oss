@@ -344,7 +344,15 @@ sign up the owner. The hash is not a secret: nothing short of guessing a
   claim it. A manual deployment that sets no hash cannot be claimed at
   all in `prod` until one is set (see
   [SELF_HOST.md](SELF_HOST.md#6-first-run-verify-the-enclave)). In `dev`
-  mode with no hash, the first registration wins without a token.
+  mode with no hash and a loopback `public_url` (`localhost`,
+  `127.0.0.1`, `::1`), the first registration wins without a token;
+  otherwise dev fails closed too.
+- A server that was open before this change keeps the accounts created
+  then, and migration 0002 claims it for the oldest, which may be a
+  stranger's. The server logs a warning at startup when a closed server
+  has more than one account; see
+  [SELF_HOST.md](SELF_HOST.md#upgrading-a-server-that-was-open) to list
+  and delete accounts.
 - `allow_signup=true` reopens registration to everyone, by design, for a
   hosted multi-tenant server; tenants then share the enclave (R14).
 - The concurrent-first-registration race is tested on SQLite; on Postgres
