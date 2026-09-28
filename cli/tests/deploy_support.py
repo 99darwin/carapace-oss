@@ -15,7 +15,8 @@ from urllib.parse import unquote
 
 import httpx
 
-from carapace_cli.deploy.enclave_replace import EnclaveReplaceGate
+from carapace_cli.deploy.boot_image import BOOT_IMAGE_KEY, FAMILY_URL
+from carapace_cli.deploy.enclave_replace import IMAGE_REFERENCE_PATH, EnclaveReplaceGate
 from carapace_cli.deploy.gcp import GcpApi
 from carapace_cli.deploy.infra import PulumiError
 from carapace_cli.deploy.interview import Interview
@@ -199,6 +200,31 @@ REGISTRY = f"{REGION}-docker.pkg.dev/{PROJECT}/{PREFIX}"
 OLD_DIGEST = "sha256:" + "01" * 32
 NEW_DIGEST = "sha256:" + "02" * 32
 SERVER_DIGEST = "sha256:" + "03" * 32
+BOOT_IMAGES = (
+    "https://www.googleapis.com/compute/v1/projects/confidential-space-images"
+    "/global/images/"
+)
+# A VM that booted OLD_BOOT_IMAGE runs behind the family's newest image.
+OLD_BOOT_IMAGE = f"{BOOT_IMAGES}confidential-space-250900"
+NEW_BOOT_IMAGE = f"{BOOT_IMAGES}confidential-space-251000"
+
+
+def boot_image_family(*images: str) -> Handler:
+    """The family's newest image, one per lookup; the last one repeats."""
+    queue = list(images or (NEW_BOOT_IMAGE,))
+
+    def handle(_request: httpx.Request) -> httpx.Response:
+        image = queue.pop(0) if len(queue) > 1 else queue[0]
+        return ok(
+            {
+                "name": image.rpartition("/")[2],
+                "family": "confidential-space",
+                "selfLink": image,
+                "status": "READY",
+            }
+        )
+
+    return handle
 
 
 def deployable_project(google: FakeGoogle | None = None) -> FakeGoogle:
@@ -226,6 +252,7 @@ def deployable_project(google: FakeGoogle | None = None) -> FakeGoogle:
             f"{RUN}/projects/{PROJECT}/locations/{REGION}/jobs/",
             ok({"latestCreatedExecution": {"completionStatus": "EXECUTION_SUCCEEDED"}}),
         )
+        .on("GET", FAMILY_URL, boot_image_family())
     )
     return with_state_objects(google)
 
@@ -363,6 +390,10 @@ class FakeStack:
     was never ``up`` has none. ``half_created`` is a first ``up`` that
     failed after creating resources: the state tracks them, but exports
     no outputs until an ``up`` finishes.
+
+    The enclave VM in the state carries the boot image it booted. The
+    program boots ``carapace:boot_image`` when the config pins one, and
+    ``family_image`` (its own family lookup) otherwise.
     """
 
     initial: dict[str, str] = field(default_factory=dict)
@@ -380,11 +411,10 @@ class FakeStack:
     fail_on_up_targets: bool = False
     fail_on_unprotect: bool = False
     fail_on_remove: bool = False
-    # Google published a Confidential Space image newer than the VM's: the
-    # next `up` with the VM in the state replaces it.
+    # The VM in the state booted OLD_BOOT_IMAGE, older than the newest one.
     boot_image_drift: bool = False
-    # The new image appears once this many `up`s ran (mid-rollout).
-    drift_after_ups: int | None = None
+    # What the program's own family lookup returns (no pin in the config).
+    family_image: str = NEW_BOOT_IMAGE
     preview_error: CarapaceError | None = None
     # The config each `pulumi preview` ran with.
     previews: list[dict[str, str]] = field(default_factory=list)
@@ -405,6 +435,8 @@ class FakeStack:
             self._resources = list(self.resources_in_state)
         elif self._state and not self.half_created:
             self._resources = self._program_resources(FULL_STACK_URNS, self._state)
+            if self.boot_image_drift:
+                self.set_vm(image=OLD_BOOT_IMAGE)
         else:
             self._resources = []
 
@@ -425,33 +457,61 @@ class FakeStack:
                     urn=ENCLAVE_VM_URN,
                     type=ENCLAVE_VM_URN.split("::")[2],
                     protect=False,
-                    outputs={"zone": config.get("gcp:zone", "")},
+                    outputs=vm_outputs(
+                        zone=config.get("gcp:zone", ""),
+                        image=self._program_image(config),
+                    ),
                 )
             )
         return resources
 
-    def _has_vm(self) -> bool:
-        return any(resource.urn == ENCLAVE_VM_URN for resource in self._resources)
+    def _program_image(self, config: Mapping[str, str]) -> str:
+        return config.get(BOOT_IMAGE_KEY) or self.family_image
 
-    def _drifted(self) -> bool:
-        late = self.drift_after_ups is not None and len(self.ups) >= (
-            self.drift_after_ups
+    def vm(self) -> StateResource | None:
+        """The enclave VM's entry in the state, live or pending replacement."""
+        return next((r for r in self._resources if r.urn == ENCLAVE_VM_URN), None)
+
+    def set_vm(self, *, image: str | None = None, pending: bool | None = None):
+        vm = self.vm()
+        assert vm is not None
+        outputs = dict(vm.outputs)
+        if image is not None:
+            outputs = vm_outputs(zone=str(outputs.get("zone", "")), image=image)
+        updated = replace(
+            vm,
+            outputs=outputs,
+            pending_replacement=(
+                vm.pending_replacement if pending is None else pending
+            ),
         )
-        return self.boot_image_drift or late
+        self._resources = [
+            updated if r.urn == ENCLAVE_VM_URN else r for r in self._resources
+        ]
 
-    def _replace_reasons(self) -> list[str]:
-        """Why the next `up` replaces the VM in the state, as the provider
-        says: a new boot image, or new metadata (the enclave digest)."""
-        if not self._has_vm():
-            return []
+    def _replace_diff(self) -> dict[str, str]:
+        """Why the next `up` replaces the live VM, as the provider's
+        detailed diff says: a new boot image, or new metadata (the enclave
+        digest)."""
+        vm = self.vm()
+        if vm is None or vm.pending_replacement:
+            return {}
         if self._config.get("carapace:deploy_workloads") != "true":
-            return []
-        reasons = ["bootDisk"] if self._drifted() else []
+            return {}
+        diff: dict[str, str] = {}
+        booted = vm.outputs["bootDisk"]["initializeParams"]["image"]
+        if booted != self._program_image(self._config):
+            diff["bootDisk.initializeParams.image"] = "update-replace"
         if self._state.get("carapace:enclave_image_digest") != self._config.get(
             "carapace:enclave_image_digest"
         ):
-            reasons.append("metadata")
-        return reasons
+            diff[IMAGE_REFERENCE_PATH] = "update-replace"
+        return diff
+
+    def _replace_reasons(self) -> list[str]:
+        return sorted(
+            {path.split(".")[0].split("[")[0] for path in self._replace_diff()}
+        )
 
     def preview(self) -> list[PreviewStep]:
         """`pulumi preview --json`: the root stack and the VM's step."""
@@ -468,6 +528,7 @@ class FakeStack:
                     type=ENCLAVE_VM_URN.split("::")[2],
                     replace_reasons=tuple(reasons),
                     diff_reasons=tuple(reasons),
+                    detailed_diff=self._replace_diff(),
                 )
             )
         return steps
@@ -475,9 +536,11 @@ class FakeStack:
     def _hit_stockout(self) -> None:
         """Fail as a VM create in a zone out of capacity does.
 
-        The VM is created when it is missing, and replaced (deleted first,
-        as the program's delete_before_replace says) when its image
-        changes. The failed create leaves no VM in the state.
+        The VM is created when it is missing or pending replacement, and
+        replaced (deleted first, as the program's delete_before_replace
+        says) when its image or metadata changes. As in Pulumi, a VM
+        deleted for a replacement whose create fails stays in the state,
+        marked pending replacement, until a later `up` creates it.
         """
         config = self._config
         zone = config.get("gcp:zone", "")
@@ -485,9 +548,12 @@ class FakeStack:
             return
         if zone not in self.stockout_zones:
             return
-        if self._has_vm() and not self._replace_reasons():
+        vm = self.vm()
+        live = vm is not None and not vm.pending_replacement
+        if live and not self._replace_reasons():
             return
-        self._resources = [r for r in self._resources if r.urn != ENCLAVE_VM_URN]
+        if vm is not None:
+            self.set_vm(pending=True)
         self.stockouts.append(zone)
         raise PulumiError(
             "pulumi up failed: Duration: 1m3s; fix the cause and run the same "
@@ -509,8 +575,6 @@ class FakeStack:
         self._hit_stockout()
         if replaces:
             self.replacements += 1
-            self.boot_image_drift = False
-            self.drift_after_ups = None
         self.ups.append(self.config())
         self._state = self.config()
         self._resources = self._program_resources(FULL_STACK_URNS)
@@ -606,6 +670,11 @@ class FakeStack:
                 "enclave_image_reference": f"{REGISTRY}/enclave@{digest}",
             }
         return outputs
+
+
+def vm_outputs(*, zone: str, image: str) -> dict[str, Any]:
+    """The enclave VM's outputs as ``stack export`` shows them (in part)."""
+    return {"zone": zone, "bootDisk": {"initializeParams": {"image": image}}}
 
 
 def instant_clock() -> Clock:

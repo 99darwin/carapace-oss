@@ -71,8 +71,8 @@ from carapace_cli.deploy.zones import (
     ZoneCapacityError,
     ZoneFallback,
     is_zone_capacity_error,
+    live_zonal_resource_urns,
     ordered_zones,
-    zonal_resource_urns,
     zone_fallback,
 )
 from carapace_cli.main import main
@@ -193,9 +193,9 @@ def test_ordered_zones_start_with_the_requested_one() -> None:
 
 def test_zonal_resources_are_the_enclave_vm_only() -> None:
     stack = FakeStack(initial={"carapace:deploy_workloads": "true", "gcp:zone": ZONE_A})
-    assert zonal_resource_urns(stack.resources()) == [ENCLAVE_VM_URN]
+    assert live_zonal_resource_urns(stack.resources()) == [ENCLAVE_VM_URN]
     bootstrapped = FakeStack(initial={"gcp:zone": ZONE_A})
-    assert zonal_resource_urns(bootstrapped.resources()) == []
+    assert live_zonal_resource_urns(bootstrapped.resources()) == []
 
 
 RESOURCE_CALL = re.compile(r"\bgcp\.([a-z0-9_]+)\.([A-Z]\w*)\(")
@@ -325,7 +325,7 @@ def test_all_zones_out_of_capacity_is_a_clear_error() -> None:
     # Back to the zone asked for, so a later run starts there.
     assert stack.config()["gcp:zone"] == ZONE_A
     assert recorded_zone(google) == ZONE_A
-    assert not zonal_resource_urns(stack.resources())
+    assert not live_zonal_resource_urns(stack.resources())
 
 
 def test_a_region_with_one_zone_offering_it_fails_without_moving() -> None:
@@ -399,9 +399,9 @@ def vm_zones(stack: FakeStack) -> list[str]:
 
 def test_a_replaced_vm_whose_create_hit_a_stockout_moves_in_the_same_run() -> None:
     """A new image replaces the VM, delete first. A stockout on the create
-    leaves no VM in the state, so the replacement goes to another zone in
-    the same run: waiting for a later run would only leave the deployment
-    without an enclave for longer."""
+    leaves the deleted VM in the state, pending replacement, so the
+    replacement goes to another zone in the same run: waiting for a later
+    run would only leave the deployment without an enclave for longer."""
     google = with_zones(deployable_project())
     stack = FakeStack(initial=LIVE_CONFIG, stockout_zones=frozenset({ZONE_A}))
     assert vm_zones(stack) == [ZONE_A]
@@ -420,6 +420,43 @@ def test_a_replaced_vm_whose_create_hit_a_stockout_moves_in_the_same_run() -> No
         "zone has no capacity for now; the replacement moves."
     ) in said
     assert f"{ZONE_A} has no capacity for {MACHINE} now; trying {ZONE_B}." in said
+
+
+def test_a_rerun_over_a_vm_pending_replacement_moves_it() -> None:
+    """A run without the fallback left the VM pending replacement. The
+    rerun creates it, without a preview, and may move it: nothing
+    is left in the old zone."""
+    google = with_zones(deployable_project())
+    live = LIVE_CONFIG | {
+        "carapace:enclave_image_digest": NEW_DIGEST,
+        "carapace:allowed_digests": json.dumps([NEW_DIGEST]),
+    }
+    stack = FakeStack(
+        initial=live, boot_image_drift=True, stockout_zones=frozenset({ZONE_A})
+    )
+    with pytest.raises(PulumiError, match="run the same command again"):
+        run_deploy(
+            TARGET,
+            api=google.api(),
+            stack=stack,
+            images=PrebuiltImages(images=IMAGES),
+            clock=instant_clock(),
+            say=lambda _: None,
+            replace_gate=replace_gate(allow=True),
+        )
+    vm = stack.vm()
+    assert vm is not None and vm.pending_replacement
+    assert live_zonal_resource_urns(stack.resources()) == []
+    previews = len(stack.previews)
+
+    deployment = deploy(google, stack)
+    assert len(stack.previews) == previews
+    assert stack.stockouts == [ZONE_A, ZONE_A]
+    assert deployment.target.zone == ZONE_B
+    assert vm_zones(stack) == [ZONE_B]
+    vm = stack.vm()
+    assert vm is not None and not vm.pending_replacement
+    assert recorded_zone(google) == ZONE_B
 
 
 def test_a_vm_still_in_the_state_after_a_stockout_never_moves() -> None:
@@ -527,6 +564,18 @@ def test_zone_change_is_refused_with_the_vm_in_the_state() -> None:
             is_existing=True,
             zonal_resources=lambda: [ENCLAVE_VM_URN],
         )
+
+
+def test_zone_change_is_allowed_with_only_a_vm_pending_replacement() -> None:
+    pending = FakeStack(initial=LIVE_CONFIG)
+    pending.set_vm(pending=True)
+    assert live_zonal_resource_urns(pending.resources()) == []
+    check_stack_config(
+        STACK_CONFIG,
+        TARGET_B,
+        is_existing=True,
+        zonal_resources=lambda: live_zonal_resource_urns(pending.resources()),
+    )
 
 
 def test_zone_change_is_refused_when_the_state_is_not_checked() -> None:

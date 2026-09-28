@@ -12,13 +12,22 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from carapace_cli.deploy.boot_image import (
+    BOOT_IMAGE_KEY,
+    latest_boot_image,
+    running_boot_image,
+)
 from carapace_cli.deploy.enclave_replace import EnclaveReplaceGate
 from carapace_cli.deploy.gcp import KMS, RUN, GcpApi
 from carapace_cli.deploy.interview import InvalidInputError
 from carapace_cli.deploy.polling import Clock, poll_until
 from carapace_cli.deploy.preflight import Target
 from carapace_cli.deploy.pulumi_runner import StackHandle
-from carapace_cli.deploy.zones import ZoneFallback, up_with_zone_fallback
+from carapace_cli.deploy.zones import (
+    ZoneFallback,
+    live_zonal_resource_urns,
+    up_with_zone_fallback,
+)
 from carapace_cli.errors import CarapaceError
 
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -171,6 +180,18 @@ def bootstrap(
     allowed = _resumable_digests(current, outputs) or [
         enclave_digest or PLACEHOLDER_DIGEST
     ]
+    # The bootstrap `up` is not previewed: it declares no VM, so it would
+    # delete a live one. A VM pending replacement is already deleted.
+    live_vm = live_zonal_resource_urns(stack.resources())
+    if live_vm:
+        raise DeployStepError(
+            f"stack {target.prefix!r} runs an enclave VM "
+            f"({', '.join(urn.rpartition('::')[2] for urn in live_vm)}), but "
+            "its config says the workloads do not run; a bootstrap would delete "
+            f"it. Check carapace:deploy_workloads in "
+            f"infra/pulumi/Pulumi.{target.prefix}.yaml, then run the same "
+            "command again"
+        )
     say("Bootstrap: KMS, identity, database, registry and network...")
     stack.set_config(
         {
@@ -264,25 +285,41 @@ def deploy_workloads(
     target: Target,
     images: Images,
     *,
+    boot_image: str,
     say: Callable[[str], None],
     replace_gate: EnclaveReplaceGate,
     fallback: ZoneFallback | None = None,
 ) -> tuple[dict[str, Any], Target]:
     """Each rollout ``up``; the target returned has the zone that worked.
 
+    ``boot_image`` is the newest Confidential Space image, resolved once
+    for this deploy. Each step pins its image in the config before its
+    preview, so the preview and the ``up`` read the same one. While a
+    step that moves the live VM to the new digest lies ahead, the VM
+    keeps the image it booted; that step takes ``boot_image`` along, so
+    a new digest and a new image cost one replacement, not two. Without
+    a digest move, ``boot_image`` is taken at once, and the gate asks
+    before it replaces the VM.
+
     Before each ``up`` on a live VM, ``replace_gate`` previews it and
     stops it if it would replace the VM without consent (see
     :mod:`carapace_cli.deploy.enclave_replace`). With ``fallback``, an
-    ``up`` that fails because the zone is out of capacity for a VM the
-    state does not hold (never created, or deleted for its replacement)
-    moves to another zone of the region (see
-    :mod:`carapace_cli.deploy.zones`); later steps stay there.
+    ``up`` that fails because the zone is out of capacity for a VM that
+    is not live (never created, or deleted for its replacement) moves to
+    another zone of the region (see :mod:`carapace_cli.deploy.zones`);
+    later steps stay there.
     """
     outputs: dict[str, Any] = {}
     running = running_enclave_digest(stack.outputs())
+    kept_image = running_boot_image(stack.resources(), stack.config())
+    move_ahead = running is not None and running != images.enclave_digest
     steps = rollout_steps(running, images.enclave_digest)
     for number, (allowed, enclave) in enumerate(steps, start=1):
         say(f"Workloads ({number}/{len(steps)}): enclave {enclave[:19]}...")
+        # An unknown running digest (outputs of a failed `up`) is never
+        # taken as the expected change: the replacement is confirmed.
+        digest_changes = running is not None and running != enclave
+        move_ahead = move_ahead and not digest_changes
         stack.set_config(
             {
                 **base_config(target),
@@ -290,13 +327,12 @@ def deploy_workloads(
                 "carapace:allowed_digests": json.dumps(allowed),
                 "carapace:enclave_image_digest": enclave,
                 "carapace:server_image_digest": images.server_digest,
+                BOOT_IMAGE_KEY: (
+                    kept_image if move_ahead and kept_image else boot_image
+                ),
             }
         )
-        # An unknown running digest (outputs of a failed `up`) is never
-        # taken as the expected change: the replacement is confirmed.
-        replace_gate.check(
-            stack, digest_changes=running is not None and running != enclave
-        )
+        replace_gate.check(stack, digest_changes=digest_changes)
         outputs, target = up_with_zone_fallback(
             stack, target, fallback=fallback, say=say
         )
@@ -362,6 +398,9 @@ def run_deploy(
     workloads step move the enclave VM to another zone of the region when
     its zone is out of capacity.
     """
+    # Resolved once, before anything changes: every preview and `up` of
+    # this deploy reads this image (see carapace_cli.deploy.boot_image).
+    boot_image = latest_boot_image(api)
     outputs = bootstrap(
         stack, target, enclave_digest=images.enclave_digest_hint(), say=say
     )
@@ -372,6 +411,7 @@ def run_deploy(
         stack,
         target,
         published,
+        boot_image=boot_image,
         say=say,
         replace_gate=replace_gate,
         fallback=zone_fallback,

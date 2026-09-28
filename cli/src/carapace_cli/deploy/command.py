@@ -97,7 +97,7 @@ from carapace_cli.deploy.state import (
     state_backend_for,
 )
 from carapace_cli.deploy.summary import render_summary, state_bucket_name
-from carapace_cli.deploy.zones import zonal_resource_urns, zone_fallback
+from carapace_cli.deploy.zones import live_zonal_resource_urns, zone_fallback
 
 EXIT_DECLINED = 1
 # The stack enables it too, but a new stack's prefix check reads a WIF
@@ -389,7 +389,7 @@ def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
             config,
             target,
             is_existing=has_state,
-            zonal_resources=lambda: zonal_resource_urns(stack.resources()),
+            zonal_resources=lambda: live_zonal_resource_urns(stack.resources()),
         )
         # New: the state tracks nothing, so no key ring or pool is this
         # stack's own. A first `up` that failed leaves its resources in the
@@ -501,7 +501,7 @@ def cmd_destroy(args: argparse.Namespace, ctx: CommandContext) -> int:
             stack.config(),
             target,
             is_existing=True,
-            zonal_resources=lambda: zonal_resource_urns(stack.resources()),
+            zonal_resources=lambda: live_zonal_resource_urns(stack.resources()),
         )
         # Read before the destroy: afterwards the stack has no outputs.
         urls = deployment_urls(stack.outputs())
@@ -545,9 +545,12 @@ def add_deploy_commands(sub: argparse._SubParsersAction) -> None:
     deploy.add_argument(
         ALLOW_FLAG,
         action="store_true",
-        help="if the update would replace the live enclave VM (a new "
-        "Confidential Space image), go ahead without asking; --yes does not "
-        "cover it",
+        help="if the update would replace or delete the live enclave VM for "
+        "a cause other than the new enclave digest (a new Confidential Space "
+        "image, other metadata, a removal, or a cause pulumi does not give), "
+        "go ahead without asking; --yes does not cover it. Only the first "
+        "update of the VM is covered: a later rollout step that would replace "
+        "it for a new cause is still refused",
     )
     deploy.add_argument("--prefix", help="resource name prefix (default: carapace)")
     deploy.add_argument(

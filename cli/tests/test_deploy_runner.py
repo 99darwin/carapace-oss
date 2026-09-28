@@ -312,6 +312,30 @@ def test_resources_reads_type_protect_and_outputs_from_the_export() -> None:
             stack(bad).resources()
 
 
+def test_resources_read_a_pending_replacement() -> None:
+    vm = {"urn": VM_URN, "type": "gcp:compute/instance:Instance"}
+    fake = FakePulumi(
+        export={
+            "version": 3,
+            "deployment": {
+                "resources": [
+                    vm | {"pendingReplacement": True},
+                    vm,
+                    # Only a JSON true marks it; anything else is live.
+                    vm | {"pendingReplacement": "true"},
+                    vm | {"pendingReplacement": False},
+                ]
+            },
+        }
+    )
+    assert [r.pending_replacement for r in stack(fake).resources()] == [
+        True,
+        False,
+        False,
+        False,
+    ]
+
+
 def test_has_resources_fails_on_garbled_export() -> None:
     class Garbled(FakePulumi):
         def __call__(self, argv, **kwargs) -> Completed:  # type: ignore[override]
@@ -593,6 +617,21 @@ def test_failed_preview_says_so_without_pulumi_output_in_the_error() -> None:
         "error: preview failed\n",
         "error: program failed: KeyError x\n",
     ]
+
+
+def test_a_successful_preview_shows_its_warnings_verbatim() -> None:
+    lines: list[str] = []
+    digest = PREVIEW_DIGEST | {
+        "diagnostics": [
+            {"message": "warning: deprecated input\n", "severity": "warning"},
+            {"message": "just info\n", "severity": "info"},
+            {"message": "no newline", "severity": "warning"},
+        ]
+    }
+    fake = FakePulumi(preview_stdout=json.dumps(digest))
+    steps = stack(fake, lines).preview()
+    assert [step.op for step in steps] == ["same", "replace"]
+    assert lines == ["warning: deprecated input\n", "no newline\n"]
 
 
 def test_capture_process_keeps_stdout_and_stderr_apart(tmp_path: Path) -> None:

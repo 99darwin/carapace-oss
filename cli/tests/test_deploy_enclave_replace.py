@@ -12,9 +12,12 @@ from pathlib import Path
 
 import pytest
 from deploy_support import (
+    BOOT_IMAGES,
     ENCLAVE_VM_URN,
     FULL_STACK_URNS,
+    NEW_BOOT_IMAGE,
     NEW_DIGEST,
+    OLD_BOOT_IMAGE,
     OLD_DIGEST,
     PREFIX,
     PROJECT,
@@ -22,7 +25,9 @@ from deploy_support import (
     REGION,
     ROOT_STACK_URN,
     SERVER_DIGEST,
+    FakeGoogle,
     FakeStack,
+    boot_image_family,
     deployable_project,
     instant_clock,
     replace_gate,
@@ -33,15 +38,18 @@ from deploy_support import (
 from first_run_support import fake_first_run
 
 from carapace_cli.deploy import command
+from carapace_cli.deploy.boot_image import BOOT_IMAGE_KEY, FAMILY_URL
 from carapace_cli.deploy.enclave_replace import (
     ALLOW_FLAG,
     BOOT_DISK,
+    IMAGE_REFERENCE_PATH,
     METADATA,
     REMOVED,
     UNKNOWN,
     EnclaveReplaceDeclined,
     EnclaveReplaceError,
     EnclaveReplaceGate,
+    only_image_reference_changes,
     replace_causes,
 )
 from carapace_cli.deploy.infra import PulumiError
@@ -59,6 +67,7 @@ from carapace_cli.main import main
 TARGET = Target(PROJECT, PROJECT_NUMBER, REGION, f"{REGION}-a", PREFIX, ("a@b.io",))
 INSTANCE_TYPE = "gcp:compute/instance:Instance"
 QUESTION = "Replace the enclave VM now?"
+NEWER_BOOT_IMAGE = f"{BOOT_IMAGES}confidential-space-251100"
 
 
 def live(digest: str = NEW_DIGEST) -> dict[str, str]:
@@ -75,10 +84,11 @@ def deploy(
     gate: EnclaveReplaceGate,
     *,
     enclave: str = NEW_DIGEST,
+    google: FakeGoogle | None = None,
 ) -> Deployment:
     return run_deploy(
         TARGET,
-        api=deployable_project().api(),
+        api=(google or deployable_project()).api(),
         stack=stack,
         images=PrebuiltImages(Images(enclave, SERVER_DIGEST)),
         clock=instant_clock(),
@@ -122,6 +132,42 @@ def test_a_resume_with_no_vm_in_the_state_is_not_previewed() -> None:
     deploy(stack, replace_gate())
     assert stack.previews == []
     assert len(stack.ups) == 1
+
+
+def test_a_rerun_after_a_failed_boot_image_replacement_is_not_asked() -> None:
+    """The replacement deleted the VM, then its create hit a stockout: the
+    VM stays in the state pending replacement. There is nothing left to
+    take down, so the rerun that creates it is neither previewed nor
+    asked."""
+    stack = FakeStack(
+        initial=live(),
+        boot_image_drift=True,
+        stockout_zones=frozenset({TARGET.zone}),
+    )
+    with pytest.raises(PulumiError, match="run the same command again"):
+        deploy(stack, replace_gate(allow=True))
+    vm = stack.vm()
+    assert vm is not None and vm.pending_replacement
+    assert stack.stockouts == [TARGET.zone]
+    previews = len(stack.previews)
+
+    stack.stockout_zones = frozenset()
+    interview = interactive()  # no answers: a prompt would fail
+    deploy(stack, replace_gate(interview))
+    assert len(stack.previews) == previews
+    assert QUESTION not in transcript(interview)
+    vm = stack.vm()
+    assert vm is not None and not vm.pending_replacement
+    assert vm.outputs["bootDisk"]["initializeParams"]["image"] == NEW_BOOT_IMAGE
+
+
+def test_an_empty_state_export_stops_the_gate() -> None:
+    # The workloads step runs after the bootstrap: an empty export is a
+    # broken read, never "no VM".
+    stack = FakeStack(initial=live(), resources_in_state=[])
+    with pytest.raises(PulumiError, match="listed no resources"):
+        replace_gate(allow=True).check(stack, digest_changes=False)
+    assert stack.previews == [] and stack.ups == []
 
 
 # -- a new Confidential Space boot image --------------------------------------
@@ -188,36 +234,139 @@ def test_a_new_enclave_digest_is_announced_but_not_asked() -> None:
     assert "boot image" not in announcement
 
 
-def test_a_new_digest_with_a_new_boot_image_asks_once() -> None:
+def test_a_new_digest_with_a_new_boot_image_is_one_replacement() -> None:
+    """The rollout step that moves the VM to the new digest takes the new
+    boot image too: one outage, which the user chose, so nothing is asked."""
     stack = FakeStack(initial=live(OLD_DIGEST), boot_image_drift=True)
-    with pytest.raises(MissingInputError, match=ALLOW_FLAG):
-        deploy(stack, replace_gate())
-    assert stack.ups == []
+    said: list[str] = []
+    deploy(stack, replace_gate(said=said))  # cannot prompt, no flag
+    assert len(stack.ups) == 3 and stack.replacements == 1
+    # Step 1 keeps the VM's image; step 2 moves digest and image together.
+    assert [up[BOOT_IMAGE_KEY] for up in stack.ups] == [
+        OLD_BOOT_IMAGE,
+        NEW_BOOT_IMAGE,
+        NEW_BOOT_IMAGE,
+    ]
+    (announcement,) = [line for line in said if "replaces the enclave VM" in line]
+    assert "enclave image digest changes" in announcement
+    assert "new Confidential Space boot image" in announcement
 
-    stack = FakeStack(initial=live(OLD_DIGEST), boot_image_drift=True)
-    interview = interactive("y")
-    deploy(stack, replace_gate(interview))
-    assert transcript(interview).count(QUESTION) == 1
-    assert len(stack.ups) == 3
-    # The first step takes the new boot image, the second the new digest.
-    assert stack.replacements == 2
+
+def test_the_boot_image_is_resolved_once_and_pinned_for_every_step() -> None:
+    """Google publishing an image mid-deploy changes nothing: every preview
+    and every `up` evaluate the image the deploy resolved first, never the
+    program's own family lookup."""
+    google = deployable_project().on(
+        "GET", FAMILY_URL, boot_image_family(NEW_BOOT_IMAGE, NEWER_BOOT_IMAGE)
+    )
+    stack = FakeStack(
+        initial=live(OLD_DIGEST) | {BOOT_IMAGE_KEY: NEW_BOOT_IMAGE},
+        family_image=NEWER_BOOT_IMAGE,
+    )
+    deploy(stack, replace_gate(), google=google)
+    lookups = [r for r in google.requests if str(r.url).startswith(FAMILY_URL)]
+    assert len(lookups) == 1
+    pins = {config[BOOT_IMAGE_KEY] for config in [*stack.previews, *stack.ups]}
+    assert pins == {NEW_BOOT_IMAGE}
+    assert len(stack.ups) == 3 and stack.replacements == 1
+
+
+class LateSurprise(FakeStack):
+    """After the first `up`, the preview replaces the VM for a cause no
+    earlier preview showed (its zone input)."""
+
+    def preview(self) -> list[PreviewStep]:
+        steps = super().preview()
+        if not self.ups:
+            return steps
+        return [*steps, step("replace", replace_reasons=("zone",))]
 
 
 def test_an_unexpected_replace_in_a_later_step_is_refused() -> None:
-    # Google publishes a new image after the rollout's first up.
-    stack = FakeStack(initial=live(OLD_DIGEST), drift_after_ups=1)
+    stack = LateSurprise(initial=live(OLD_DIGEST))
     interview = interactive("y")
-    with pytest.raises(EnclaveReplaceError, match="later step.*bootDisk"):
+    with pytest.raises(EnclaveReplaceError, match="later step.*zone"):
         deploy(stack, replace_gate(interview))
     assert len(stack.ups) == 1 and stack.replacements == 0
     assert QUESTION not in transcript(interview)
 
 
 def test_the_flag_does_not_cover_a_later_surprise() -> None:
-    stack = FakeStack(initial=live(OLD_DIGEST), drift_after_ups=1)
+    stack = LateSurprise(initial=live(OLD_DIGEST))
     with pytest.raises(EnclaveReplaceError, match="not applied"):
         deploy(stack, replace_gate(allow=True))
     assert len(stack.ups) == 1
+
+
+class Previewing(FakeStack):
+    """A live stack whose preview replaces the VM as ``vm_step`` says."""
+
+    def __init__(self, vm_step: PreviewStep) -> None:
+        super().__init__(initial=live())
+        self.vm_step = vm_step
+
+    def preview(self) -> list[PreviewStep]:
+        return [self.vm_step]
+
+
+IMAGE_REFERENCE_REPLACE = {IMAGE_REFERENCE_PATH: "update-replace"}
+
+
+def test_a_digest_step_changing_the_image_reference_alone_is_not_asked() -> None:
+    stack = Previewing(
+        step(
+            "replace",
+            replace_reasons=("metadata",),
+            detailed_diff=IMAGE_REFERENCE_REPLACE,
+        )
+    )
+    replace_gate().check(stack, digest_changes=True)
+
+
+def test_a_digest_step_changing_other_metadata_is_asked() -> None:
+    # A tee-env-* key moving in the digest step is not the change the user
+    # chose by picking the images.
+    stack = Previewing(
+        step(
+            "replace",
+            replace_reasons=("metadata",),
+            detailed_diff=IMAGE_REFERENCE_REPLACE
+            | {'metadata["tee-env-CONTROL_PLANE_URL"]': "update-replace"},
+        )
+    )
+    said: list[str] = []
+    with pytest.raises(MissingInputError, match=ALLOW_FLAG):
+        replace_gate(said=said).check(stack, digest_changes=True)
+    assert any("its metadata changes" in line for line in said)
+
+
+def test_a_digest_step_without_a_detailed_diff_is_asked() -> None:
+    # Without detailedDiff the metadata key cannot be told: fail closed.
+    stack = Previewing(step("replace", replace_reasons=("metadata",)))
+    with pytest.raises(MissingInputError, match=ALLOW_FLAG):
+        replace_gate().check(stack, digest_changes=True)
+
+
+def test_only_image_reference_changes_reads_metadata_replace_paths() -> None:
+    boot = {"bootDisk.initializeParams.image": "update-replace"}
+    assert only_image_reference_changes(
+        [step("replace", detailed_diff=IMAGE_REFERENCE_REPLACE | boot)]
+    )
+    # An in-place metadata update is not a replace path.
+    assert only_image_reference_changes(
+        [
+            step(
+                "replace",
+                detailed_diff=IMAGE_REFERENCE_REPLACE
+                | {'metadata["tee-env-X"]': "update"},
+            )
+        ]
+    )
+    assert not only_image_reference_changes([step("replace", detailed_diff=boot)])
+    assert not only_image_reference_changes([step("replace")])
+    assert not only_image_reference_changes(
+        [step("replace", detailed_diff={"metadata": "update-replace"})]
+    )
 
 
 def test_a_metadata_change_without_a_new_digest_is_asked() -> None:
@@ -344,7 +493,8 @@ def test_deploy_rerun_after_a_new_boot_image_needs_the_flag(
     assert stack.previews == []
     ups = len(stack.ups)
 
-    stack.boot_image_drift = True
+    # The VM booted an image older than the one the family now names.
+    stack.set_vm(image=OLD_BOOT_IMAGE)
     code, output = run_cli(monkeypatch, tmp_path, stack)
     assert code != 0
     assert f"pass {ALLOW_FLAG}" in output

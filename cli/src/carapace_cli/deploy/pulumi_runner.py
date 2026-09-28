@@ -57,6 +57,8 @@ STACK_RM_HINT = (
 URN_PREFIX = "urn:pulumi:"
 ROOT_STACK_TYPE = "pulumi:pulumi:Stack"
 PREVIEW_HINT = "nothing was changed; fix the cause and run the same command again"
+ERROR_SEVERITY = "error"
+WARNING_SEVERITY = "warning"
 
 
 @dataclass(frozen=True)
@@ -66,12 +68,18 @@ class StateResource:
     ``outputs`` are as exported: a secret output is ciphertext, never its
     value. They are kept out of the repr so that neither ciphertext nor
     plain outputs end up in a traceback or an error message.
+
+    ``pending_replacement`` is Pulumi's ``pendingReplacement``: the
+    resource was deleted for a delete-before-replace and its replacement
+    was not created yet. It stays in the state until the replacement
+    exists, but nothing of it exists in the cloud.
     """
 
     urn: str
     type: str
     protect: bool
     outputs: Mapping[str, Any] = field(repr=False)
+    pending_replacement: bool = False
 
 
 @dataclass(frozen=True)
@@ -345,13 +353,18 @@ class PulumiStack:
         for line in result.stderr.splitlines(keepends=True):
             self.on_output(line)
         if result.code != 0:
-            for message in _preview_errors(result.stdout):
-                self.on_output(message if message.endswith("\n") else message + "\n")
+            self._show_diagnostics(result.stdout, ERROR_SEVERITY)
             raise PulumiError(
                 f"pulumi preview failed (exit code {result.code}); see its "
                 f"output above; {PREVIEW_HINT}"
             )
-        return parse_preview(result.stdout)
+        steps = parse_preview(result.stdout)
+        self._show_diagnostics(result.stdout, WARNING_SEVERITY)
+        return steps
+
+    def _show_diagnostics(self, output: str, severity: str) -> None:
+        for message in _preview_diagnostics(output, severity):
+            self.on_output(message if message.endswith("\n") else message + "\n")
 
     def up_targets(self, urns: Sequence[str]) -> None:
         """``pulumi up`` on exactly ``urns``, which the state already tracks.
@@ -450,6 +463,7 @@ class PulumiStack:
                     type=type_,
                     protect=entry.get("protect") is True,
                     outputs=outputs,
+                    pending_replacement=entry.get("pendingReplacement") is True,
                 )
             )
         return resources
@@ -509,11 +523,14 @@ def _preview_digest(output: str) -> dict[str, Any]:
     return value
 
 
-def _preview_errors(output: str) -> list[str]:
-    """The error diagnostics of a failed preview's digest, if it printed one.
+def _preview_diagnostics(output: str, severity: str) -> list[str]:
+    """The diagnostics of ``severity`` in a preview's digest, if it printed one.
 
-    A failure in the program is reported in the digest, not on stderr.
-    Pulumi masks secret values in diagnostics as everywhere else.
+    A failure in the program, and its warnings, are reported in the
+    digest, not on stderr. The messages are copied verbatim, as the
+    streamed output of an ``up`` is: Pulumi masks the values it knows are
+    secret, but a message a program or provider writes holds whatever it
+    wrote. They go to the terminal only, never into an exception.
     """
     try:
         diagnostics = _preview_digest(output).get("diagnostics")
@@ -525,7 +542,7 @@ def _preview_errors(output: str) -> list[str]:
         entry["message"]
         for entry in diagnostics
         if isinstance(entry, dict)
-        and entry.get("severity") == "error"
+        and entry.get("severity") == severity
         and isinstance(entry.get("message"), str)
     ]
 

@@ -22,12 +22,13 @@ from dataclasses import dataclass
 import pulumi
 import pulumi_gcp as gcp
 
-from components.config import build_image_reference
+from components.config import (
+    CONFIDENTIAL_SPACE_IMAGE_FAMILY,
+    CONFIDENTIAL_SPACE_IMAGE_PROJECT,
+    build_image_reference,
+    validate_boot_image,
+)
 
-# Production family only; the debug family reports dbgstat=enabled and could
-# never pass the WIF condition anyway.
-CONFIDENTIAL_SPACE_IMAGE_PROJECT = "confidential-space-images"
-CONFIDENTIAL_SPACE_IMAGE_FAMILY = "confidential-space"
 CONFIDENTIAL_INSTANCE_TYPE = "SEV"
 # Must equal ENCLAVE_PORT in enclave/src/carapace_enclave/runtime.py and the
 # EXPOSE in enclave/Dockerfile (tests on both sides check this).
@@ -136,6 +137,7 @@ def create_enclave_vm(
     control_plane_url: pulumi.Input[str],
     kms_key_name: pulumi.Input[str],
     wif_audience: pulumi.Input[str],
+    boot_image: str | None = None,
     depends_on: Sequence[pulumi.Resource] = (),
 ) -> EnclaveVm:
     # Validated eagerly: a tag-only reference fails before any resource exists.
@@ -150,12 +152,19 @@ def create_enclave_vm(
             },
         )
     )
-    # Resolved to a concrete image so a new Confidential Space release shows up
-    # as a diff (and a VM replacement) instead of silently aging in place.
-    boot_image = gcp.compute.get_image_output(
-        family=CONFIDENTIAL_SPACE_IMAGE_FAMILY,
-        project=CONFIDENTIAL_SPACE_IMAGE_PROJECT,
-    ).self_link
+    # A concrete image, so a new Confidential Space release shows up as a
+    # diff (and a VM replacement) instead of silently aging in place.
+    # `carapace deploy` pins it (carapace:boot_image) once per deploy, so
+    # its preview and its `up` read the same image; without a pin (a
+    # manual `pulumi up`) the family's newest image is looked up.
+    image: pulumi.Input[str] = (
+        validate_boot_image(boot_image)
+        if boot_image is not None
+        else gcp.compute.get_image_output(
+            family=CONFIDENTIAL_SPACE_IMAGE_FAMILY,
+            project=CONFIDENTIAL_SPACE_IMAGE_PROJECT,
+        ).self_link
+    )
     instance = gcp.compute.Instance(
         f"{prefix}-enclave",
         name=f"{prefix}-enclave",
@@ -164,7 +173,7 @@ def create_enclave_vm(
         tags=[enclave_network_tag(prefix)],
         boot_disk={
             "initialize_params": {
-                "image": boot_image,
+                "image": image,
                 "size": BOOT_DISK_GB,
             }
         },

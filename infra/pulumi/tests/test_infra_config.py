@@ -11,6 +11,7 @@ from components.config import (  # noqa: E402
     ConfigError,
     StackConfig,
     build_image_reference,
+    validate_boot_image,
     validate_control_plane_url,
 )
 from components.enclave_vm import (  # noqa: E402
@@ -343,3 +344,41 @@ def test_server_url_is_cloud_runs_deterministic_url() -> None:
     assert build_server_url(
         service_name="carapace-server", project_number="42", region="us-central1"
     ) == ("https://carapace-server-42.us-central1.run.app")
+
+
+BOOT_IMAGE = (
+    "https://www.googleapis.com/compute/v1/projects/confidential-space-images"
+    "/global/images/confidential-space-251000"
+)
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        BOOT_IMAGE,
+        "projects/confidential-space-images/global/images/confidential-space-251000",
+    ],
+)
+def test_boot_image_accepts_confidential_space_images(image: str) -> None:
+    assert validate_boot_image(image) == image
+    assert make_config(boot_image=image).boot_image == image
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        "",
+        BOOT_IMAGE.replace("confidential-space-images", "attacker-project"),
+        "projects/attacker/global/images/confidential-space-251000",
+        BOOT_IMAGE.replace("confidential-space-251000", "confidential-space-debug-1"),
+        BOOT_IMAGE.replace("https://www.googleapis.com", "https://evil.example"),
+        BOOT_IMAGE + "/../../../../other/global/images/x",
+        "projects/confidential-space-images/global/images/family/confidential-space",
+        BOOT_IMAGE + "\n",
+    ],
+)
+def test_boot_image_refuses_anything_else(image: str) -> None:
+    with pytest.raises(ConfigError, match="boot_image"):
+        validate_boot_image(image)
+    with pytest.raises(ConfigError, match="boot_image"):
+        make_config(boot_image=image)

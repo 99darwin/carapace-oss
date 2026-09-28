@@ -3,27 +3,30 @@
 The enclave VM (``components/enclave_vm.py``) is replaced, deleting the
 old one first, when its metadata changes (``replace_on_changes``; the
 metadata holds the enclave image reference) or its boot image does (the
-image is resolved from the Confidential Space family on every ``up``,
-and the boot disk image is ForceNew). The image is kept fresh on
-purpose: WIF requires the ``STABLE`` support attribute, which Google
-drops from old images. So any run after Google publishes a new image
-would take the enclave down for a few minutes, unannounced, since the
-CLI runs ``up --yes --skip-preview``.
+boot disk image is ForceNew). The boot image is kept current on purpose:
+WIF requires the ``STABLE`` support attribute, which Google drops from
+old images. The deploy resolves the newest image once and pins it in the
+stack config before any preview (:mod:`carapace_cli.deploy.boot_image`),
+so a preview and the ``up`` after it evaluate the same image. Since the
+CLI runs ``up --yes --skip-preview``, a new image would otherwise take
+the enclave down for a few minutes, unannounced.
 
-Before each workloads ``up`` on a stack whose state holds the VM, the
+Before each workloads ``up`` on a stack whose state holds a live VM, the
 deploy previews the ``up``. A replacement of the VM is always announced,
-with its cause. What is expected is allowed without a question: a
-replacement caused by the metadata alone, in the rollout step that moves
-the VM to the new enclave digest the user asked for. Anything else (a new
-boot image, or any other cause) needs a yes at a prompt or, without one,
+with its cause. What is expected is allowed without a question: in the
+rollout step that moves the VM to the new enclave digest the user asked
+for, a replacement whose metadata change is the enclave image reference
+alone, and, folded into that same replacement, a new boot image. Anything
+else (a new boot image without a new digest, another metadata key, a
+removal, or any other cause) needs a yes at a prompt or, without one,
 ``--allow-enclave-replace``; ``--yes`` does not cover it. The question is
 asked at most once per deploy, before the first ``up`` that touches the
 live VM: a later rollout step that would replace the VM for a cause not
-expected or already accepted is refused before its ``up``. (A cause that
-shows up only then appeared during the deploy, say a boot image Google
-published between two steps, and the user has not seen it.)
+expected or already accepted is refused before its ``up``.
 
-First deploys and bootstraps have no VM in the state and are not gated.
+First deploys and bootstraps have no VM in the state and are not gated,
+and neither is a VM pending replacement: Pulumi already deleted it (a
+replacement whose create failed), so there is nothing left to take down.
 """
 
 from __future__ import annotations
@@ -33,9 +36,10 @@ import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
+from carapace_cli.deploy.infra import PulumiError
 from carapace_cli.deploy.interview import Interview
 from carapace_cli.deploy.pulumi_runner import PreviewStep, StackHandle
-from carapace_cli.deploy.zones import ENCLAVE_INSTANCE_TYPE, zonal_resource_urns
+from carapace_cli.deploy.zones import ENCLAVE_INSTANCE_TYPE, live_zonal_resource_urns
 from carapace_cli.errors import CarapaceError
 
 ALLOW_FLAG = "--allow-enclave-replace"
@@ -50,6 +54,9 @@ METADATA = "metadata"
 REMOVED = "(removed)"
 UNKNOWN = "(unknown)"
 PATH_ROOT = re.compile(r"^[^.\[]+")
+# The one metadata key a new enclave digest changes (build_enclave_metadata
+# in components/enclave_vm.py), as Pulumi writes the path in detailedDiff.
+IMAGE_REFERENCE_PATH = 'metadata["tee-image-reference"]'
 DOWNTIME = (
     "The enclave is down for a few minutes while the VM is deleted and "
     "recreated (the enclave URL is kept)."
@@ -78,22 +85,49 @@ def replace_causes(steps: Iterable[PreviewStep]) -> frozenset[str]:
     :data:`UNKNOWN`, never "no cause".
     """
     causes: set[str] = set()
-    for step in steps:
-        if step.type != ENCLAVE_INSTANCE_TYPE:
-            continue
+    for step in _vm_steps(steps):
         if step.op == DELETE_OP:
             causes.add(REMOVED)
             continue
-        if step.op not in REPLACING_OPS:
-            continue
         reasons = {_root(reason) for reason in step.replace_reasons}
-        reasons |= {
-            _root(path)
-            for path, kind in step.detailed_diff.items()
-            if kind.endswith(REPLACE_KIND_SUFFIX)
-        }
+        reasons |= {_root(path) for path in _replace_paths(step)}
         causes |= reasons or {UNKNOWN}
     return frozenset(causes)
+
+
+def only_image_reference_changes(steps: Iterable[PreviewStep]) -> bool:
+    """Whether the enclave image reference is the only metadata that forces
+    the replacement, as ``detailedDiff`` says.
+
+    A step with no detailed metadata path does not qualify: the cause
+    cannot be told apart from another key (say a ``tee-env-*``) changing.
+    """
+    paths = {
+        path
+        for step in _vm_steps(steps)
+        if step.op != DELETE_OP
+        for path in _replace_paths(step)
+        if _root(path) == METADATA
+    }
+    return paths == {IMAGE_REFERENCE_PATH}
+
+
+def _vm_steps(steps: Iterable[PreviewStep]) -> list[PreviewStep]:
+    """The steps that replace or delete the enclave VM."""
+    return [
+        step
+        for step in steps
+        if step.type == ENCLAVE_INSTANCE_TYPE
+        and (step.op == DELETE_OP or step.op in REPLACING_OPS)
+    ]
+
+
+def _replace_paths(step: PreviewStep) -> list[str]:
+    return [
+        path
+        for path, kind in step.detailed_diff.items()
+        if kind.endswith(REPLACE_KIND_SUFFIX)
+    ]
 
 
 def describe_causes(causes: frozenset[str], *, digest_changes: bool) -> str:
@@ -142,28 +176,45 @@ class EnclaveReplaceGate:
 
         ``digest_changes`` says this ``up`` moves the live VM to another
         enclave digest, which the user asked for by choosing the images.
+        That step also carries the newest boot image (see
+        :func:`carapace_cli.deploy.orchestrate.deploy_workloads`), so a new
+        boot image costs no outage of its own there.
 
         Raises:
             EnclaveReplaceDeclined: The user answered no.
             EnclaveReplaceError: A later step would replace the VM for a
                 cause not accepted.
             MissingInputError: The run cannot prompt and ``allow`` is off.
-            PulumiError: The preview failed or printed no usable digest.
+            PulumiError: The state lists no resource at all, or the preview
+                failed or printed no usable digest.
         """
-        if not zonal_resource_urns(stack.resources()):
+        resources = stack.resources()
+        if not resources:
+            # The workloads step runs after the bootstrap, so its state is
+            # never empty; an empty export is not read as "no VM".
+            raise PulumiError(
+                "pulumi stack export listed no resources before the workloads "
+                "step; nothing was changed. Check `pulumi stack export`, then "
+                "run the same command again"
+            )
+        if not live_zonal_resource_urns(resources):
             return
         self.say("Previewing the update of the live enclave VM...")
-        causes = replace_causes(stack.preview())
+        steps = stack.preview()
+        causes = replace_causes(steps)
         first = not self.previewed
         self.previewed = True
         if not causes:
             return
+        # A digest step whose metadata change is more than the image
+        # reference (say a tee-env-* key) is not the change the user chose.
+        expected_digest = digest_changes and only_image_reference_changes(steps)
         self.say(
             "This update replaces the enclave VM: "
-            f"{describe_causes(causes, digest_changes=digest_changes)}. "
+            f"{describe_causes(causes, digest_changes=expected_digest)}. "
             f"{DOWNTIME}"
         )
-        expected = {METADATA} if digest_changes else set()
+        expected = {METADATA, BOOT_DISK} if expected_digest else set()
         unaccepted = causes - expected - self.accepted
         if not unaccepted:
             return

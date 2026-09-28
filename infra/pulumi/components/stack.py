@@ -173,6 +173,7 @@ def deploy(cfg: StackConfig) -> dict[str, pulumi.Input[object]]:
         control_plane_url=control_plane_url,
         kms_key_name=kms_key.key_version_name,
         wif_audience=workload_identity.sts_audience,
+        boot_image=cfg.boot_image,
         # Boot only once the VM can pull, attest and have the key released,
         # and once every decrypt it makes will be logged.
         depends_on=[

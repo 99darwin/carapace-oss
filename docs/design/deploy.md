@@ -277,33 +277,62 @@ only the enclave).
   lists the zones tried and suggests a later run or another region with
   a new `--prefix`. A failure that is not a stockout is reported at once.
 - The fallback never changes region and never moves a VM that the state
-  holds after the failed `up`: that is the check that matters, made from
-  `stack export`, never from the config or the message. A VM the state
-  held before the `up` and not after it was deleted for its replacement
-  (below); the fallback then goes ahead and says so. `--no-zone-fallback`
-  turns it off.
+  holds live after the failed `up`: that is the check that matters, made
+  from `stack export`, never from the config or the message. A VM the
+  state held live before the `up` and not after it was deleted for its
+  replacement (below); the fallback then goes ahead and says so.
+  `--no-zone-fallback` turns it off.
+- "Live" excludes a VM marked `pendingReplacement` in the state
+  (`StateResource.pending_replacement`, read as a JSON `true` only). The
+  zonal checks (the zone fallback, the zone change check and the
+  replace gate) all use `live_zonal_resource_urns`, and so does the
+  bootstrap's refusal to run over a live VM.
 - The enclave VM has `replace_on_changes=["metadata"]` and
   `delete_before_replace=True`, so a new image digest (the
   `tee-image-reference` metadata) or a newer Confidential Space boot
-  image (resolved on every `up`) deletes the VM before creating the new
-  one. A stockout on that create leaves the deployment without a VM (the
-  static IP is regional and kept); the provider drops a VM whose create
-  failed from the state (`google_compute_instance` clears its ID when the
-  create operation fails), so the same run sees none and creates the
-  replacement in another zone. Creating the replacement first would
-  avoid the gap but needs a second static IP and name, which is left for
-  later. The family lookup also means a run made for another reason
-  after a new Confidential Space release would replace the VM; the
-  preview gate below announces that and asks first.
+  image (below) deletes the VM before creating the new one. A stockout
+  on that create leaves the deployment without a VM (the static IP is
+  regional and kept). Pulumi keeps the deleted VM in the state, marked
+  `pendingReplacement: true`, until a later `up` creates it: the old VM
+  is gone from Compute, but its entry, with its old zone, remains. That
+  entry is not live, so the same run moves the replacement to another
+  zone, and a rerun (say after `--no-zone-fallback`) may move it too,
+  with no preview and no question: there is nothing left to take down.
+  Creating the replacement first would avoid the gap but needs a second
+  static IP and name, which is left for later.
 
 ### Replacing the live enclave VM
 
-- The boot image stays resolved from the family on every `up`: WIF
-  requires the `STABLE` support attribute, which Google drops from old
-  images, so pinning it would trade a warned-about restart for a VM that
-  silently stops decrypting. What changed is that the CLI no longer
-  replaces the VM unannounced. The `up`s keep `--yes --skip-preview`; a
-  separate preview runs first.
+- The boot image is kept current: WIF requires the `STABLE` support
+  attribute, which Google drops from old images, so pinning one image
+  for good would trade a warned-about restart for a VM that silently
+  stops decrypting. Attestation does not name the image: the WIF
+  condition checks `swname`, the `STABLE` support attribute and
+  `dbgstat`, and none of that changed here.
+- The image is resolved once per deploy, before anything else runs: the
+  CLI reads the family endpoint of the Compute API
+  (`projects/confidential-space-images/global/images/family/confidential-space`),
+  requires the answer's `family` to be `confidential-space`, and pins its
+  `selfLink` as `carapace:boot_image` with each workloads step's config,
+  before that step's preview. The preview and the `up` then evaluate the
+  same image; the program's own family lookup (a data source read on
+  every program run) could otherwise name a newer image in the `up` than
+  in the preview a moment before. The program uses the pin when it is
+  set and the family lookup otherwise (a manual `pulumi up` with no pin).
+- The pin is validated on both sides (`boot_image.py` in the CLI,
+  `config.py` in the program, one regex): an image of the
+  `confidential-space-images` project only, as a `https://www` or
+  `https://compute` `googleapis.com/compute/v1/` selfLink or a bare
+  `projects/...` path, never a family path, and never an image whose
+  name contains `debug`.
+- In a digest rollout the steps before the one that moves the VM pin the
+  image the VM booted (read from its state outputs,
+  `bootDisk.initializeParams.image`, then from a valid pin), so they do
+  not replace it. The step that moves the VM pins the newest image, so a
+  new digest and a new boot image cost one replacement, not two. When
+  the running image cannot be read, the newest one is pinned in every
+  step, and the gate asks before replacing the VM for it.
+- The `up`s keep `--yes --skip-preview`; a separate preview runs first.
 - Before each workloads `up` on a stack whose state holds the VM
   (`stack export`, the zonal resource of the zone rules above),
   `StackHandle.preview()` runs `pulumi preview --json` with stdout and
@@ -318,7 +347,12 @@ only the enclave).
   a digest without the root stack's step (always present in a real
   one), or a malformed step stops the deploy before the `up`. The error
   message holds none of pulumi's output; a failed preview's error
-  diagnostics and its stderr are printed to the terminal instead.
+  diagnostics and its stderr are printed to the terminal instead, and a
+  successful preview's warning diagnostics are printed too. Diagnostics
+  are copied verbatim, as an `up`'s streamed output is: Pulumi masks the
+  values it knows are secret, not what a program or provider writes.
+- An empty `stack export` before a workloads step stops the deploy: the
+  bootstrap ran first, so an empty state is a broken read, not "no VM".
 - The VM is being replaced when a step for `gcp:compute/instance:Instance`
   has op `replace`, `create-replacement`, `delete-replaced` or `delete`.
   The causes are the top-level inputs named in `replaceReasons`, or in
@@ -327,9 +361,14 @@ only the enclave).
   image, `metadata` a new enclave image reference (or another metadata
   input: control plane URL, KMS key, WIF audience).
 - Every replacement is announced in one line with its causes and the
-  downtime. A replacement whose only cause is `metadata`, in the rollout
-  step that moves the VM from the digest the state runs to another one,
-  is the change the user asked for and goes ahead without a question.
+  downtime. In the rollout step that moves the VM from the digest the
+  state runs to another one, a replacement whose `detailedDiff` names
+  `metadata["tee-image-reference"]` as the only metadata path that forces
+  it is the change the user asked for, and goes ahead without a
+  question; a new boot image folded into it (see above) costs no outage
+  of its own and goes ahead too. Any other metadata path, or no
+  metadata path at all, is not told apart from another input changing
+  and is asked.
   Anything else asks once (the interview's `confirm`, with `--yes`
   ignored: it confirms the deploy, not an outage the user may not know
   about). A run that cannot prompt needs `--allow-enclave-replace`, and
@@ -343,7 +382,8 @@ only the enclave).
   again to resume and review it.
 - First deploys and bootstraps have no VM in the state and are not
   previewed; neither is a resume whose failed `up` already deleted the
-  VM. `carapace destroy` is unaffected.
+  VM (it is pending replacement in the state). `carapace destroy` is
+  unaffected.
 
 ### Destroy
 
