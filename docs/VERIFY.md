@@ -12,13 +12,13 @@ guide covers the three checks that make that concrete:
 See [THREAT_MODEL.md](THREAT_MODEL.md) for what these checks do and do not
 protect against.
 
-> **Status: pre-alpha.** Release candidates are tagged and signed by CI,
-> but no deploy from a published release has run end to end yet.
-> `carapace verify`, with the deployment identity pins, and
-> `carapace audit verify` have passed once against a real Confidential
-> Space enclave (2026-09-26, built from source); see [THREAT_MODEL.md,
-> Verified on real GCP](THREAT_MODEL.md#verified-on-real-gcp). The release
-> download and sigstore path is still unverified.
+> **Status: beta.** Not independently audited; start with scoped, revocable
+> tokens. `carapace verify`, with the deployment identity pins, and
+> `carapace audit verify` have passed against a real Confidential Space
+> enclave both built from source (2026-09-26) and deployed from a
+> published, signed release, including the release download and sigstore
+> verification (2026-09-28); see [THREAT_MODEL.md, Verified on real
+> GCP](THREAT_MODEL.md#verified-on-real-gcp).
 
 ## 1. Decide which image digest to trust
 
