@@ -51,13 +51,17 @@ The full list, and what is deliberately not created, is in the
 - Pulumi CLI 3.x and Python 3.12. Any backend works; `pulumi login --local`
   keeps state on your machine. The state contains the generated database
   password and JWT secret as Pulumi secrets, so protect it.
-- Docker with buildx, to build the images.
-- `crane` and `cosign`, only if you deploy published images instead of
-  building your own.
+- Docker with buildx, only for `carapace deploy --build`.
+- `cosign`, so `carapace deploy` can verify the server image's signature
+  (without it the CLI says so and continues; the server is outside the
+  TCB). `crane` only for the manual image copy in the
+  [infra README](../infra/pulumi/README.md#images).
 - `uv` and the `carapace` CLI: clone this repository, then
-  `uv tool install --editable ./cli`. Editable and from the clone because
-  `deploy` and `destroy` run the Pulumi program in the checkout the CLI
-  was installed from.
+  `uv tool install --editable './cli[deploy]'`. Editable and from the
+  clone because `deploy` and `destroy` run the Pulumi program in the
+  checkout the CLI was installed from. The `[deploy]` extra holds the
+  release-verification (sigstore) and GCP auth dependencies; without it,
+  `deploy` and `destroy` refuse to run.
 
 ## 1. Configure the stack
 

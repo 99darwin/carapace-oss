@@ -342,8 +342,8 @@ decrypts), except where noted.
 - A non-confidential VM, or the server service account, actively calling
   decrypt gets `PERMISSION_DENIED`. The key's IAM policy was inspected (see
   below), but no such call was made.
-- The two CI builders produce the same digest in practice, and the tag,
-  push and cosign path in `enclave-image.yml` has not yet run.
+- The two CI builders produce the same digest in practice (a `--build`
+  digest has not been compared against a release build).
 
 ### Verified on real GCP
 
@@ -391,7 +391,8 @@ deploy` (no `--build`):
 - The web UI was exercised against the deployed Cloud Run server: login,
   secrets, keys, receipts and the attestation page all worked, with no
   CSP or Trusted Types console errors and no token in web storage; a
-  reload logged the session out.
+  reload logged the session out (the attestation page reports the
+  enclave as unverified until `carapace verify` is run, by design).
 - Revoking a key in the web UI made the enclave reject that key on its
   next request.
 - The first attempt hit an `n2d-standard-2` capacity stockout in every

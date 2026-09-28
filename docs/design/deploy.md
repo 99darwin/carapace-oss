@@ -78,8 +78,9 @@ prefix) applies unchanged, and there is only one copy of the program.
   passes its stderr on.
 - **The deploy extra** `carapace-cli[deploy]` holds only what the CLI
   itself imports (`google-auth`, later `sigstore`).
-- v0.1 runs the CLI from a checkout (`uv sync --all-packages`, as
-  SELF_HOST.md already requires), and the CLI finds the program at
+- v0.1 runs the CLI from an editable install of the checkout
+  (`uv tool install --editable './cli[deploy]'`, as SELF_HOST.md
+  requires), and the CLI finds the program at
   `infra/pulumi` next to its source. `CARAPACE_INFRA_DIR` overrides the
   path. Shipping the program with a published CLI is left for when the
   CLI is published.

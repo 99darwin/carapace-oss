@@ -42,19 +42,23 @@ ENCLAVE     ──attestation-gated asymmetricDecrypt──▶ Cloud KMS (HSM)
 Deploy your own into a new, dedicated GCP project with billing enabled.
 You need `gcloud` (run `gcloud auth application-default login`), the Pulumi
 CLI 3.x, Python 3.12, [`uv`](https://docs.astral.sh/uv/) and, for
-`--build`, Docker with buildx. The full prerequisites, costs and teardown
-are in [docs/SELF_HOST.md](docs/SELF_HOST.md).
+`--build`, Docker with buildx. `cosign` is optional: if installed,
+`carapace deploy` also verifies the server image's signature. The full
+prerequisites, costs and teardown are in
+[docs/SELF_HOST.md](docs/SELF_HOST.md).
 
 ```bash
 git clone https://github.com/99darwin/carapace-oss.git
 cd carapace-oss
-uv tool install --editable ./cli
+uv tool install --editable './cli[deploy]'
 carapace deploy
 ```
 
 The install is editable and from the clone because `deploy` and `destroy`
 run the Pulumi program in the checkout the CLI was installed from
 ([`cli/src/carapace_cli/deploy/infra.py`](cli/src/carapace_cli/deploy/infra.py)).
+The `[deploy]` extra holds the release-verification (sigstore) and GCP
+auth dependencies; without it, `deploy` and `destroy` refuse to run.
 
 `carapace deploy` asks for the project, region, alert email, first account
 and owner-key passphrase, prints what it will create and what it costs, and
