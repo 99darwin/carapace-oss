@@ -17,6 +17,7 @@ from carapace_cli.deploy.interview import InvalidInputError
 from carapace_cli.deploy.polling import Clock, poll_until
 from carapace_cli.deploy.preflight import Target
 from carapace_cli.deploy.pulumi_runner import StackHandle
+from carapace_cli.deploy.zones import ZoneFallback, up_with_zone_fallback
 from carapace_cli.errors import CarapaceError
 
 DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -263,7 +264,15 @@ def deploy_workloads(
     images: Images,
     *,
     say: Callable[[str], None],
-) -> dict[str, Any]:
+    fallback: ZoneFallback | None = None,
+) -> tuple[dict[str, Any], Target]:
+    """Each rollout ``up``; the target returned has the zone that worked.
+
+    With ``fallback``, an ``up`` that fails because the zone is out of
+    capacity for a VM the state does not hold (never created, or deleted
+    for its replacement) moves to another zone of the region (see
+    :mod:`carapace_cli.deploy.zones`); later steps stay there.
+    """
     outputs: dict[str, Any] = {}
     steps = rollout_steps(
         running_enclave_digest(stack.outputs()), images.enclave_digest
@@ -279,8 +288,10 @@ def deploy_workloads(
                 "carapace:server_image_digest": images.server_digest,
             }
         )
-        outputs = stack.up()
-    return outputs
+        outputs, target = up_with_zone_fallback(
+            stack, target, fallback=fallback, say=say
+        )
+    return outputs, target
 
 
 def check_migration(api: GcpApi, target: Target, job: str, *, clock: Clock) -> None:
@@ -316,10 +327,11 @@ def check_migration(api: GcpApi, target: Target, job: str, *, clock: Clock) -> N
 
 @dataclass(frozen=True)
 class Deployment:
-    """The stack's outputs and the images it now runs."""
+    """The stack's outputs, the images it now runs and where it runs them."""
 
     outputs: dict[str, Any]
     images: Images
+    target: Target
 
 
 def run_deploy(
@@ -330,18 +342,25 @@ def run_deploy(
     images: ImageSource,
     clock: Clock,
     say: Callable[[str], None],
+    zone_fallback: ZoneFallback | None = None,
 ) -> Deployment:
-    """Bootstrap, key wait, images, workloads, migration check. Resumable."""
+    """Bootstrap, key wait, images, workloads, migration check. Resumable.
+
+    ``zone_fallback`` lets the workloads step move the enclave VM to
+    another zone of the region when its zone is out of capacity.
+    """
     outputs = bootstrap(
         stack, target, enclave_digest=images.enclave_digest_hint(), say=say
     )
     require_outputs(outputs, BOOTSTRAP_OUTPUTS, step="bootstrap")
     wait_for_key(api, str(outputs["kms_key_version_name"]), clock=clock, say=say)
     published = images.publish(str(outputs["image_registry"]))
-    outputs = deploy_workloads(stack, target, published, say=say)
+    outputs, target = deploy_workloads(
+        stack, target, published, say=say, fallback=zone_fallback
+    )
     require_outputs(outputs, WORKLOADS_OUTPUTS, step="workloads step")
     check_migration(api, target, str(outputs["migration_job"]), clock=clock)
-    return Deployment(outputs=outputs, images=published)
+    return Deployment(outputs=outputs, images=published, target=target)
 
 
 @dataclass(frozen=True)

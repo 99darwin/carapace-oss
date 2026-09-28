@@ -265,6 +265,60 @@ something other than the attested enclave decrypted with the key. Treat
 every unexpected alert as a potential compromise: check the Admin Activity
 and Data Access logs, and rotate affected credentials at their providers.
 
+## Troubleshooting
+
+### A zone has no capacity (stockout)
+
+Google sometimes runs out of a machine type in one zone while the other
+zones of the region still have it. Creating the enclave VM then fails
+with something like:
+
+```
+Error waiting for instance to create: The zone
+'projects/<project>/zones/us-central1-a' does not have enough resources
+available to fulfill the request. Try a different zone, or try again
+later. A n2d-standard-2 VM instance is currently unavailable in the
+us-central1-a zone.
+```
+
+`carapace deploy` handles this when it is creating the VM (the stack's
+state holds no VM yet). It asks Compute for the region's zones that are
+`UP` and offer the enclave's machine type (read from
+`infra/pulumi/components/config.py`, or `enclave_machine_type` in the
+stack config), and runs the workloads step again in each of them in
+order, printing one line per switch:
+
+```
+us-central1-a has no capacity for n2d-standard-2 now; trying us-central1-b.
+```
+
+The zone that worked becomes the deployment's: it is written to the
+stack config (`gcp:zone`) and the deployment record, and later runs use
+it. If every zone fails, the requested zone is kept and the error lists
+the zones tried; run the same command again later, or deploy in another
+region with a new `--prefix`. The fallback never leaves the region (the
+key ring and the other regional resources cannot move) and never moves a
+VM that is in the state. Pass `--no-zone-fallback` to report the stockout
+and stop instead.
+
+Only the enclave VM is zonal. While the state holds no VM, a re-run may
+also pass another `--zone` of the same region by hand; once the VM
+exists, a different `--zone` is refused, as is a different `--region`
+at any time.
+
+A new enclave image, or a newer Confidential Space image, replaces the
+VM, deleting the old one first. If that create hits a stockout, the
+state holds no VM, so the same run says the VM was deleted for its
+replacement and creates the replacement in another zone (its static IP
+is regional and kept, so the enclave URL does not change). A stockout
+that leaves the VM in the state (a start after a stop for an update)
+is reported as it is and moves nothing.
+
+Note that the Confidential Space boot image is resolved from Google's
+`confidential-space` family on every run, so a run made for any other
+reason (say, a new server image) after Google publishes a new image
+replaces the enclave VM, with the minutes of downtime that takes.
+
 ## Cost
 
 Rough list prices in `us-central1`, per month:

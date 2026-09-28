@@ -16,6 +16,7 @@ from urllib.parse import unquote
 import httpx
 
 from carapace_cli.deploy.gcp import GcpApi
+from carapace_cli.deploy.infra import PulumiError
 from carapace_cli.deploy.interview import Interview
 from carapace_cli.deploy.polling import Clock
 from carapace_cli.deploy.pulumi_runner import StateResource
@@ -302,6 +303,37 @@ def state_resources(
 
 
 FULL_STACK_URNS = (*UNPROTECTED_URNS, *KMS_URNS, *DB_URNS)
+# The enclave VM, the one zonal resource; in the state once workloads run.
+ENCLAVE_VM_URN = urn("gcp:compute/instance:Instance", f"{PREFIX}-enclave")
+# Verbatim from a real `carapace deploy` in us-central1 (2026-09-28), with
+# the zone made a placeholder.
+STOCKOUT_MESSAGE = (
+    "Error waiting for instance to create: The zone "
+    "'projects/throwaway-carapace/zones/{zone}' does not have enough "
+    "resources available to fulfill the request. Try a different zone, or "
+    "try again later. A n2d-standard-2 VM instance is currently unavailable "
+    "in the {zone} zone."
+)
+
+
+def stockout_output(zone: str) -> str:
+    """The tail of `pulumi up` output after the VM create hit a stockout."""
+    return "\n".join(
+        [
+            "Diagnostics:",
+            f"  gcp:compute:Instance ({PREFIX}-enclave):",
+            "    error: 1 error occurred:",
+            f"    \t* {STOCKOUT_MESSAGE.format(zone=zone)}",
+            "",
+            f"  pulumi:pulumi:Stack (carapace-{PREFIX}):",
+            "    error: update failed",
+            "",
+            "Resources:",
+            "    41 unchanged",
+            "",
+            "Duration: 1m3s",
+        ]
+    )
 
 
 @dataclass
@@ -323,6 +355,12 @@ class FakeStack:
     # The resources in the state; a live stack has every one of them.
     resources_in_state: list[StateResource] | None = None
     fail_on_up: int | None = None
+    # What pulumi printed before the `fail_on_up` failure.
+    fail_output: str = ""
+    # Zones out of capacity: an `up` that would create the VM there fails.
+    stockout_zones: frozenset[str] = frozenset()
+    # The zone of each `up` that hit a stockout.
+    stockouts: list[str] = field(default_factory=list)
     fail_on_up_targets: bool = False
     fail_on_unprotect: bool = False
     fail_on_remove: bool = False
@@ -340,16 +378,59 @@ class FakeStack:
         if self.resources_in_state is not None:
             self._resources = list(self.resources_in_state)
         elif self._state and not self.half_created:
-            self._resources = self._program_resources(FULL_STACK_URNS)
+            self._resources = self._program_resources(FULL_STACK_URNS, self._state)
         else:
             self._resources = []
 
-    def _program_resources(self, urns: Sequence[str]) -> list[StateResource]:
-        """``urns`` as the program declares them with the current config."""
-        return state_resources(
+    def _program_resources(
+        self, urns: Sequence[str], config: Mapping[str, str] | None = None
+    ) -> list[StateResource]:
+        """``urns`` as the program declares them with ``config`` (default:
+        the current one), plus the enclave VM while workloads run."""
+        config = self._config if config is None else config
+        resources = state_resources(
             urns,
-            kms_protected=self._config.get("carapace:protect_kms_key") != "false",
-            db_protected=self._config.get("carapace:db_deletion_protection") != "false",
+            kms_protected=config.get("carapace:protect_kms_key") != "false",
+            db_protected=config.get("carapace:db_deletion_protection") != "false",
+        )
+        if config.get("carapace:deploy_workloads") == "true":
+            resources.append(
+                StateResource(
+                    urn=ENCLAVE_VM_URN,
+                    type=ENCLAVE_VM_URN.split("::")[2],
+                    protect=False,
+                    outputs={"zone": config.get("gcp:zone", "")},
+                )
+            )
+        return resources
+
+    def _has_vm(self) -> bool:
+        return any(resource.urn == ENCLAVE_VM_URN for resource in self._resources)
+
+    def _hit_stockout(self) -> None:
+        """Fail as a VM create in a zone out of capacity does.
+
+        The VM is created when it is missing, and replaced (deleted first,
+        as the program's delete_before_replace says) when its image
+        changes. The failed create leaves no VM in the state.
+        """
+        config = self._config
+        zone = config.get("gcp:zone", "")
+        if config.get("carapace:deploy_workloads") != "true":
+            return
+        if zone not in self.stockout_zones:
+            return
+        replaces = self._state.get("carapace:enclave_image_digest") != config.get(
+            "carapace:enclave_image_digest"
+        )
+        if self._has_vm() and not replaces:
+            return
+        self._resources = [r for r in self._resources if r.urn != ENCLAVE_VM_URN]
+        self.stockouts.append(zone)
+        raise PulumiError(
+            "pulumi up failed: Duration: 1m3s; fix the cause and run the same "
+            "command again to resume",
+            output=stockout_output(zone),
         )
 
     def config(self) -> dict[str, str]:
@@ -361,7 +442,8 @@ class FakeStack:
     def up(self) -> dict[str, Any]:
         if self.fail_on_up is not None and len(self.ups) + 1 == self.fail_on_up:
             self.fail_on_up = None
-            raise CarapaceError("pulumi failed: simulated")
+            raise PulumiError("pulumi failed: simulated", output=self.fail_output)
+        self._hit_stockout()
         self.ups.append(self.config())
         self._state = self.config()
         self._resources = self._program_resources(FULL_STACK_URNS)

@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from carapace_cli.deploy.preflight import (
-    ENCLAVE_MACHINE_TYPE,
-    PreflightReport,
-    Target,
-)
+from carapace_cli.deploy.infra import default_enclave_machine_type
+from carapace_cli.deploy.preflight import PreflightReport, Target
 
 MONTHLY_COST_USD = 80
 STOPPED_VM_MONTHLY_COST_USD = 40
@@ -51,7 +48,8 @@ def render_summary(
         "    cannot be deleted; destroy only schedules the version's destruction",
         "  - a workload identity pool, two service accounts, an Artifact Registry",
         "    repository, KMS Data Access logs and an IAM change alert",
-        f"  - a Confidential VM ({ENCLAVE_MACHINE_TYPE}) with a static external IP,",
+        f"  - a Confidential VM ({default_enclave_machine_type()}) with a static "
+        "external IP,",
         "    open on tcp:8443 only",
         "  - a Cloud Run service and migration job, Cloud SQL Postgres (public IP,",
         "    TLS only, no authorized networks) and two Secret Manager secrets",

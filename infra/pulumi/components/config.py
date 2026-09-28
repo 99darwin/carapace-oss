@@ -26,6 +26,11 @@ LAUNCHER_DEFAULT_AUDIENCE = "https://sts.googleapis.com"
 # accepted by WIF, for the same reason.
 ATTESTATION_AUDIENCE = "carapace-attestation"
 FORBIDDEN_WIF_AUDIENCES = frozenset({LAUNCHER_DEFAULT_AUDIENCE, ATTESTATION_AUDIENCE})
+# The enclave VM's machine type unless carapace:enclave_machine_type says
+# otherwise. N2D: AMD SEV. The CLI reads this line (not an import: the CLI
+# does not depend on pulumi) to pick zones that offer it, so keep it a
+# plain string literal.
+DEFAULT_ENCLAVE_MACHINE_TYPE = "n2d-standard-2"
 
 
 class ConfigError(ValueError):
@@ -104,7 +109,7 @@ class StackConfig:
     # None derives the provider resource name, which is stack-specific.
     wif_audience: str | None = None
     control_plane_url: str | None = None
-    enclave_machine_type: str = "n2d-standard-2"
+    enclave_machine_type: str = DEFAULT_ENCLAVE_MACHINE_TYPE
     db_tier: str = "db-f1-micro"
     server_min_instances: int = 0
     server_max_instances: int = 2
@@ -177,7 +182,9 @@ def load_config() -> StackConfig:
         image_registry=cfg.get("image_registry"),
         wif_audience=cfg.get("wif_audience"),
         control_plane_url=cfg.get("control_plane_url"),
-        enclave_machine_type=cfg.get("enclave_machine_type") or "n2d-standard-2",
+        enclave_machine_type=(
+            cfg.get("enclave_machine_type") or DEFAULT_ENCLAVE_MACHINE_TYPE
+        ),
         db_tier=cfg.get("db_tier") or "db-f1-micro",
         server_min_instances=cfg.get_int("server_min_instances") or 0,
         server_max_instances=cfg.get_int("server_max_instances") or 2,

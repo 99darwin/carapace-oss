@@ -16,6 +16,7 @@ import pytest
 from deploy_support import PREFIX, PROJECT, PROJECT_NUMBER, REGION
 
 from carapace_cli.deploy import pulumi_runner
+from carapace_cli.deploy.infra import INFRA_DIR_ENV
 from carapace_cli.deploy.preflight import Target
 from carapace_cli.deploy.pulumi_runner import (
     Completed,
@@ -28,6 +29,7 @@ from carapace_cli.deploy.pulumi_runner import (
     run_process,
 )
 from carapace_cli.deploy.state import state_backend_for
+from carapace_cli.deploy.zones import is_zone_capacity_error
 
 REPO = Path(__file__).resolve().parents[2]
 INFRA = REPO / "infra" / "pulumi"
@@ -378,9 +380,9 @@ def test_missing_or_wrong_pulumi_is_refused() -> None:
 def test_locate_infra_finds_the_checkout_or_the_override(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.delenv(pulumi_runner.INFRA_DIR_ENV, raising=False)
+    monkeypatch.delenv(INFRA_DIR_ENV, raising=False)
     assert locate_infra() == INFRA
-    monkeypatch.setenv(pulumi_runner.INFRA_DIR_ENV, str(tmp_path))
+    monkeypatch.setenv(INFRA_DIR_ENV, str(tmp_path))
     with pytest.raises(PulumiError, match="CARAPACE_INFRA_DIR"):
         locate_infra()
 
@@ -400,3 +402,21 @@ def test_run_process_streams_without_a_shell(tmp_path: Path) -> None:
         [sys.executable, "-c", "print('x')"], cwd=tmp_path, env={}, on_output=None
     )
     assert quiet == Completed(0, "x\n")
+
+
+def test_failure_keeps_pulumi_output_for_classifying_it() -> None:
+    with pytest.raises(PulumiError) as caught:
+        stack(FakePulumi(fail="up")).up()
+    assert "quota exceeded" in caught.value.output
+    assert not is_zone_capacity_error(f"{caught.value}\n{caught.value.output}")
+
+
+def test_a_quiet_command_failure_keeps_no_output() -> None:
+    """`stack export` prints the whole state; a failure keeps only its
+    last line in the message, as before, and none of it as output."""
+    with pytest.raises(PulumiError) as caught:
+        stack(FakePulumi(fail="stack export")).resources()
+    assert str(caught.value).startswith(
+        "pulumi stack export failed: error: quota exceeded"
+    )
+    assert caught.value.output == ""

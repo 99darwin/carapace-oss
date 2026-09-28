@@ -51,6 +51,7 @@ from carapace_cli.deploy.images import (
     validate_repo,
     validate_tag,
 )
+from carapace_cli.deploy.infra import enclave_machine_type
 from carapace_cli.deploy.interview import Interview, InvalidInputError
 from carapace_cli.deploy.orchestrate import (
     FRESH_STACK,
@@ -91,6 +92,7 @@ from carapace_cli.deploy.state import (
     state_backend_for,
 )
 from carapace_cli.deploy.summary import render_summary, state_bucket_name
+from carapace_cli.deploy.zones import zonal_resource_urns, zone_fallback
 
 EXIT_DECLINED = 1
 # The stack enables it too, but a new stack's prefix check reads a WIF
@@ -378,7 +380,12 @@ def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
         # run; the backend's state, not the record, decides what exists.
         has_state = bool(stack.outputs())
         config = stack.config()
-        check_stack_config(config, target, is_existing=has_state)
+        check_stack_config(
+            config,
+            target,
+            is_existing=has_state,
+            zonal_resources=lambda: zonal_resource_urns(stack.resources()),
+        )
         # New: the state tracks nothing, so no key ring or pool is this
         # stack's own. A first `up` that failed leaves its resources in the
         # state, and is resumed; a record alone vouches for nothing, since
@@ -391,6 +398,16 @@ def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
         # that finds the record also finds the config.
         stack.set_config(base_config(target))
         write_record(api, target)
+        fallback = (
+            None
+            if args.no_zone_fallback
+            else zone_fallback(
+                api,
+                stack,
+                project=target.project,
+                machine_type=enclave_machine_type(stack.config()),
+            )
+        )
         deployment = run_deploy(
             target,
             api=api,
@@ -398,8 +415,14 @@ def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
             images=images,
             clock=services.clock,
             say=ctx.say,
+            zone_fallback=fallback,
         )
     ctx.say("Deployed.")
+    if deployment.target.zone != target.zone:
+        ctx.say(
+            f"  zone: {deployment.target.zone} ({target.zone} had no capacity); "
+            "later runs use it"
+        )
     for name in ("enclave_url", "server_url", "kms_key_version_name"):
         ctx.say(f"  {name}: {deployment.outputs.get(name, '?')}")
     complete_first_run(
@@ -461,7 +484,12 @@ def cmd_destroy(args: argparse.Namespace, ctx: CommandContext) -> int:
             ctx.say("Aborted. Nothing was changed.")
             return EXIT_DECLINED
         stack = services.stack(target, state_backend_for(target), ctx)
-        check_stack_config(stack.config(), target, is_existing=True)
+        check_stack_config(
+            stack.config(),
+            target,
+            is_existing=True,
+            zonal_resources=lambda: zonal_resource_urns(stack.resources()),
+        )
         # Read before the destroy: afterwards the stack has no outputs.
         urls = deployment_urls(stack.outputs())
         run_destroy(stack, say=ctx.say)
@@ -495,6 +523,12 @@ def add_deploy_commands(sub: argparse._SubParsersAction) -> None:
     add_interview_flags(deploy)
     deploy.add_argument("--region", help="default: us-central1")
     deploy.add_argument("--zone", help="default: a zone of --region with N2D")
+    deploy.add_argument(
+        "--no-zone-fallback",
+        action="store_true",
+        help="if the zone is out of capacity for the enclave VM, stop instead "
+        "of trying the region's other zones",
+    )
     deploy.add_argument("--prefix", help="resource name prefix (default: carapace)")
     deploy.add_argument(
         "--alert-email",

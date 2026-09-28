@@ -10,6 +10,7 @@ and never appear in messages.
 from __future__ import annotations
 
 import importlib
+import re
 from collections.abc import Iterator
 from typing import Any, Protocol
 
@@ -27,6 +28,9 @@ HTTP_NOT_FOUND = 404
 HTTP_CONFLICT = 409
 SERVICE_DISABLED_REASON = "SERVICE_DISABLED"
 GOOGLE_API_SUFFIX = ".googleapis.com"
+ZONE_UP = "UP"
+# A zone name as Google lists it; it goes into a Compute API path.
+ZONE_NAME_PATTERN = re.compile(r"^[a-z0-9-]+$")
 
 RESOURCE_MANAGER = "https://cloudresourcemanager.googleapis.com/v1"
 BILLING = "https://cloudbilling.googleapis.com/v1"
@@ -236,6 +240,28 @@ class GcpApi:
             f"{COMPUTE}/projects/{project_id}/zones/{zone}/machineTypes/{machine_type}"
         )
         return self.get_or_none(url) is not None
+
+    def zones_offering(
+        self, project_id: str, region: str, machine_type: str
+    ) -> list[str]:
+        """The zones of ``region`` that are UP and offer ``machine_type``.
+
+        Sorted by name. A zone that is UP can still be out of capacity for
+        the machine type: that shows only when a VM is created.
+        """
+        region_suffix = f"/regions/{region}"
+        zones = sorted(
+            str(zone["name"])
+            for zone in self.paged(f"{COMPUTE}/projects/{project_id}/zones", "items")
+            if ZONE_NAME_PATTERN.fullmatch(str(zone.get("name") or ""))
+            and zone.get("status") == ZONE_UP
+            and str(zone.get("region") or "").endswith(region_suffix)
+        )
+        return [
+            zone
+            for zone in zones
+            if self.machine_type_available(project_id, zone, machine_type)
+        ]
 
     # -- names a new stack must not reuse ----------------------------------------
 
