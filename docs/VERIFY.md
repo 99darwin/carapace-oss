@@ -12,8 +12,8 @@ guide covers the three checks that make that concrete:
 See [THREAT_MODEL.md](THREAT_MODEL.md) for what these checks do and do not
 protect against.
 
-> **Status: pre-alpha.** No release has been tagged yet, so there are no
-> published release manifests, and the tag/sign path in CI has not run.
+> **Status: pre-alpha.** Release candidates are tagged and signed by CI,
+> but no deploy from a published release has run end to end yet.
 > `carapace verify`, with the deployment identity pins, and
 > `carapace audit verify` have passed once against a real Confidential
 > Space enclave (2026-09-26, built from source); see [THREAT_MODEL.md,
