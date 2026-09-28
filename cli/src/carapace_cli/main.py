@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import uuid
 from collections.abc import Callable, Sequence
@@ -68,6 +69,7 @@ from carapace_crypto.grant import DEFAULT_GRANT_TTL_SECONDS, MAX_GRANT_TTL_SECON
 SECONDS_PER_DAY = 24 * 3600
 EXIT_ERROR = 1
 EXIT_INTERRUPTED = 130
+SETUP_TOKEN_ENV = "CARAPACE_SETUP_TOKEN"  # noqa: S105 - a variable name
 
 
 class Context:
@@ -127,9 +129,33 @@ def _account_password(args: argparse.Namespace, ctx: Context, *, register: bool)
     )
 
 
+def _setup_token(args: argparse.Namespace) -> str | None:
+    """The one-time setup token for the first account, if one was given.
+
+    It is read from $CARAPACE_SETUP_TOKEN or a hidden prompt, never from a
+    command-line value, so it stays out of shell history and ``ps``.
+    """
+    from_env = os.environ.get(SETUP_TOKEN_ENV, "").strip()
+    if from_env:
+        return from_env
+    if not getattr(args, "setup_token", False):
+        return None
+    token = prompt_hidden("Setup token: ").strip()
+    if not token:
+        raise CarapaceError("the setup token is empty")
+    return token
+
+
 def _login(args: argparse.Namespace, ctx: Context, *, register: bool) -> int:
+    setup_token = _setup_token(args) if register else None
     password = _account_password(args, ctx, register=register)
-    session = authenticate(args.server, args.email, password, register=register)
+    session = authenticate(
+        args.server,
+        args.email,
+        password,
+        register=register,
+        setup_token=setup_token,
+    )
     save_session(ctx.config_dir, session)
     ctx.say(
         f"Logged in to {session.server_url}; tokens in {session_path(ctx.config_dir)}"
@@ -430,6 +456,13 @@ def build_parser() -> argparse.ArgumentParser:
         cmd.add_argument("--server", required=True)
         cmd.add_argument("--email", required=True)
         cmd.add_argument("--password-stdin", action="store_true")
+        if name == "signup":
+            cmd.add_argument(
+                "--setup-token",
+                action="store_true",
+                help=f"prompt for the first account's setup token "
+                f"(or set ${SETUP_TOKEN_ENV})",
+            )
         cmd.set_defaults(handler=handler)
     sub.add_parser("logout").set_defaults(handler=cmd_logout)
 

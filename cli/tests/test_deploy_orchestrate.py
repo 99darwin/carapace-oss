@@ -7,6 +7,7 @@ network.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 from collections.abc import Callable
@@ -36,9 +37,10 @@ from deploy_support import (
     state_resources,
     vm_outputs,
 )
-from first_run_support import fake_first_run
+from first_run_support import FakeControlPlane, fake_first_run
 
 from carapace_cli.deploy import command
+from carapace_cli.deploy.first_run import SETUP_TOKEN_SHA256_KEY as SETUP_TOKEN_KEY
 from carapace_cli.deploy.orchestrate import (
     PLACEHOLDER_DIGEST,
     DeployStepError,
@@ -395,6 +397,7 @@ def test_deploy_command_end_to_end(
 ) -> None:
     google = deployable_project()
     stack = FakeStack()
+    server = FakeControlPlane()
     opened: list[Any] = []
 
     def open_stack(target, backend, ctx) -> FakeStack:
@@ -408,7 +411,7 @@ def test_deploy_command_end_to_end(
             gcp=google.api,
             stack=open_stack,
             clock=instant_clock(),
-            first_run=fake_first_run(),
+            first_run=fake_first_run(server),
         ),
     )
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
@@ -443,6 +446,14 @@ def test_deploy_command_end_to_end(
     assert len(stack.ups) == 2
     assert (tmp_path / "enclave.json").exists()
     assert "Verified and pinned the enclave" in err.getvalue()
+    # Every `up` served the hash of the token the first sign-up sent (#52);
+    # the token itself is in neither the config nor the output.
+    (token,) = server.setup_tokens
+    assert token
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    assert all(up[SETUP_TOKEN_KEY] == digest for up in stack.ups)
+    assert token not in json.dumps(stack.config())
+    assert token not in out.getvalue() + err.getvalue()
 
 
 def enclave_vm(*, pending: bool) -> StateResource:

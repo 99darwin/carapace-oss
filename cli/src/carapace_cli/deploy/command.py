@@ -40,6 +40,7 @@ from carapace_cli.deploy.first_run import (
     FirstRunServices,
     complete_first_run,
     prepare_account,
+    setup_token_config,
 )
 from carapace_cli.deploy.gcp import AdcTokenSource, GcpApi
 from carapace_cli.deploy.images import (
@@ -401,7 +402,7 @@ def cmd_deploy(args: argparse.Namespace, ctx: CommandContext) -> int:
             start_fresh_stack(stack, config, target, say=ctx.say)
         # The record is written once the stack has its config, so a re-run
         # that finds the record also finds the config.
-        stack.set_config(base_config(target))
+        stack.set_config(base_config(target) | setup_token_config(account))
         write_record(api, target)
         fallback = (
             None

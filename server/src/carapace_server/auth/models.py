@@ -12,12 +12,23 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, Enum, ForeignKey, Integer, LargeBinary, String, Uuid
+from sqlalchemy import (
+    JSON,
+    CheckConstraint,
+    Enum,
+    ForeignKey,
+    Integer,
+    LargeBinary,
+    String,
+    Uuid,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from carapace_server.db import Base, UTCDateTime, utcnow
 
 EMAIL_MAX_LENGTH = 320
+# The one row id of ``instance_claim``.
+INSTANCE_CLAIM_ID = 1
 
 
 class User(Base):
@@ -38,6 +49,26 @@ class User(Base):
     passkey_transports: Mapped[list[str] | None] = mapped_column(JSON)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
     last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+
+
+class InstanceClaim(Base):
+    """At most one row: the account that claimed this server.
+
+    The first registration inserts it in the same transaction as the user.
+    The fixed primary key (and the check that it is 1) makes a second insert
+    fail on every database, so two concurrent first registrations cannot
+    both commit. No cascade: the claiming user cannot be deleted from under
+    it and reopen registration.
+    """
+
+    __tablename__ = "instance_claim"
+    __table_args__ = (
+        CheckConstraint(f"id = {INSTANCE_CLAIM_ID}", name="ck_instance_claim_id"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    user_id: Mapped[uuid.UUID] = mapped_column(Uuid, ForeignKey("users.id"))
+    claimed_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
 class RefreshToken(Base):

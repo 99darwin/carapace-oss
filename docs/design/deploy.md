@@ -36,7 +36,8 @@ value is an error. It never waits for input that cannot come.
    Pulumi runs the migration job and waits for it (the job is part of the
    stack). The CLI then checks that the job's latest execution succeeded.
 6. **First run.** Create the owner key if there is none, sign up the first
-   account (or log in, if it exists), register the owner key, run the
+   account with this run's setup token (or log in, if it exists),
+   register the owner key, run the
    existing `verify` flow against the new enclave with the deployed digest
    as the only allowed one, and save the pin, so `carapace secret add`
    works next. See [First run](#first-run).
@@ -429,6 +430,19 @@ only the enclave).
   script without `--password-stdin`, or without `--no-passphrase` when a
   new owner key is needed, fails in seconds, not after the deploy.
   `--account-email` defaults to the first alert email.
+- Registration on the server is closed once it has an account (#52). A
+  run that will sign up (no saved session) generates a 256-bit setup
+  token when it collects the inputs, keeps it only in memory, and sets
+  its SHA-256 as `carapace:setup_token_sha256` with the rest of the
+  config it owns, so every `up` of that run serves it. The sign-up sends
+  the token; the server compares hashes in constant time, and the
+  account's instance claim consumes it. A 403 `Registration is closed`
+  (the server already has its account) or a 400 (signup is open and the
+  email is taken) falls back to a login; a 403 `Invalid setup token`
+  stops the run, and a re-run sets a new hash. A run with a session sets
+  no hash and leaves the stored one, which the claimed server ignores.
+  The token is never written to disk, the config or the output; the
+  hash is not a secret.
 - A saved session means a registered owner key: the key is registered
   before the session is written. A re-run reuses the session, asks for no
   password and registers the key only if the server does not list it (read
@@ -513,7 +527,11 @@ They need a real project:
   inspected.
 - Which Resource Manager, Cloud Billing and `testIamPermissions` calls
   work on a fresh project before any API is enabled.
-- The 400-then-login path of the first run for an existing account.
+- The 403-then-login path of the first run for an existing account, and
+  the setup token reaching a fresh Cloud Run revision.
+- A Cloud Run revision race: if an older revision (with the previous
+  hash) still answers the sign-up, the first run fails with a spurious
+  "Invalid setup token"; running `carapace deploy` again fixes it.
 - The `pulumi stack output` behaviour on a fresh stack, and recovery of
   `Pulumi.<prefix>.yaml` from state on a second machine.
 - `carapace destroy` against a real stack: `pulumi state unprotect --all`,

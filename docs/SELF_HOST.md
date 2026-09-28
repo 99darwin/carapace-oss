@@ -216,12 +216,33 @@ refuses to start if only one of them is set.
 
 ## 6. First run: verify the enclave
 
+Registration is closed once the server has an account, and the first
+account must present a one-time setup token (see
+[THREAT_MODEL.md](THREAT_MODEL.md#r15-the-first-account-and-the-setup-token)).
+`carapace deploy` does this for you. By hand, generate the token on your
+machine and give the server only its SHA-256, before (or with) step 4:
+
+```bash
+SETUP_TOKEN="$(openssl rand -hex 32)"   # not exported
+pulumi config set setup_token_sha256 \
+  "$(printf %s "$SETUP_TOKEN" | shasum -a 256 | cut -d' ' -f1)"
+pulumi up
+```
+
+Keep the token in that shell only, unexported, so no other program sees
+it; do not write it to a file. A `prod`
+server with no hash set refuses every registration. To run a server where
+anyone may sign up (a hosted, multi-tenant one), set
+`pulumi config set allow_signup true` instead; it is off by default.
+
 Wait for the VM to boot and the enclave to register with the server (a few
-minutes). Then, from your own machine:
+minutes). Then, from the same shell:
 
 ```bash
 carapace init
-carapace signup --server "$(pulumi stack output server_url)" --email you@example.com
+CARAPACE_SETUP_TOKEN="$SETUP_TOKEN" carapace signup \
+  --server "$(pulumi stack output server_url)" --email you@example.com
+unset SETUP_TOKEN
 carapace verify --enclave "$(pulumi stack output enclave_url)" \
   --allow-digest sha256:<enclave digest> \
   --project-id "$(pulumi config get gcp:project)" \
@@ -229,7 +250,11 @@ carapace verify --enclave "$(pulumi stack output enclave_url)" \
   --kms-key "$(pulumi stack output kms_key_version_name)"
 ```
 
-`verify` refuses an enclave in another project, running as another service
+`signup` reads the token from `$CARAPACE_SETUP_TOKEN`, set here for that
+one command only, or prompts for it with `--setup-token` (paste it at the
+hidden prompt). It fails with "registration refused" if the server
+already has its account (log in with `carapace login`) or the token does
+not match the hash. `verify` refuses an enclave in another project, running as another service
 account, reporting to another server or using another KMS key (see
 [VERIFY.md](VERIFY.md#what-it-checks)). Check that `image` is the digest you
 built and allowed.
@@ -241,6 +266,81 @@ project (the VM redirects container output there), and the serial console
 shows launcher errors.
 
 ## Operating it
+
+### Upgrading a server that was open
+
+Before #52, anyone who could reach the server could register. Migration
+`0002` closes registration and gives the server's claim to its **oldest**
+account, which is normally yours but could be a stranger's. When
+registration is closed and more than one account exists, the server logs a
+warning at startup with the number of accounts (never their emails). Check
+the accounts after upgrading.
+
+**What a stranger's account could do.** Tenants are isolated by owner
+keys (R14): an account cannot read, use or grant your secrets. It could
+seal and use its *own* secrets through your enclave, so your enclave may
+have sent requests for someone else, from your project's egress IP, to
+hosts their policies allowed. Their receipts are in your database (by
+their `owner_id`) and are kept when the account is deleted. Secrets
+sealed under your own owner key were never within its reach, so they do
+not need rotating because of it. Rotate any credential that such an
+account could use: one sealed while signed in to it, or reachable
+through an API key issued from it.
+
+**With the admin command.** It runs in the server image, so the migration
+job can run it with your server's environment. Its output goes to the
+job's logs in Cloud Logging, so `list` prints only each account's id,
+creation time and whether it holds the claim.
+
+```bash
+gcloud run jobs execute <prefix>-migrate --region <region> --wait \
+  --args=-m,carapace_server.admin,users,list
+gcloud run jobs execute <prefix>-migrate --region <region> --wait \
+  --args=-m,carapace_server.admin,users,delete,<user id>
+```
+
+`delete` removes one account and, if it held the claim, gives the claim
+to the oldest remaining account, in one transaction. `--args` overrides
+the arguments for that one execution only; the job's definition does not
+change.
+
+To tell accounts apart by email, prefer the SQL below through
+`gcloud sql connect`, which keeps the emails off the logs. `users list
+--emails` also prints them, but running it as the job writes every
+account's email to Cloud Logging.
+
+**With SQL.** Connected to the database (for Cloud SQL, through
+`gcloud sql connect` or the Cloud SQL Auth Proxy), list the accounts:
+
+```sql
+SELECT id, email, created_at FROM users ORDER BY created_at;
+SELECT user_id FROM instance_claim;
+```
+
+Then, for each account you do not recognise, replace `<id>` with its `id`
+exactly as the list shows it:
+
+<!-- delete-account-sql: tested by server/tests/test_admin.py -->
+```sql
+-- <id> exactly as listed (on SQLite, ids are stored without dashes)
+BEGIN;
+DELETE FROM instance_claim WHERE user_id = '<id>';
+DELETE FROM users WHERE id = '<id>';
+INSERT INTO instance_claim (id, user_id, claimed_at)
+SELECT 1, id, created_at FROM users
+WHERE NOT EXISTS (SELECT 1 FROM instance_claim)
+ORDER BY created_at, id LIMIT 1;
+COMMIT;
+```
+
+The claim goes first: it references the user and does not cascade, so
+the user cannot be deleted while it holds the claim. Deleting the user
+cascades to its refresh tokens, owner keys, sealed secrets and API keys
+(and their secret links); its access tokens stop working at once, since
+the user no longer exists. Receipts have no foreign key and are kept. On
+SQLite, run `PRAGMA foreign_keys = ON;` first, or the cascade does not
+happen. The `INSERT` re-claims the server for the oldest remaining
+account only if the claim was removed.
 
 ### Rolling out a new enclave image
 

@@ -160,6 +160,8 @@ def deploy(cfg: StackConfig) -> dict[str, pulumi.Input[object]]:
         kms_key_version=kms_key.key_version_name,
         min_instances=cfg.server_min_instances,
         max_instances=cfg.server_max_instances,
+        setup_token_sha256=cfg.setup_token_sha256,
+        allow_signup=cfg.allow_signup,
         depends_on=[identities.server_grants["roles/cloudsql.client"]],
     )
     enclave = create_enclave_vm(

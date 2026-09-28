@@ -19,6 +19,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from carapace_server.admin import warn_if_accounts_predate_closing
 from carapace_server.apikeys.router import router as api_keys_router
 from carapace_server.attestation import AttestationVerifier
 from carapace_server.auth.router import router as auth_router
@@ -66,6 +67,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings: Settings = app.state.settings
     engine = create_engine(settings.database_url)
     app.state.sessionmaker = create_sessionmaker(engine)
+    await warn_if_accounts_predate_closing(app.state.sessionmaker, settings)
     # Pay the dummy-hash cost now rather than on the first failed login.
     await asyncio.to_thread(dummy_password_hash, settings.bcrypt_rounds)
     cleanup = asyncio.create_task(

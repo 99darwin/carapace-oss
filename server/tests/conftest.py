@@ -40,6 +40,9 @@ def settings(tmp_path: Path) -> Settings:
         public_url="http://localhost:8000",
         bcrypt_rounds=4,
         rate_limit_enabled=False,
+        # Most tests need several accounts; test_registration.py covers the
+        # closed default.
+        allow_signup=True,
     )
 
 
@@ -175,6 +178,7 @@ def enclave_settings(tmp_path: Path, mock_signer: AttestationSigner) -> Settings
         public_url="http://localhost:8000",
         bcrypt_rounds=4,
         rate_limit_enabled=False,
+        allow_signup=True,
         attestation_issuer=MOCK_ATTESTATION_ISSUER,
         mock_attestation_public_key_pem=mock_signer.public_pem,
         allowed_image_digests=[IMAGE_DIGEST],

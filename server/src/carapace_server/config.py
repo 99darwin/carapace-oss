@@ -43,6 +43,7 @@ GOOGLE_ATTESTATION_ISSUER = "https://confidentialcomputing.googleapis.com"
 # Local mock enclave only. Never accepted outside dev mode.
 MOCK_ATTESTATION_ISSUER = "mock://local"
 IMAGE_DIGEST_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
+SHA256_HEX_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 CommaList = Annotated[list[str], NoDecode]
 
@@ -100,6 +101,17 @@ class Settings(BaseSettings):
     # name, exactly as the enclave reports it.
     kms_key_version: str | None = None
 
+    # Registration. Off (the default): only the first account can register,
+    # and it must present the setup token whose SHA-256 is below; after that
+    # registration is closed. On: anyone who can reach the server can create
+    # an account, with no token. For operators who mean to share a server.
+    allow_signup: bool = False
+    # Hex SHA-256 of the one-time setup token ``carapace deploy`` generates.
+    # Only the hash is configured, so the value is not a secret. Unset in
+    # prod, the first account cannot register (fail closed); unset in dev,
+    # it registers without a token.
+    setup_token_sha256: str | None = None
+
     rate_limit_enabled: bool = True
     # How many X-Forwarded-For entries the trusted proxies in front of the
     # server append; each hop normally appends the address it accepted the
@@ -129,6 +141,16 @@ class Settings(BaseSettings):
         bad = [d for d in value if not IMAGE_DIGEST_PATTERN.match(d)]
         if bad:
             raise ConfigError(f"image digests must be sha256:<64 hex>: {bad}")
+        return value
+
+    @field_validator("setup_token_sha256")
+    @classmethod
+    def _check_setup_token_sha256(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        value = value.strip().lower()
+        if not SHA256_HEX_PATTERN.match(value):
+            raise ConfigError("setup_token_sha256 must be 64 hex characters")
         return value
 
     @field_validator("kms_public_key_pem")

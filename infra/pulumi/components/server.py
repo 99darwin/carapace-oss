@@ -265,12 +265,15 @@ def build_server_env(
     attestation_service_account: pulumi.Input[str],
     kms_public_key_pem: pulumi.Input[str],
     kms_key_version: pulumi.Input[str],
+    setup_token_sha256: str | None = None,
+    allow_signup: bool = False,
 ) -> list[dict[str, pulumi.Input[str]]]:
     """Plain (non-secret) environment for the server container.
 
     The KMS public key and version name are public values: the server serves
     them at ``/v1/kms/public-key`` and clients only trust them if they match
-    what the attested enclave reports.
+    what the attested enclave reports. The setup token is passed only as its
+    SHA-256, which does not reveal the token.
     """
     values: dict[str, pulumi.Input[str]] = {
         "MODE": SERVER_MODE,
@@ -281,7 +284,10 @@ def build_server_env(
         "KMS_PUBLIC_KEY_PEM": kms_public_key_pem,
         "KMS_KEY_VERSION": kms_key_version,
         "TRUSTED_PROXY_HOPS": str(CLOUD_RUN_PROXY_HOPS),
+        "ALLOW_SIGNUP": "true" if allow_signup else "false",
     }
+    if setup_token_sha256:
+        values["SETUP_TOKEN_SHA256"] = setup_token_sha256
     return [
         {"name": f"{SERVER_ENV_PREFIX}{name}", "value": value}
         for name, value in values.items()
@@ -372,6 +378,8 @@ def create_server_workloads(
     kms_key_version: pulumi.Input[str],
     min_instances: int,
     max_instances: int,
+    setup_token_sha256: str | None = None,
+    allow_signup: bool = False,
     depends_on: Sequence[pulumi.Resource] = (),
 ) -> ServerWorkloads:
     """The server service and its migration job, from one pinned image."""
@@ -383,6 +391,8 @@ def create_server_workloads(
         attestation_service_account=enclave_sa_email,
         kms_public_key_pem=kms_public_key_pem,
         kms_key_version=kms_key_version,
+        setup_token_sha256=setup_token_sha256,
+        allow_signup=allow_signup,
     )
     secret_env = [
         database.url_secret.env(f"{SERVER_ENV_PREFIX}DATABASE_URL"),

@@ -44,6 +44,7 @@ freshness), [VERIFY.md](VERIFY.md) (checking an enclave and receipts),
 | **Owner** | Yes, for their own secrets | Holds the owner seed; runs the CLI |
 | **Agent** | No | Holds an API key; can send arbitrary requests to the enclave |
 | **Server operator / database writer** | No | Full control of the control plane and its database: can read, write, withhold, replay and delete any stored object, mint API key records, and lie in any API response |
+| **Anyone on the internet** | No | Can reach the server's public API, including `POST /v1/auth/register`; without an account they can do nothing else (see G13) |
 | **Network attacker** | No | Can observe, drop, delay and modify traffic between any two parties |
 | **VM host operator** | No | Controls the hypervisor, guest clock, disk and network of the enclave VM, but not its encrypted memory (AMD SEV) |
 | **Other tenants** | No | Their own owner keys and API keys; can send traffic to the shared enclave |
@@ -124,6 +125,7 @@ Each guarantee below assumes the TCB is intact.
 | G10 | The VM host cannot roll the enclave's clock back to revive an expired grant. | `now = max(VM clock, iat of the latest attestation token)`, monotonic within a boot; tokens refresh every 15 minutes and gate KMS access, so an enclave cut off from refresh loses KMS within about an hour. |
 | G11 | No shell or ambient authority inside the enclave. | Distroless image, no shell, UID 65532; launch policy refuses command overrides and allows only the `CONTROL_PLANE_URL`, `KMS_KEY_NAME` and `WIF_AUDIENCE` env overrides. The image is built so nothing needs to write to its filesystem (no bytecode, no temp files), but the Confidential Space launcher does **not** mount the root filesystem read-only and nothing in the stack enforces it; not writing to disk is a property of the enclave code, not a mount option. |
 | G12 | Tampering with who can decrypt is visible. | Cloud Audit Logs plus a log-based alert (`infra/pulumi/components/monitoring.py`). See R1. |
+| G13 | A stranger cannot open an account on a self-hosted server and use its enclave as an egress proxy. | Registration (password and passkey) is closed once any account exists, unless the operator sets `CARAPACE_ALLOW_SIGNUP=true` (`carapace:allow_signup`), off by default; a closed registration is a 403 `Registration is closed`. The first account takes a one-row `instance_claim` table (primary key fixed to 1 by a check constraint) in the same transaction as the user, so of two concurrent first registrations the database lets exactly one commit, on Postgres and SQLite alike. The first registration must also present the one-time setup token whose SHA-256 is `CARAPACE_SETUP_TOKEN_SHA256`, compared in constant time; the claim consumes it. In `prod` a server with no hash configured refuses the first registration (403 `Invalid setup token`). Migration 0002 claims an existing server for its oldest account. (`server/.../auth/service.py`) See R15. |
 
 ## Residual risks
 
@@ -323,6 +325,39 @@ On a hosted deployment one enclave serves every tenant. Isolation between
 tenants is enforced in software by the broker (owner fingerprints,
 signatures, per-owner caches and limits), not by hardware. A bug in the
 enclave code affects every tenant.
+
+### R15. The first account and the setup token
+
+`carapace deploy` generates a 256-bit setup token in memory, puts only
+its SHA-256 in the stack config (`carapace:setup_token_sha256`, stored
+in plaintext in the gitignored `Pulumi.<prefix>.yaml` and on the Cloud Run
+service as `CARAPACE_SETUP_TOKEN_SHA256`), and sends the token once, to
+sign up the owner. The hash is not a secret: nothing short of guessing a
+256-bit value turns it into a token. What remains:
+
+- Anyone who can read the deployer's process memory during the deploy, or
+  who can change the Cloud Run service's environment before the owner
+  signs up (a project Owner or Editor), can claim a fresh server first.
+  Both are already trusted further than that (R1, R12).
+- Between `pulumi up` and the first run's sign-up (seconds, in
+  `carapace deploy`) the server is unclaimed, but only the token holder can
+  claim it. A manual deployment that sets no hash cannot be claimed at
+  all in `prod` until one is set (see
+  [SELF_HOST.md](SELF_HOST.md#6-first-run-verify-the-enclave)). In `dev`
+  mode with no hash and a loopback `public_url` (`localhost`,
+  `127.0.0.1`, `::1`), the first registration wins without a token;
+  otherwise dev fails closed too.
+- A server that was open before this change keeps the accounts created
+  then, and migration 0002 claims it for the oldest, which may be a
+  stranger's. The server logs a warning at startup when a closed server
+  has more than one account; see
+  [SELF_HOST.md](SELF_HOST.md#upgrading-a-server-that-was-open) to list
+  and delete accounts.
+- `allow_signup=true` reopens registration to everyone, by design, for a
+  hosted multi-tenant server; tenants then share the enclave (R14).
+- The concurrent-first-registration race is tested on SQLite; on Postgres
+  it rests on the same primary-key uniqueness, which has not been
+  exercised under concurrency in CI.
 
 ## Unverified assumptions
 

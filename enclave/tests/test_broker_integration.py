@@ -87,6 +87,8 @@ async def control_plane(
         public_url=SERVER_URL,
         bcrypt_rounds=4,
         rate_limit_enabled=False,
+        # Two owners register; the server closes signup by default.
+        allow_signup=True,
         attestation_issuer=MOCK_ATTESTATION_ISSUER,
         mock_attestation_public_key_pem=mock_launcher.public_pem,
         allowed_image_digests=[MOCK_IMAGE_DIGEST],

@@ -34,6 +34,35 @@ class ServerError(CarapaceError):
         self.detail = detail
 
 
+# The server's stable 403 details for a refused registration (#52).
+REGISTRATION_CLOSED = "Registration is closed"
+SETUP_TOKEN_INVALID = "Invalid setup token"  # noqa: S105 - a message, not a token
+
+
+class RegistrationRefusedError(ServerError):
+    """The server refused a new account: closed, or a bad setup token."""
+
+    def __init__(self, status: int, detail: str) -> None:
+        super().__init__(status, detail)
+        if detail == REGISTRATION_CLOSED:
+            hint = (
+                "this server already has its account. Log in with "
+                "`carapace login`, or ask the operator to enable "
+                "signup (CARAPACE_ALLOW_SIGNUP=true)"
+            )
+        else:
+            hint = (
+                "the setup token is missing or wrong. Pass --setup-token "
+                "(or set CARAPACE_SETUP_TOKEN) with the token whose SHA-256 "
+                "is the server's CARAPACE_SETUP_TOKEN_SHA256"
+            )
+        self.args = (f"registration refused: {hint}",)
+
+    @property
+    def is_closed(self) -> bool:
+        return self.detail == REGISTRATION_CLOSED
+
+
 class NotLoggedInError(CarapaceError):
     """No session, or the session can no longer be refreshed."""
 
