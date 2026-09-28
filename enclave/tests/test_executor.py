@@ -21,7 +21,10 @@ from carapace_enclave.egress import (
     EgressExecutor,
     URLFilter,
 )
-from carapace_enclave.egress.executor import _default_transport
+from carapace_enclave.egress.executor import (
+    DEFAULT_USER_AGENT,
+    _default_transport,
+)
 from carapace_enclave.egress.redact import REDACTED
 
 from .conftest import (
@@ -135,6 +138,32 @@ class TestHappyPath:
         request = AgentRequest("GET", URL, headers={"Accept": "application/json"})
         _, upstream = await run(request)
         assert upstream.requests[0].headers["accept"] == "application/json"
+
+
+def user_agents(sent: httpx.Request) -> list[bytes]:
+    """Every User-Agent value on the request as it goes to the transport."""
+    return [v for n, v in sent.headers.raw if n.lower() == b"user-agent"]
+
+
+class TestUserAgent:
+    async def test_default_added_when_absent(self) -> None:
+        _, upstream = await run(AgentRequest("GET", URL))
+        assert user_agents(upstream.requests[0]) == [DEFAULT_USER_AGENT]
+
+    @pytest.mark.parametrize("name", ["User-Agent", "user-agent", "USER-AGENT"])
+    async def test_agent_value_preserved(self, name: str) -> None:
+        request = AgentRequest("GET", URL, headers=[(name, "my-bot/1.2")])
+        _, upstream = await run(request)
+        assert user_agents(upstream.requests[0]) == [b"my-bot/1.2"]
+
+    async def test_injected_user_agent_not_duplicated(self) -> None:
+        inject = {"kind": "header", "name": "User-Agent", "template": "{secret}"}
+        _, upstream = await run(AgentRequest("GET", URL), inject=inject)
+        assert user_agents(upstream.requests[0]) == [SECRET]
+
+    async def test_default_carries_no_secret(self) -> None:
+        assert SECRET not in DEFAULT_USER_AGENT
+        assert b"{secret}" not in DEFAULT_USER_AGENT
 
 
 class TestDenials:
