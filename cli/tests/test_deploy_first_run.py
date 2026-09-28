@@ -180,11 +180,17 @@ def not_tls() -> Iterator[int]:
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(1)
+    listener.settimeout(5)
 
     def answer() -> None:
         with listener, listener.accept()[0] as conn:
             conn.recv(4096)
             conn.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+            # Drain the rest of the hello: unread bytes turn the close into
+            # a reset, which the client would see before the reply.
+            conn.shutdown(socket.SHUT_WR)
+            while conn.recv(4096):
+                pass
 
     thread = threading.Thread(target=answer, daemon=True)
     thread.start()
