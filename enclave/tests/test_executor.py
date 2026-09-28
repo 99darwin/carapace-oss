@@ -161,6 +161,12 @@ class TestUserAgent:
         _, upstream = await run(AgentRequest("GET", URL), inject=inject)
         assert user_agents(upstream.requests[0]) == [SECRET]
 
+    @pytest.mark.parametrize("name", ["User-Agent", "user-agent"])
+    async def test_agent_cannot_override_injected_user_agent(self, name: str) -> None:
+        inject = {"kind": "header", "name": "User-Agent", "template": "{secret}"}
+        request = AgentRequest("GET", URL, headers=[(name, "my-bot/1.2")])
+        assert (await deny(request, inject=inject))[0] == "header_rejected"
+
     async def test_default_carries_no_secret(self) -> None:
         assert SECRET not in DEFAULT_USER_AGENT
         assert b"{secret}" not in DEFAULT_USER_AGENT
