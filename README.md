@@ -9,8 +9,11 @@ per-secret host allowlist, redacts the secret from the response, and emits a
 signed receipt. The agent never sees the raw secret, and neither does the
 operator running the service.
 
-> **Status: pre-alpha.** Under active development. Do not use it for real
-> secrets yet.
+> **Status: beta.** Not independently audited; start with scoped, revocable
+> tokens. The release path (deploy from a published, signed release) has
+> been verified end to end on real Confidential Space hardware, and the
+> web UI has been tested on a real deployment; see
+> [THREAT_MODEL.md](docs/THREAT_MODEL.md#verified-on-real-gcp).
 
 ## How it works
 
@@ -39,27 +42,35 @@ ENCLAVE     ──attestation-gated asymmetricDecrypt──▶ Cloud KMS (HSM)
 Deploy your own into a new, dedicated GCP project with billing enabled.
 You need `gcloud` (run `gcloud auth application-default login`), the Pulumi
 CLI 3.x, Python 3.12, [`uv`](https://docs.astral.sh/uv/) and, for
-`--build`, Docker with buildx. The full prerequisites, costs and teardown
-are in [docs/SELF_HOST.md](docs/SELF_HOST.md).
+`--build`, Docker with buildx. `cosign` is optional: if installed,
+`carapace deploy` also verifies the server image's signature. The full
+prerequisites, costs and teardown are in
+[docs/SELF_HOST.md](docs/SELF_HOST.md).
 
 ```bash
 git clone https://github.com/99darwin/carapace-oss.git
 cd carapace-oss
-uv sync --all-packages --locked
-uv run carapace deploy --build
+uv tool install --editable './cli[deploy]'
+carapace deploy
 ```
+
+The install is editable and from the clone because `deploy` and `destroy`
+run the Pulumi program in the checkout the CLI was installed from
+([`cli/src/carapace_cli/deploy/infra.py`](cli/src/carapace_cli/deploy/infra.py)).
+The `[deploy]` extra holds the release-verification (sigstore) and GCP
+auth dependencies; without it, `deploy` and `destroy` refuse to run.
 
 `carapace deploy` asks for the project, region, alert email, first account
 and owner-key passphrase, prints what it will create and what it costs, and
-waits for confirmation. It ends by running `carapace verify` against the new
-enclave, trusting only the digest it just deployed, and saving the pin.
-`--build` builds both images from your checkout, so what the enclave attests
-is your own build rather than a signed, reproducibly built release; without
-it, the CLI deploys the latest signed release after verifying its signature.
-Only the `--build` path has run end to end so far. Back up the owner key it
-writes (`owner-key.json` in the [CLI config directory](cli/README.md#local-state)):
-without it you cannot authorize new API keys, and recovery means re-entering
-and re-sealing every secret. `uv run carapace destroy` removes the
+waits for confirmation. By default it deploys the latest signed release,
+after verifying its signature; pass `--build` to build both images from
+your checkout with Docker buildx instead, so what the enclave attests is
+your own build rather than a signed release. It ends by running `carapace
+verify` against the new enclave, trusting only the digest it just
+deployed, and saving the pin. Back up the owner key it writes
+(`owner-key.json` in the [CLI config directory](cli/README.md#local-state)):
+without it you cannot authorize new API keys, and recovery means
+re-entering and re-sealing every secret. `carapace destroy` removes the
 deployment.
 
 ## Documentation

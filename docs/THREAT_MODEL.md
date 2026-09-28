@@ -17,9 +17,12 @@ Related documents: [ARCHITECTURE.md](ARCHITECTURE.md) (design),
 freshness), [VERIFY.md](VERIFY.md) (checking an enclave and receipts),
 [SELF_HOST.md](SELF_HOST.md) (deploying your own).
 
-> **Status: pre-alpha.** The system has run end to end once on real
-> Confidential Space hardware (2026-09-26, images built from source with
-> `carapace deploy --build`). The release path has not. See [Unverified
+> **Status: beta.** Not independently audited; start with scoped, revocable
+> tokens. The system has run end to end on real Confidential Space
+> hardware twice: 2026-09-26, images built from source with `carapace
+> deploy --build`; and 2026-09-28, deployed from a published, signed
+> release with plain `carapace deploy`, including the web UI. See
+> [Verified on real GCP](#verified-on-real-gcp) and [Unverified
 > assumptions](#unverified-assumptions).
 
 ## Assets
@@ -339,10 +342,8 @@ decrypts), except where noted.
 - A non-confidential VM, or the server service account, actively calling
   decrypt gets `PERMISSION_DENIED`. The key's IAM policy was inspected (see
   below), but no such call was made.
-- The two CI builders produce the same digest in practice, and the tag,
-  push and cosign path in `enclave-image.yml` has not yet run. The release
-  download and sigstore verification in `carapace deploy` have not run
-  against a real release either (the repository was private).
+- The two CI builders produce the same digest in practice (a `--build`
+  digest has not been compared against a release build).
 
 ### Verified on real GCP
 
@@ -373,3 +374,27 @@ images built from source by `carapace deploy --build`:
   the WIF condition. It does have `iam.serviceAccounts.actAs` and
   `compute.instances.setMetadata`: an Editor can reconfigure, stop or
   replace the enclave VM, which fails closed for decrypt (see R1).
+
+Checked again on 2026-09-28, in a throwaway project in `us-central1`,
+deployed from the published release `v0.1.0-rc.3` with plain `carapace
+deploy` (no `--build`):
+
+- `carapace deploy` downloaded and verified the signed release manifest,
+  copied the enclave and server images from GHCR into Artifact Registry
+  by digest, and pinned the WIF condition to that digest.
+- First-run `carapace verify` passed.
+- A request through the enclave injected the credential, redacted the
+  secret from the response, and sent `User-Agent: carapace-enclave`. A
+  request to a disallowed host, and a request over plain `http://`, were
+  both denied.
+- `carapace audit verify` passed: 4 receipts, 1 attested boot, 0 gaps.
+- The web UI was exercised against the deployed Cloud Run server: login,
+  secrets, keys, receipts and the attestation page all worked, with no
+  CSP or Trusted Types console errors and no token in web storage; a
+  reload logged the session out (the attestation page reports the
+  enclave as unverified until `carapace verify` is run, by design).
+- Revoking a key in the web UI made the enclave reject that key on its
+  next request.
+- The first attempt hit an `n2d-standard-2` capacity stockout in every
+  `us-central1` zone; re-running the same `carapace deploy` command
+  resumed and completed.

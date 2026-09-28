@@ -6,10 +6,11 @@ you are the operator and the GCP project owner, so the server and project
 risks in [THREAT_MODEL.md](THREAT_MODEL.md) are risks from yourself (and
 anyone you give access to the project).
 
-> **Status: pre-alpha.** The stack has run end to end once against a real
-> project, through `carapace deploy --build`. What is unverified is listed
-> in [Known gaps](#known-gaps). Do not put real secrets into a self-hosted
-> deployment yet.
+> **Status: beta.** Not independently audited; start with scoped, revocable
+> tokens. The stack has run end to end against a real project both built
+> from source (`carapace deploy --build`) and deployed from a published,
+> signed release (plain `carapace deploy`). What is unverified is listed in
+> [Known gaps](#known-gaps).
 
 ## What gets created
 
@@ -50,11 +51,17 @@ The full list, and what is deliberately not created, is in the
 - Pulumi CLI 3.x and Python 3.12. Any backend works; `pulumi login --local`
   keeps state on your machine. The state contains the generated database
   password and JWT secret as Pulumi secrets, so protect it.
-- Docker with buildx, to build the images.
-- `crane` and `cosign`, only if you deploy published images instead of
-  building your own.
-- `uv` and the `carapace` CLI (`uv sync --all-packages --locked` in this
-  repository, then `uv run carapace …`).
+- Docker with buildx, only for `carapace deploy --build`.
+- `cosign`, so `carapace deploy` can verify the server image's signature
+  (without it the CLI says so and continues; the server is outside the
+  TCB). `crane` only for the manual image copy in the
+  [infra README](../infra/pulumi/README.md#images).
+- `uv` and the `carapace` CLI: clone this repository, then
+  `uv tool install --editable './cli[deploy]'`. Editable and from the
+  clone because `deploy` and `destroy` run the Pulumi program in the
+  checkout the CLI was installed from. The `[deploy]` extra holds the
+  release-verification (sigstore) and GCP auth dependencies; without it,
+  `deploy` and `destroy` refuse to run.
 
 ## 1. Configure the stack
 
@@ -364,6 +371,10 @@ would replace the enclave VM, with the minutes of downtime that takes.
 `carapace deploy` previews such a run and asks first (see
 [Keep the Confidential Space image current](#keep-the-confidential-space-image-current)).
 
+If every zone in the region is out of capacity, `carapace deploy` reports
+the zones it tried and stops. Run the same command again later; it resumes
+from where it left off. Or deploy in another region with a new `--prefix`.
+
 ## Cost
 
 Rough list prices in `us-central1`, per month:
@@ -436,9 +447,11 @@ Things to know:
 
 ## Known gaps
 
-No gap is known to block a deployment. The stack has run end to end once,
-through `carapace deploy --build`, on 2026-09-26; what that run checked is
-listed in [THREAT_MODEL.md](THREAT_MODEL.md#verified-on-real-gcp).
+No gap is known to block a deployment. The stack has run end to end twice:
+through `carapace deploy --build` on 2026-09-26, and through the default,
+release-based `carapace deploy` (plus the web UI) on 2026-09-28; what each
+run checked is listed in
+[THREAT_MODEL.md](THREAT_MODEL.md#verified-on-real-gcp).
 
 Not yet verified on real hardware, and fail closed if wrong unless noted
 (details in [THREAT_MODEL.md](THREAT_MODEL.md#unverified-assumptions)):

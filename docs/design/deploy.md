@@ -3,8 +3,9 @@
 Status: in progress. It lands as stacked PRs: this design and the
 interview; preflight and the confirmation summary; state and Pulumi
 orchestration; then images, first run, resume and destroy. It has run end
-to end once against a real project, with `--build` (see [Verified on real
-GCP](#verified-on-real-gcp)); the release path and `destroy` have not (see
+to end against a real project twice: with `--build` (2026-09-26), and
+deployed from a published, signed release (2026-09-28); see [Verified on
+real GCP](#verified-on-real-gcp). `destroy` has not (see
 [Unverified](#unverified)).
 
 ## Goal
@@ -77,8 +78,9 @@ prefix) applies unchanged, and there is only one copy of the program.
   passes its stderr on.
 - **The deploy extra** `carapace-cli[deploy]` holds only what the CLI
   itself imports (`google-auth`, later `sigstore`).
-- v0.1 runs the CLI from a checkout (`uv sync --all-packages`, as
-  SELF_HOST.md already requires), and the CLI finds the program at
+- v0.1 runs the CLI from an editable install of the checkout
+  (`uv tool install --editable './cli[deploy]'`, as SELF_HOST.md
+  requires), and the CLI finds the program at
   `infra/pulumi` next to its source. `CARAPACE_INFRA_DIR` overrides the
   path. Shipping the program with a published CLI is left for when the
   CLI is published.
@@ -481,17 +483,27 @@ download failed with a bare 404, `--build` failed on Docker's default
 `carapace` builder with the `docker-container` driver), the password
 prompt checked only the length, and server 422 details were dropped.
 
+Run again on 2026-09-28, in a throwaway project in `us-central1`, deployed
+from the published release `v0.1.0-rc.3` with plain `carapace deploy` (no
+`--build`, the repository now public):
+
+- The release path end to end: the GitHub release download and redirect,
+  sigstore verification of the release manifest, ghcr.io's anonymous
+  token endpoint and blob redirect, and the copy of both images into
+  Artifact Registry by digest with the WIF condition pinned to that
+  digest.
+- First-run `carapace verify` and `carapace audit verify` (4 receipts, 1
+  attested boot) both passed, and the web UI was exercised against the
+  deployed Cloud Run server. Details in
+  [THREAT_MODEL.md](../THREAT_MODEL.md#verified-on-real-gcp).
+- The first attempt hit an `n2d-standard-2` capacity stockout in every
+  `us-central1` zone; re-running the same command resumed and completed.
+
 ## Unverified
 
 These are exercised only with mocked HTTP and a fake `pulumi` process.
 They need a real project:
 
-- The release path: the GitHub release download and its redirect, and
-  that the sigstore bundle cosign v3 `sign-blob --bundle` emits in the
-  release workflow verifies with `sigstore` 4.x against the workflow
-  identity (only a malformed bundle is tested, offline). The repository
-  was private for the real run, so it used `--build`. Also ghcr.io's
-  anonymous token endpoint and its blob redirect.
 - `cosign verify` of the server image with the `server-image.yml`
   identity.
 - Whether a `--build` digest matches the release build (it needs the same
