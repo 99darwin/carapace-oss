@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import socket
+import threading
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -26,18 +29,19 @@ from carapace_cli.deploy.first_run import (
     FirstRunServices,
     PreparedAccount,
     complete_first_run,
+    is_transient,
     prepare_account,
 )
 from carapace_cli.deploy.interview import Interview, MissingInputError
 from carapace_cli.deploy.polling import PollTimeoutError
-from carapace_cli.errors import VerificationError
+from carapace_cli.errors import NetworkError, PinError, VerificationError
 from carapace_cli.files import read_private_json
 from carapace_cli.ownerkey_store import (
     is_passphrase_protected,
     owner_key_path,
     save_owner_key,
 )
-from carapace_cli.pin import pin_path
+from carapace_cli.pin import fetch_peer_certificate, pin_path
 from carapace_cli.session import Session, save_session, session_path
 from carapace_crypto import OwnerKey
 
@@ -154,6 +158,56 @@ def test_waits_for_the_server_and_the_enclave(tmp_path: Path) -> None:
     finish(prepare(tmp_path, services), services, lines)
     assert pin_path(tmp_path).exists()
     assert any("the enclave is not ready yet" in line for line in lines)
+
+
+def test_waits_for_an_enclave_that_refuses_connections(tmp_path: Path) -> None:
+    services = fake_first_run(enclave=FakeEnclave(refusing=3, booting=1))
+    lines: list[str] = []
+    finish(prepare(tmp_path, services), services, lines)
+    assert pin_path(tmp_path).exists()
+    assert any("ConnectionRefusedError" in line for line in lines)
+
+
+def _closed_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+@pytest.fixture
+def not_tls() -> Iterator[int]:
+    """A loopback port that answers a TLS hello with plain HTTP."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    listener.settimeout(5)
+
+    def answer() -> None:
+        with listener, listener.accept()[0] as conn:
+            conn.recv(4096)
+            conn.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n")
+            # Drain the rest of the hello: unread bytes turn the close into
+            # a reset, which the client would see before the reply.
+            conn.shutdown(socket.SHUT_WR)
+            while conn.recv(4096):
+                pass
+
+    thread = threading.Thread(target=answer, daemon=True)
+    thread.start()
+    yield int(listener.getsockname()[1])
+    thread.join(timeout=5)
+
+
+def test_a_refused_connection_is_a_transient_network_error() -> None:
+    with pytest.raises(NetworkError, match="ConnectionRefusedError") as caught:
+        fetch_peer_certificate(f"https://127.0.0.1:{_closed_port()}")
+    assert is_transient(caught.value)
+
+
+def test_a_failed_tls_handshake_is_a_final_pin_error(not_tls: int) -> None:
+    with pytest.raises(PinError, match="TLS handshake") as caught:
+        fetch_peer_certificate(f"https://127.0.0.1:{not_tls}")
+    assert not is_transient(caught.value)
 
 
 def test_an_enclave_that_never_attests_times_out(tmp_path: Path) -> None:

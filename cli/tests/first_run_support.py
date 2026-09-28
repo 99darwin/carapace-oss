@@ -18,7 +18,7 @@ from deploy_support import KEY_VERSION
 
 from carapace_cli.attestation import TrustPolicy
 from carapace_cli.deploy.first_run import FirstRunServices
-from carapace_cli.errors import EnclaveError
+from carapace_cli.errors import EnclaveError, NetworkError
 from carapace_cli.pin import EnclavePin
 from carapace_cli.session import ServerClient, Session, authenticate
 
@@ -83,8 +83,13 @@ class FakeControlPlane:
 
 @dataclass
 class FakeEnclave:
-    """``verify_enclave``: attests the one allowed digest after ``booting``."""
+    """``verify_enclave``: attests the one allowed digest after ``booting``.
 
+    ``refusing`` connection failures come first, as from a VM whose
+    server does not listen yet, then ``booting`` 503s.
+    """
+
+    refusing: int = 0
     booting: int = 0
     kms_key_version: str = KEY_VERSION
     # Pin identity fields to report instead of the policy's (a ``verify``
@@ -96,6 +101,9 @@ class FakeEnclave:
         self, enclave_url: str, server: ServerClient, policy: TrustPolicy
     ) -> EnclavePin:
         self.policies.append(policy)
+        if self.refusing:
+            self.refusing -= 1
+            raise NetworkError("cannot connect to the enclave: ConnectionRefusedError")
         if self.booting:
             self.booting -= 1
             raise EnclaveError(503, "attestation_unavailable")
