@@ -15,7 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 # `carapace deploy` / `destroy` only; see docs/design/deploy.md.
 deploy = [
-    "google-auth[requests]>=2.30,<3",
+    "google-auth[requests]>=2.59.0,<3",
     "sigstore>=4,<5",
 ]
 
