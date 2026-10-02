@@ -20,7 +20,7 @@ dependencies = [
     "slowapi>=0.1.9",
     "sqlalchemy[asyncio]>=2.0.30",
     "uvicorn>=0.30",
-    "webauthn>=2.2",
+    "webauthn>=3.0.1",
 ]
 
 [tool.uv.sources]
