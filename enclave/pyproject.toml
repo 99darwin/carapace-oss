@@ -7,7 +7,7 @@ license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
     "carapace-crypto",
-    "google-auth>=2.35",
+    "google-auth>=2.59.0",
     "google-cloud-kms>=3.2",
     "google-crc32c>=1.5",
     "httpx>=0.28,<0.29",
