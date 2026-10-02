@@ -18,7 +18,7 @@ dependencies = [
     "pydantic-settings>=2.3",
     "pyjwt[crypto]>=2.9",
     "slowapi>=0.1.9",
-    "sqlalchemy[asyncio]>=2.0.30",
+    "sqlalchemy[asyncio]>=2.1.1",
     "uvicorn>=0.30",
     "webauthn>=2.2",
 ]
